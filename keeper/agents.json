@@ -1,0 +1,29 @@
+[
+  {
+    "id": "arb-bot",
+    "name": "Arbitrage Bot",
+    "strategy": "Monitor ETO token balances across known pool addresses. When you detect a balance imbalance >3% between any two pools, execute a transfer to capture the spread. Be conservative — only act on clear opportunities with >0.01 ETO profit potential.",
+    "walletAddress": "6ZrQwARijYWKZZAXe88D97mQqSqqiuBd2n59KmQRvik6",
+    "triggers": [{ "type": "poll_block", "params": { "interval": 5 } }],
+    "maxSpendPerAction": "1.0",
+    "enabled": true
+  },
+  {
+    "id": "treasury-manager",
+    "name": "Treasury Manager",
+    "strategy": "Manage the treasury wallet. If balance exceeds 100 ETO, stake the excess with the best validator. If balance drops below 10 ETO, alert for manual refill. Report portfolio status every 10 ticks.",
+    "walletAddress": "6ZrQwARijYWKZZAXe88D97mQqSqqiuBd2n59KmQRvik6",
+    "triggers": [{ "type": "interval", "params": { "ms": 10000 } }],
+    "maxSpendPerAction": "50.0",
+    "enabled": true
+  },
+  {
+    "id": "block-watcher",
+    "name": "Block Watcher",
+    "strategy": "Watch each new block and report statistics. Track TPS trends, unusual transaction patterns, and validator performance. Alert if block production stalls for >30 seconds or if any single block has >1M transactions.",
+    "walletAddress": "6ZrQwARijYWKZZAXe88D97mQqSqqiuBd2n59KmQRvik6",
+    "triggers": [{ "type": "poll_block", "params": { "interval": 1 } }],
+    "maxSpendPerAction": "0",
+    "enabled": true
+  }
+]
