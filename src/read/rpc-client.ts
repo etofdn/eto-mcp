@@ -231,6 +231,11 @@ export class EtoRpcClient {
   etoListValidators(): Promise<any[]> {
     return this.call<any[]>("eto_listValidators");
   }
+
+  getRecentPrioritizationFees(addresses?: string[]): Promise<Array<{ slot: number; prioritizationFee: number }>> {
+    const params: any[] = addresses && addresses.length > 0 ? [addresses] : [];
+    return this.call<Array<{ slot: number; prioritizationFee: number }>>("getRecentPrioritizationFees", params);
+  }
 }
 
 export const rpc = new EtoRpcClient();

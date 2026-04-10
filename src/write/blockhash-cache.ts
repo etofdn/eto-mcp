@@ -26,7 +26,7 @@ export class BlockhashCache {
 
   startRefresh(): void {
     if (this.refreshInterval) return;
-    this.refreshInterval = setInterval(() => this.refresh().catch(() => {}), this.refreshMs);
+    this.refreshInterval = setInterval(() => this.refresh().catch(() => {}), this.refreshMs).unref();
   }
 
   stopRefresh(): void {

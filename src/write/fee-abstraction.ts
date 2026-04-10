@@ -32,9 +32,30 @@ const FEE_SCHEDULE: Record<string, { baseFee: number; rent: number; computeUnits
   create_swarm: { baseFee: 5000, rent: 14284800, computeUnits: 15000 },
 };
 
+const MINIMUM_PRIORITY_FEE = 1000; // lamports
+
+async function getMedianPriorityFee(): Promise<number> {
+  const fees = await rpc.getRecentPrioritizationFees();
+  if (!fees || fees.length === 0) return MINIMUM_PRIORITY_FEE;
+  const sorted = fees.map((f) => f.prioritizationFee).sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? Math.round((sorted[mid - 1] + sorted[mid]) / 2)
+    : sorted[mid];
+}
+
 export async function estimateFee(operation: string, walletAddress?: string): Promise<FeeEstimate> {
   const schedule = FEE_SCHEDULE[operation] || FEE_SCHEDULE.transfer;
-  const totalLamports = schedule.baseFee + schedule.rent;
+
+  let dynamicPriorityFee = MINIMUM_PRIORITY_FEE;
+  try {
+    const median = await getMedianPriorityFee();
+    dynamicPriorityFee = Math.max(median, MINIMUM_PRIORITY_FEE);
+  } catch {
+    // Fall back to static minimum if dynamic fetch fails
+  }
+
+  const totalLamports = schedule.baseFee + schedule.rent + dynamicPriorityFee;
 
   let walletBalance = "unknown";
   let sufficient = true;
@@ -55,7 +76,7 @@ export async function estimateFee(operation: string, walletAddress?: string): Pr
     totalLamports,
     breakdown: {
       baseFee: schedule.baseFee,
-      priorityFee: 0,
+      priorityFee: dynamicPriorityFee,
       rent: schedule.rent,
       computeUnits: schedule.computeUnits,
     },

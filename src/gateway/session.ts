@@ -1,4 +1,6 @@
 import { sha256 } from "@noble/hashes/sha256";
+import { hmac } from "@noble/hashes/hmac";
+import { timingSafeEqual } from "crypto";
 
 /**
  * Session management using signed tokens.
@@ -55,21 +57,23 @@ export type Capability = keyof typeof CAPABILITY_SCOPES;
 
 const ALL_CAPS = Object.keys(CAPABILITY_SCOPES) as Capability[];
 
-// Simple signing key (Phase 1: from env or random)
+// Signing key: must be set in production
 const signingKey = (() => {
   const envKey = process.env.PASETO_SIGNING_KEY;
+  if (process.env.NODE_ENV === "production") {
+    if (!envKey || envKey.length < 32) {
+      console.error("FATAL: PASETO_SIGNING_KEY must be set to at least 32 characters in production");
+      process.exit(1);
+    }
+  }
   if (envKey) return new TextEncoder().encode(envKey);
   // Dev mode: deterministic key
   return sha256(new TextEncoder().encode("eto-mcp-dev-signing-key-DO-NOT-USE-IN-PROD"));
 })();
 
-function hmacSign(payload: string): string {
-  const data = new TextEncoder().encode(payload);
-  const combined = new Uint8Array(signingKey.length + data.length);
-  combined.set(signingKey);
-  combined.set(data, signingKey.length);
-  const sig = sha256(combined);
-  return Buffer.from(sig).toString("base64url");
+function hmacSign(data: string): string {
+  const mac = hmac(sha256, signingKey, new TextEncoder().encode(data));
+  return Buffer.from(mac).toString("hex");
 }
 
 export function createSession(opts: {
@@ -105,7 +109,9 @@ export function verifySession(token: string): SessionPayload | null {
 
     const json = Buffer.from(payloadB64, "base64url").toString();
     const expectedSig = hmacSign(json);
-    if (sig !== expectedSig) return null;
+    const expectedBuf = Buffer.from(expectedSig, "hex");
+    const actualBuf = Buffer.from(sig, "hex");
+    if (expectedBuf.length !== actualBuf.length || !timingSafeEqual(expectedBuf, actualBuf)) return null;
 
     const payload = JSON.parse(json) as SessionPayload;
 

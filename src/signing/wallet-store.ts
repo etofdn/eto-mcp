@@ -1,0 +1,132 @@
+import { scrypt } from "@noble/hashes/scrypt";
+import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
+import { homedir } from "os";
+import { join } from "path";
+import { mkdir, readFile, rename, writeFile } from "fs/promises";
+
+const WALLET_PATH = join(homedir(), ".eto", "wallets.enc");
+
+export interface WalletData {
+  label: string;
+  privateKey: Uint8Array;
+  publicKey: Uint8Array;
+}
+
+// File format: salt(32) + nonce(12) + tag(16) + ciphertext
+const SALT_LEN = 32;
+const NONCE_LEN = 12;
+const TAG_LEN = 16;
+
+export class WalletStore {
+  private key: Uint8Array | null = null;
+  private _passphrase: string | null = null;
+  private loadPromise: Promise<void> | null = null;
+
+  constructor() {
+    const passphrase = process.env.ETO_WALLET_PASSPHRASE;
+    if (passphrase) {
+      // We defer key derivation to load/save so we can use the stored salt
+      // Mark as configured with a sentinel; actual key derived per operation
+      this._passphrase = passphrase;
+    }
+  }
+
+  isConfigured(): boolean {
+    return this._passphrase !== null;
+  }
+
+  beginLoad(onLoaded: (wallets: Map<string, WalletData>) => void): void {
+    this.loadPromise = this.load().then(onLoaded).catch(err => {
+      console.error("[eto-mcp] Failed to load persisted wallets:", err);
+    });
+  }
+
+  async ensureLoaded(): Promise<void> {
+    if (this.loadPromise) {
+      await this.loadPromise;
+    }
+  }
+
+  private deriveKey(salt: Uint8Array): Uint8Array {
+    return scrypt(this._passphrase!, salt, { N: 2 ** 15, r: 8, p: 1, dkLen: 32 });
+  }
+
+  async save(wallets: Map<string, WalletData>): Promise<void> {
+    if (!this._passphrase) return;
+
+    // Serialize wallet map to JSON-safe structure
+    const plain: Record<string, { label: string; privateKey: string; publicKey: string }> = {};
+    for (const [id, w] of wallets) {
+      plain[id] = {
+        label: w.label,
+        privateKey: Buffer.from(w.privateKey).toString("hex"),
+        publicKey: Buffer.from(w.publicKey).toString("hex"),
+      };
+    }
+    const plaintext = Buffer.from(JSON.stringify(plain), "utf8");
+
+    const salt = randomBytes(SALT_LEN);
+    const nonce = randomBytes(NONCE_LEN);
+    const key = this.deriveKey(salt);
+
+    const cipher = createCipheriv("aes-256-gcm", key, nonce);
+    const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+    const tag = cipher.getAuthTag();
+
+    const payload = Buffer.concat([salt, nonce, tag, ciphertext]);
+
+    // Atomic write: write to tmp, then rename
+    const dir = join(homedir(), ".eto");
+    await mkdir(dir, { recursive: true });
+    const tmp = WALLET_PATH + ".tmp";
+    await writeFile(tmp, payload, { mode: 0o600 });
+    await rename(tmp, WALLET_PATH);
+  }
+
+  async load(): Promise<Map<string, WalletData>> {
+    const wallets = new Map<string, WalletData>();
+    if (!this._passphrase) return wallets;
+
+    let payload: Buffer;
+    try {
+      payload = await readFile(WALLET_PATH);
+    } catch {
+      // File doesn't exist yet — return empty map
+      return wallets;
+    }
+
+    if (payload.length < SALT_LEN + NONCE_LEN + TAG_LEN) {
+      console.error("[eto-mcp] Wallet file too short, ignoring");
+      return wallets;
+    }
+
+    const salt = payload.subarray(0, SALT_LEN);
+    const nonce = payload.subarray(SALT_LEN, SALT_LEN + NONCE_LEN);
+    const tag = payload.subarray(SALT_LEN + NONCE_LEN, SALT_LEN + NONCE_LEN + TAG_LEN);
+    const ciphertext = payload.subarray(SALT_LEN + NONCE_LEN + TAG_LEN);
+
+    const key = this.deriveKey(salt);
+
+    try {
+      const decipher = createDecipheriv("aes-256-gcm", key, nonce);
+      decipher.setAuthTag(tag);
+      const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      const plain = JSON.parse(plaintext.toString("utf8")) as Record<
+        string,
+        { label: string; privateKey: string; publicKey: string }
+      >;
+
+      for (const [id, w] of Object.entries(plain)) {
+        wallets.set(id, {
+          label: w.label,
+          privateKey: Uint8Array.from(Buffer.from(w.privateKey, "hex")),
+          publicKey: Uint8Array.from(Buffer.from(w.publicKey, "hex")),
+        });
+      }
+    } catch {
+      console.error("[eto-mcp] Failed to decrypt wallet file — wrong passphrase or corrupted data");
+    }
+
+    return wallets;
+  }
+}

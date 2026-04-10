@@ -13,6 +13,18 @@ export interface SubmitParams {
 
 // In-flight tracking for idempotency (in-memory for Phase 1, Redis later)
 const inFlight = new Map<string, Promise<TransactionResult>>();
+const inFlightTimestamps = new Map<string, number>();
+
+// Clean up stale entries older than 10 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [key, ts] of inFlightTimestamps) {
+    if (ts < cutoff) {
+      inFlight.delete(key);
+      inFlightTimestamps.delete(key);
+    }
+  }
+}, 60_000).unref();
 
 export class TransactionSubmitter {
   async submitAndConfirm(params: SubmitParams): Promise<TransactionResult> {
@@ -28,9 +40,13 @@ export class TransactionSubmitter {
 
     if (params.idempotencyKey) {
       inFlight.set(params.idempotencyKey, promise);
+      inFlightTimestamps.set(params.idempotencyKey, Date.now());
       promise.finally(() => {
         // Clean up after 5 minutes
-        setTimeout(() => inFlight.delete(params.idempotencyKey!), 300_000);
+        setTimeout(() => {
+          inFlight.delete(params.idempotencyKey!);
+          inFlightTimestamps.delete(params.idempotencyKey!);
+        }, 300_000);
       });
     }
 

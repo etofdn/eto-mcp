@@ -2,6 +2,7 @@ import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
 import bs58 from "bs58";
 import type { Signer, SignerFactory } from "./signer-interface.js";
+import { WalletStore } from "./wallet-store.js";
 
 ed.etc.sha512Sync = (...m: Uint8Array[]) => sha512(ed.etc.concatBytes(...m));
 
@@ -53,14 +54,33 @@ interface WalletEntry {
 
 export class LocalSignerFactory implements SignerFactory {
   private readonly wallets = new Map<string, WalletEntry>();
+  private readonly store = new WalletStore();
+
+  constructor() {
+    if (!this.store.isConfigured()) {
+      console.error("[eto-mcp] Warning: ETO_WALLET_PASSPHRASE not set — wallets stored in-memory only");
+    } else {
+      // Load persisted wallets asynchronously; beginLoad stores the promise for ensureLoaded()
+      this.store.beginLoad(loaded => {
+        for (const [id, w] of loaded) {
+          this.wallets.set(id, w);
+        }
+      });
+    }
+  }
 
   async createWallet(label: string): Promise<{ walletId: string; svmAddress: string; evmAddress: string }> {
+    await this.store.ensureLoaded();
     const privateKey = new Uint8Array(32);
     crypto.getRandomValues(privateKey);
     const publicKey = ed.getPublicKey(privateKey);
     const walletId = crypto.randomUUID();
 
     this.wallets.set(walletId, { label, privateKey, publicKey });
+
+    if (this.store.isConfigured()) {
+      await this.store.save(this.wallets);
+    }
 
     const signer = new LocalSigner(privateKey);
     return {
@@ -71,6 +91,7 @@ export class LocalSignerFactory implements SignerFactory {
   }
 
   async getSigner(walletId: string): Promise<Signer> {
+    await this.store.ensureLoaded();
     const entry = this.wallets.get(walletId);
     if (!entry) {
       throw new Error(`Wallet not found: ${walletId}`);
@@ -79,6 +100,7 @@ export class LocalSignerFactory implements SignerFactory {
   }
 
   async listWallets(): Promise<string[]> {
+    await this.store.ensureLoaded();
     return Array.from(this.wallets.keys());
   }
 
@@ -95,6 +117,12 @@ export class LocalSignerFactory implements SignerFactory {
     const walletId = crypto.randomUUID();
 
     this.wallets.set(walletId, { label, privateKey, publicKey });
+
+    if (this.store.isConfigured()) {
+      this.store.save(this.wallets).catch(err => {
+        console.error("[eto-mcp] Failed to persist wallet after import:", err);
+      });
+    }
 
     const signer = new LocalSigner(privateKey);
     return {
