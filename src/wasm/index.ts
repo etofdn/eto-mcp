@@ -154,8 +154,8 @@ function serializeTransaction(msg: Message, signatures: Uint8Array[]): Uint8Arra
 }
 
 function unsignedTransaction(msg: Message): Uint8Array {
-  const zeroSig = new Uint8Array(64); // placeholder signature
-  return serializeTransaction(msg, [zeroSig]);
+  const sigs = Array.from({ length: msg.numRequiredSignatures }, () => new Uint8Array(64));
+  return serializeTransaction(msg, sigs);
 }
 
 // Build a message, adding the program ID as last account key.
@@ -337,9 +337,9 @@ export function buildTokenTransferTx(
   // Account keys: source (0), destination (1), authority (2), token program (3)
   const accountKeys = [sourceKey, destinationKey, authorityKey, TOKEN_PROGRAM_ID];
 
-  // Instruction data: [12] + amount u64 LE + decimals u8
+  // Instruction data: [11] + amount u64 LE + decimals u8
   const data: number[] = [];
-  writeU8(data, 12); // TransferChecked discriminator
+  writeU8(data, 11); // TransferChecked discriminator (Borsh enum index 11)
   writeU64LE(data, amount);
   writeU8(data, decimals);
 
@@ -799,12 +799,14 @@ export function buildCreateMintTx(
   };
 
   // Instruction 1: Token program InitializeMint
-  // [0] + decimals u8 + mintAuthority 32 bytes + 0u8 (no freeze authority)
+  // [0] + decimals u8 + Some(mintAuthority) + None (freeze authority)
+  // Borsh: Option<Pubkey> = 0x01 + 32 bytes for Some, 0x00 for None
   const initData: number[] = [];
   writeU8(initData, 0); // InitializeMint discriminator
   writeU8(initData, decimals);
+  writeU8(initData, 1); // Some(mint_authority)
   writeBytes(initData, mintAuthorityKey);
-  writeU8(initData, 0); // no freeze authority
+  writeU8(initData, 0); // None (freeze_authority)
 
   const initIx: CompiledInstruction = {
     programIdIndex: 3, // token program
@@ -839,9 +841,9 @@ export function buildMintToTx(
   // Account keys: mint(0), destination(1), authority(2), token program(3)
   const accountKeys = [mintKey, destinationKey, mintAuthorityKey, TOKEN_PROGRAM_ID];
 
-  // Instruction data: [7] + amount u64 LE
+  // Instruction data: [6] + amount u64 LE
   const data: number[] = [];
-  writeU8(data, 7); // MintTo discriminator
+  writeU8(data, 6); // MintTo discriminator (Borsh enum index 6)
   writeU64LE(data, amount);
 
   const instruction: CompiledInstruction = {
@@ -877,9 +879,9 @@ export function buildBurnTx(
   // Account keys: tokenAccount(0), mint(1), owner(2), token program(3)
   const accountKeys = [tokenAccountKey, mintKey, ownerKey, TOKEN_PROGRAM_ID];
 
-  // Instruction data: [8] + amount u64 LE
+  // Instruction data: [7] + amount u64 LE
   const data: number[] = [];
-  writeU8(data, 8); // Burn discriminator
+  writeU8(data, 7); // Burn discriminator (Borsh enum index 7)
   writeU64LE(data, amount);
 
   const instruction: CompiledInstruction = {
@@ -914,9 +916,9 @@ export function buildFreezeTx(
   // Account keys: tokenAccount(0), mint(1), freezeAuthority(2), token program(3)
   const accountKeys = [tokenAccountKey, mintKey, freezeAuthorityKey, TOKEN_PROGRAM_ID];
 
-  // Instruction data: [10] (FreezeAccount discriminator)
+  // Instruction data: [9] (FreezeAccount discriminator, Borsh variant index)
   const data: number[] = [];
-  writeU8(data, 10);
+  writeU8(data, 9);
 
   const instruction: CompiledInstruction = {
     programIdIndex: 3, // token program
@@ -1120,20 +1122,26 @@ export function buildRegisterAgentTx(
   const agentAccountKey = pubkeyBytes(agentAccount);
   const blockhash = blockhashBytes(recentBlockhash);
 
-  // Account keys: authority(0), agentAccount(1), agent program(2)
-  const accountKeys = [authorityKey, agentAccountKey, AGENT_PROGRAM_ID];
+  // Account keys: funder(0), agentAccount(1), authority(2), agent program(3)
+  // Rust expects: [signer+writable funder, writable agent, read-only authority]
+  // Authority = funder in the common case
+  const accountKeys = [authorityKey, agentAccountKey, authorityKey, AGENT_PROGRAM_ID];
 
-  // Instruction data: [0] + name_len u32 LE + name bytes + model_id_len u32 LE + model_id bytes
+  // Instruction data: Borsh AgentInstruction::RegisterAgent
+  // [0] + name (Borsh String) + model_id (Borsh String) + metadata_uri (Borsh String) + initial_lamports (u64 LE)
   const nameBytes = new TextEncoder().encode(name);
   const modelIdBytes = new TextEncoder().encode(modelId);
+  const metadataUriBytes = new TextEncoder().encode("");
   const data: number[] = [];
   writeU8(data, 0); // RegisterAgent discriminator
   writeVec(data, nameBytes);
   writeVec(data, modelIdBytes);
+  writeVec(data, metadataUriBytes);
+  writeU64LE(data, 0n); // initial_lamports
 
   const instruction: CompiledInstruction = {
-    programIdIndex: 2, // agent program
-    accounts: new Uint8Array([0, 1]), // authority, agentAccount
+    programIdIndex: 3, // agent program
+    accounts: new Uint8Array([0, 1, 2]), // funder, agentAccount, authority
     data: new Uint8Array(data),
   };
 
@@ -1141,9 +1149,9 @@ export function buildRegisterAgentTx(
     accountKeys,
     blockhash,
     [instruction],
-    1, // authority is signer
+    1, // funder is signer
     0,
-    1  // agent program readonly
+    2  // authority + agent program readonly
   );
 
   return unsignedTransaction(msg);
@@ -1164,7 +1172,7 @@ export function buildSetAgentStatusTx(
 
   // Instruction data: [7] + status u8
   const data: number[] = [];
-  writeU8(data, 7); // SetStatus discriminator
+  writeU8(data, 6); // SetStatus discriminator (Borsh variant index 6)
   writeU8(data, status);
 
   const instruction: CompiledInstruction = {
@@ -1201,7 +1209,7 @@ export function buildSetDelegateTx(
 
   // Instruction data: [6] + has_delegate u8 + delegate 32 bytes (if present) + spend_limit u64 LE
   const data: number[] = [];
-  writeU8(data, 6); // SetDelegate discriminator
+  writeU8(data, 5); // SetDelegate discriminator (Borsh variant index 5)
   if (delegate !== null) {
     writeU8(data, 1);
     writeBytes(data, pubkeyBytes(delegate));

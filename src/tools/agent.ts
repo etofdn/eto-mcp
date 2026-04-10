@@ -61,11 +61,13 @@ function buildAgentTx(
   const programKey = PROGRAM_IDS.agent;
   const blockhash = blockhashBytes(recentBlockhash);
 
+  // Rust expects: [signer+writable funder, writable agent, read-only authority]
+  // Authority = payer (index 0). Program at index 2.
   const accountKeys = [payerKey, agentKey, programKey];
 
-  const sigCount = 2; // payer + agentAccount sign
+  const sigCount = 1; // only payer signs (matches working swarm pattern)
   const zeroSig = new Uint8Array(64);
-  const ixAccountIndices = new Uint8Array([0, 1]);
+  const ixAccountIndices = new Uint8Array([0, 1, 0]); // funder, agent, authority=payer
 
   const msgBuf: number[] = [];
   writeU8(msgBuf, sigCount);
@@ -84,7 +86,6 @@ function buildAgentTx(
   const txBuf: number[] = [];
   writeU32LE(txBuf, sigCount);
   writeBytes(txBuf, zeroSig);
-  writeBytes(txBuf, zeroSig);
   writeBytes(txBuf, msgBytes);
 
   return new Uint8Array(txBuf);
@@ -96,9 +97,9 @@ function buildSetStatusTx(
   status: number,
   recentBlockhash: string,
 ): Uint8Array {
-  // Discriminator 1 = SetAgentStatus, then u8 status
+  // Discriminator 6 = SetStatus (Borsh enum index 6), then u8 status
   const data: number[] = [];
-  writeU8(data, 1);
+  writeU8(data, 6);
   writeU8(data, status);
   return buildAgentTx(payer, agentAccount, new Uint8Array(data), recentBlockhash);
 }
