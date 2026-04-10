@@ -1,0 +1,9 @@
+node_modules
+dist
+tests
+.git
+*.md
+keeper
+mesh
+signing-service
+.omc

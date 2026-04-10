@@ -9,18 +9,22 @@
     "start": "bun run src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "bun build ./src/index.ts --outdir ./dist --target bun"
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun",
+    "start:sse": "bun run src/sse-server.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.86.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@noble/ed25519": "^2.2.3",
     "@noble/hashes": "^1.7.2",
     "borsh": "^2.0.0",
     "bs58": "^6.0.0",
+    "express": "^5.2.1",
     "zod": "^3.24.4"
   },
   "devDependencies": {
     "@types/bun": "^1.2.13",
+    "@types/express": "^5.0.6",
     "typescript": "^5.8.3"
   }
 }
