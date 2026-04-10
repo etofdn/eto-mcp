@@ -1,0 +1,231 @@
+# The Singularity MCP Server
+
+> The Unified OS for the Agentic Economy. One state root, four VMs, zero bridges.
+
+## What This Is
+
+This is the MCP (Model Context Protocol) server for The Singularity — an agent-native blockchain with 112 tools for on-chain operations. Connect from Claude Code, Cursor, Windsurf, or any MCP-compatible AI agent.
+
+SSE endpoint: https://eto-mcp.fly.dev/sse
+Health check: https://eto-mcp.fly.dev/health
+Community: https://t.me/+MQ12Hel1E4hlZTQx
+
+## Connect
+
+### Claude Code
+```bash
+claude mcp add singularity --transport sse https://eto-mcp.fly.dev/sse
+```
+
+### Claude Desktop / Cursor / Windsurf
+Add to your MCP config (claude_desktop_config.json or equivalent):
+```json
+{
+  "mcpServers": {
+    "singularity": {
+      "url": "https://eto-mcp.fly.dev/sse"
+    }
+  }
+}
+```
+
+### Any MCP Client
+Connect via SSE transport to `https://eto-mcp.fly.dev/sse`. Messages are sent via POST to `/message?sessionId=<id>`.
+
+## Why This Exists
+
+AI agents generate $30B+ in transaction volume but are locked to single chains. $600M+ in arbitrage sits on individual chains yearly. Cross-chain agents captured only $868M total — 50x untapped spreads sit across chains.
+
+Existing chains weren't built for agents. Ethereum gas auctions cost $1-50+ per tx. Solana flat fees crush small trades. Every new "agent chain" is another island.
+
+The Singularity: one state root, four VMs (SVM, EVM, WASM, Move) sharing it, zero bridges. Agents run as first-class programs with access to $150B+ in DeFi liquidity in a single transaction. 200ms settlement vs 242s industry average. Fees at 1-20bps, scaled by value.
+
+## Architecture
+
+- 3.4M+ TPS benchmarked
+- 5,800+ agent tools accessible
+- 500+ chains unified
+- 200ms end-to-end settlement
+- $0.0007 per signature, any size
+- Two patents pending on multi-VM shared-state
+
+## Tool Categories (112 tools)
+
+### Wallets & Accounts
+- `create_wallet` — Generate new wallet (SVM + EVM addresses)
+- `import_wallet` — Import existing private key
+- `get_wallet` — Get wallet details and balances
+- `list_wallets` — List all managed wallets
+- `set_active_wallet` — Set default wallet
+- `get_balance` — Check native token balance
+
+### Tokens
+- `create_token` — Deploy new token with metadata
+- `mint_tokens` — Mint tokens to address
+- `burn_tokens` — Burn tokens from supply
+- `transfer_token` — Transfer tokens between addresses
+- `get_token_info` — Get token metadata and supply
+- `get_token_balance` — Check token balance
+- `list_token_holdings` — List all token holdings for address
+- `freeze_token_account` — Freeze token account
+
+### Transfers
+- `transfer_native` — Send native ETO tokens
+- `batch_transfer` — Send to multiple recipients in one tx
+- `airdrop` — Request testnet tokens
+
+### Smart Contracts
+- `deploy_svm_program` — Deploy Solana-compatible program
+- `deploy_evm_contract` — Deploy Solidity contract
+- `deploy_wasm_contract` — Deploy WASM contract
+- `deploy_move_module` — Deploy Move module
+- `call_contract` — Call any deployed contract
+- `read_contract` — Read contract state
+- `get_contract_info` — Get contract metadata
+- `encode_calldata` — ABI-encode function calls
+
+### Cross-VM
+- `cross_vm_call` — Call across VM boundaries in one tx
+- `resolve_cross_vm_address` — Resolve address across VMs
+- `derive_address` — Derive addresses between SVM/EVM
+
+### Staking
+- `create_stake` — Stake tokens with validator
+- `deactivate_stake` — Begin unstaking
+- `withdraw_stake` — Withdraw unstaked tokens
+- `delegate_stake` — Delegate to validator
+- `get_stake_info` — Get staking position details
+
+### Agents (On-chain)
+- `create_agent` — Deploy autonomous on-chain agent
+- `execute_agent` — Trigger agent execution
+- `get_agent` — Get agent details
+- `list_agents` — List deployed agents
+- `pause_agent` / `resume_agent` — Control agent execution
+- `hire_agent` — Hire agent from marketplace
+- `get_agent_reputation` — Get agent trust score
+
+### Agent-to-Agent (A2A)
+- `create_a2a_channel` — Open communication channel
+- `send_a2a_message` — Send message between agents
+- `read_a2a_messages` — Read channel messages
+- `list_a2a_channels` — List open channels
+- `close_a2a_channel` — Close channel
+
+### Swarms
+- `create_swarm` — Create multi-agent swarm
+- `join_swarm` — Join existing swarm
+- `get_swarm` — Get swarm state
+- `swarm_propose` — Submit proposal to swarm
+- `swarm_vote` — Vote on swarm proposal
+
+### DAOs
+- `create_dao` — Deploy DAO with governance
+- `dao_propose` — Submit governance proposal
+- `dao_vote` — Vote on proposal
+- `dao_delegate` — Delegate voting power
+
+### MCP Services (On-chain)
+- `register_mcp_service` — Register MCP service on-chain
+- `get_mcp_service` — Get service details
+- `list_mcp_services` — Discover available services
+- `call_mcp_service` — Call registered service
+
+### Identity
+- `register_agent_identity` — Register on-chain identity
+- `discover_agents` — Search agent registry
+- `manage_key_shares` — Manage distributed key shares
+
+### Zero-Knowledge
+- `zk_prove` — Generate Groth16 BN254 proof
+- `zk_verify` — Verify proof on-chain
+- `zk_bn254_ops` — Low-level BN254 curve operations (point_add, scalar_mul, pairing_check)
+
+### Security & Policy
+- `set_spending_limit` — Set transaction limits
+- `set_address_whitelist` — Restrict allowed addresses
+- `set_tool_permissions` — Control tool access per agent
+- `create_policy_program` — Deploy custom policy logic
+- `get_policy` — Get policy details
+- `configure_step_up_auth` — Require additional auth for sensitive ops
+- `configure_agent_trigger` — Set conditional agent triggers
+
+### Subscriptions (Real-time)
+- `subscribe_account` — Watch account changes
+- `subscribe_blocks` — Stream new blocks
+- `subscribe_logs` — Stream program logs
+- `unsubscribe` — Stop subscription
+
+### Queries
+- `get_transaction` — Get transaction details
+- `get_block` — Get block by height
+- `get_block_height` — Get current block height
+- `get_account` — Get account info
+- `get_account_transactions` — Transaction history
+- `get_health` — Chain health status
+- `search` — Full-text search across chain
+- `get_epoch_info` — Current epoch details
+
+### Validators
+- `list_validators` — List active validators
+- `get_vote_accounts` — Get vote accounts
+
+### Analytics
+- `get_chain_stats` — Chain-wide statistics
+- `get_gas_analytics` — Fee and gas analysis
+- `get_portfolio` — Portfolio overview across tokens
+
+### Batch Operations
+- `batch_execute` — Multiple operations in one tx
+- `batch_query` — Multiple reads in one call
+
+### Intents & Templates
+- `execute_intent` — Natural language transaction intent
+- `plan_execution` — Preview execution plan
+- `execute_template` — Run pre-built workflow
+- `list_templates` — Available workflow templates
+
+### Development
+- `forge_compile` — Compile Solidity with Foundry
+- `forge_create` — Compile and deploy in one step
+- `cast_call` — Call contract via cast
+- `cast_abi_encode` — Encode ABI calldata
+- `anchor_init` — Initialize Anchor project
+- `anchor_build` — Build Solana program
+- `anchor_test` — Run Anchor tests
+
+### Cross-chain Mesh
+- `mesh_transfer` — Cross-chain transfer
+- `mesh_verify` — Verify cross-chain proof
+- `mesh_state` — Query mesh bridge state
+- `mesh_history` — Cross-chain transfer history
+- `mesh_attest_balance` — Attest balance for bridging
+
+### Marketplace & EPL
+- `get_activity_feed` — Agent activity stream
+- `get_audit_log` — Audit trail
+- `inspect_uth` — Inspect Universal Token Header
+- `list_agent_services` — Browse agent marketplace
+
+## Network
+
+- Chain ID: 17743
+- Native token: ETO (9 decimals)
+- Network: testnet
+- Fees: 1-20bps tiered by execution weight
+
+## Partners
+
+BENQI, Dexalot, Quicknode, Circle, Octane, PAKT, Crossmint, Suzaku
+
+## Team
+
+- Ahyaan Sayed, CEO — $500M+ in transactions closed. Designed the original architecture.
+- Naman Bajpai, CTO — Former Aerospace engineer. Avalanche Codebase Alum. Built the multi-VM architecture.
+- Ujjwal Singh, CPO — Avalanche Codebase Alum. Background in homomorphic encryption. Leads product and UX.
+
+## Links
+
+- Community: https://t.me/+MQ12Hel1E4hlZTQx
+- Health: https://eto-mcp.fly.dev/health
+- SSE: https://eto-mcp.fly.dev/sse

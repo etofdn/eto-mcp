@@ -1,10 +1,16 @@
 import express from "express";
+import { readFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { createServer } from "./server.js";
 import { config } from "./config.js";
 import { blockhashCache } from "./write/blockhash-cache.js";
 import { wsManager } from "./read/ws-manager.js";
 import { log, dumpStats } from "./utils/logger.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const LLMS_TXT = readFileSync(join(__dirname, "../public/llms.txt"), "utf8");
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
 
@@ -20,6 +26,15 @@ app.use((req, res, next) => {
     return;
   }
   next();
+});
+
+// llms.txt — agent-readable description of this server
+app.get("/", (_req, res) => {
+  res.type("text/plain").send(LLMS_TXT);
+});
+
+app.get("/llms.txt", (_req, res) => {
+  res.type("text/plain").send(LLMS_TXT);
 });
 
 // Health check for Fly.io
