@@ -45,8 +45,10 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", version: "1.0.0", tools: 81, network: config.network });
 });
 
-// Auth endpoints: /auth/login, /auth/verify, /auth/me
-app.use(authRouter);
+// Auth endpoints: /auth/login, /auth/verify, /auth/me. Mounted under /auth so
+// the router's body-parser never intercepts /message, which must reach the
+// MCP SDK with its raw stream intact.
+app.use("/auth", authRouter);
 
 // Track active transports for cleanup
 const transports = new Map<string, SSEServerTransport>();

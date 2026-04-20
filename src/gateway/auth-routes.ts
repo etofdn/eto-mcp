@@ -5,14 +5,11 @@ import { createSession, verifySession, type AuthStrategy } from "./session.js";
 import { generatePayload, verifyPayload } from "./thirdweb.js";
 import { McpError } from "../errors/index.js";
 
-// Public auth endpoints. Mounted in sse-server before /message so an agent can
-// complete a SIWE handshake: POST /auth/login → server returns a LoginPayload,
-// client signs it with their wallet (or via a thirdweb inapp flow), then
-// POST /auth/verify → { token, exp }. Token goes in Authorization: Bearer.
+// Public auth endpoints. Mount this router at /auth in sse-server — the body
+// parser below must NOT leak to /message, which reads the raw stream via the
+// MCP SDK. Routes here are written relative to /auth (i.e. POST "/login").
 
 export const authRouter: Router = express.Router();
-
-authRouter.use(express.json());
 
 const loginSchema = z.object({
   address: z.string(),
@@ -27,6 +24,11 @@ const verifySchema = z.object({
   strategy: strategySchema,
 });
 
+// Attach body-parser per-route — never as .use() on the router, because even
+// path-scoped mounts can still run on fall-through requests in some Express
+// configurations. Per-route is the only guaranteed containment.
+const json = express.json();
+
 function authError(message: string, explanation: string, status = 401) {
   const err = new McpError(
     "AUTH_001", "auth", message, explanation,
@@ -36,7 +38,7 @@ function authError(message: string, explanation: string, status = 401) {
   return { status, body: err.toJSON() };
 }
 
-authRouter.post("/auth/login", async (req, res) => {
+authRouter.post("/login", json, async (req, res) => {
   const parsed = loginSchema.safeParse(req.body ?? {});
   if (!parsed.success) {
     const { status, body } = authError(
@@ -56,7 +58,7 @@ authRouter.post("/auth/login", async (req, res) => {
   }
 });
 
-authRouter.post("/auth/verify", async (req, res) => {
+authRouter.post("/verify", json, async (req, res) => {
   const parsed = verifySchema.safeParse(req.body ?? {});
   if (!parsed.success) {
     const { status, body } = authError(
@@ -93,7 +95,7 @@ authRouter.post("/auth/verify", async (req, res) => {
   }
 });
 
-authRouter.get("/auth/me", (req, res) => {
+authRouter.get("/me", (req, res) => {
   const header = req.header("authorization");
   if (!header) {
     const { status, body } = authError("Missing Authorization header", "Provide Bearer <token>", 401);
