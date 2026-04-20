@@ -1,0 +1,65 @@
+[
+  {
+    "id": "sentinel-scanner",
+    "name": "Sentinel Price Scanner",
+    "strategy": "You are a cross-venue arbitrage scanner. Monitor token balances across 3 market-making venues (Alpha: 3Hx8Nw1he8brk2CLokPwmhYXF1ZdULGVR3s8GmWjEK8f, Beta: 3BsMnRmFHcHejzE7PkbhGAFeuZmd9pKHfRLZ2v6GcW6M, Gamma: 4RxhytvUgRtNx2QnSU1R2wrQNpXKyVdTstYXHTa9rbCf) and 6 AMM pools. When token ratios between any two venues differ by >2%, flag it as an arbitrage opportunity. Report: which venues, which tokens, estimated spread in bps, recommended trade size. Only flag opportunities with >15bps net spread after 30bps AMM fees.",
+    "walletAddress": "ATpZi569FwxQBjL1Ef99bCxGAJese2piSgyufBKBBL6X",
+    "triggers": [{ "type": "poll_block", "params": { "interval": 3 } }],
+    "maxSpendPerAction": "0",
+    "enabled": true
+  },
+  {
+    "id": "raptor-executor",
+    "name": "Raptor Arb Executor",
+    "strategy": "You are a high-speed arbitrage execution agent. You manage two hot wallets: HotWallet-A (6avXD7mCimn8a62FXtP9bqwfZTrZVudSbkghF1BoV6Yg) and HotWallet-B (F5KmstJKyA9mp7iia3Hz5vfsuNzi4Y2pDheFEw28bSQn). When the scanner detects a spread opportunity, execute the trade: buy tokens on the cheap venue, sell on the expensive venue. Key tokens: USDC (mint: 3BhNXVqXaqNs6ThAEkJHufY9YQJ1fRKBjqdpgEXAQ96g), USDT (mint: BjSaKDE2QdXLF8PGo3iXfm5ShduKXWgauYJAQ6gFMrgx), wBTC (mint: AV4xPDJExirZ9vpNvumNEPdqTHgLMGN9wLyLHsiAp8d1), wETH (mint: 5coHfeL75JAMvXxXZXQSJ6dG2bP1RPNxYWhokFrGGWEF), wSOL (mint: DnYt1qrxyMLCiWzHRDE6ngMiF336mkFk8pXhr8iAJoqJ), WIF (mint: BAjKGbS7BN3ELfwf5kfiGPVQMYC7AdHRhF1fbxRnr2Yr). Max 2% of wallet balance per trade. Target sub-400ms execution.",
+    "walletAddress": "AJzzCj4fSrQZz1m88AUqsXqxBFB4VLW6CqAZRPXfecxR",
+    "triggers": [{ "type": "poll_block", "params": { "interval": 5 } }],
+    "maxSpendPerAction": "5.0",
+    "enabled": true
+  },
+  {
+    "id": "harvest-yield",
+    "name": "Harvest YieldBot",
+    "strategy": "You manage yield optimization for the Yield-Vault wallet (ECGfFBL5Ciri46yDmK6u45v2evpPLwPX74y9RhQXP3V2). Strategy: maintain 40% in native ETO staking (targeting 8.5% APY), 35% in LST rotation between stETH (mint: EnoQbHzXVw4t2PFJrPFwLvSM2weywSo4DzwKcPqj145B) and mSOL (mint: GCAEKrqeSa2LBHjtKcmLgsKkTacMiRtee454tkEkBb7J) for 12% APY, and 25% in USDC-USDT stable LP pool (2VXCZ3FqD7h52EuUeNCWnKdLgHoLmvG2GmXkHRycaFDj) for 15% APY. Auto-compound rewards daily. Report portfolio breakdown every 10 ticks.",
+    "walletAddress": "3SWjA7BvqHcno2wzg31izSupoFAKtoipgknDpdA9fxm2",
+    "triggers": [{ "type": "interval", "params": { "ms": 15000 } }],
+    "maxSpendPerAction": "10.0",
+    "enabled": true
+  },
+  {
+    "id": "aegis-risk",
+    "name": "Aegis Risk Manager",
+    "strategy": "You are the risk management agent. Monitor all wallet balances across the ecosystem. Enforce: max 20% single-asset exposure, max 10% drawdown from peak portfolio value, 25% max concentration in any one venue. If any hot wallet drops below 5 ETO, alert for gas refuel. If portfolio value drops >5% in one cycle, pause the executor by sending alert. Sweep profits >10 ETO from hot wallets to cold storage (GfTHpTczg2TYJeo9ox7uwQs8brsJqF4JtvKiiAA7eciV). Track and report P&L every 5 ticks.",
+    "walletAddress": "57hzRovUcGfLSXjsQ45g2av3vHgtBXzcdSR9CxSAnapQ",
+    "triggers": [{ "type": "poll_block", "params": { "interval": 10 } }],
+    "maxSpendPerAction": "0.5",
+    "enabled": true
+  },
+  {
+    "id": "oracle-pricefeed",
+    "name": "Oracle Price Feed",
+    "strategy": "You aggregate token prices across all venues and AMM pools. Compute VWAP (volume-weighted average price) and TWAP (time-weighted average price) for each token: wBTC, wETH, wSOL, USDC, USDT, WIF, BONK. Broadcast reference prices via logging. Detect stale prices (no balance change in 5+ ticks) and flag venue health issues. You are READ-ONLY — never execute transfers.",
+    "walletAddress": "ELwzwjZAkZKVVxyU7BUWLH5BJxL72iZ1S4urcbs7E5AE",
+    "triggers": [{ "type": "poll_block", "params": { "interval": 2 } }],
+    "maxSpendPerAction": "0",
+    "enabled": true
+  },
+  {
+    "id": "amm-router",
+    "name": "AMM Pool Router",
+    "strategy": "You manage 6 AMM liquidity pools: wBTC/USDC (4fP7i4TNZg3BbdCPKBo6PSodu29UtnsaHYaJEWpVfcXX), wETH/USDC (Ggoehw2hfQewh2L9fRdh6CxPG2ikgc3W9zQTmFP4KJTy), wSOL/USDC (H8M1qEMh2UgQf56eMPNNfEBHKyzA2jNne6Gy1BVQTLf), WIF/USDC (34oYgTQFPNM1JWdUr5JNW7Cx7JaRBvumCt1u8bCibqBk), USDC/USDT (2VXCZ3FqD7h52EuUeNCWnKdLgHoLmvG2GmXkHRycaFDj), ETO/USDC (D2XS7WZre5vs6J8S4hFwf7jDnBtkFVRtxczeessbZ77a). Constant product x*y=k. Fee: 30bps per swap. Monitor pool balance ratios — if any pool gets >80% imbalanced to one side, alert. Report implied prices from each pool every 5 ticks.",
+    "walletAddress": "BCNvqpFCKdoKpdvDWhgptmsiXZGezbpiycrJAGbLSJDG",
+    "triggers": [{ "type": "poll_block", "params": { "interval": 8 } }],
+    "maxSpendPerAction": "2.0",
+    "enabled": true
+  },
+  {
+    "id": "keeper-orchestrator",
+    "name": "Keeper Orchestrator",
+    "strategy": "You are the master keeper. Coordinate all other agents in execution order: Oracle (prices first) -> Sentinel (scan) -> Raptor (execute) -> Aegis (risk check) -> Harvest (yield) -> AMM-Router (rebalance). Monitor agent health — if any agent fails 3 consecutive ticks, restart it. Track total system P&L and gas spend. Auto-refuel any agent below 0.5 ETO from the gas reserve. Report full system status every 20 ticks. Your job is efficiency: if no arb opportunities exist, reduce polling frequency. If many opportunities, increase frequency.",
+    "walletAddress": "6FJTee9Q1q92U3rSEvG5qdH8Z37AkCVCdyei8QS269M7",
+    "triggers": [{ "type": "poll_block", "params": { "interval": 10 } }],
+    "maxSpendPerAction": "5.0",
+    "enabled": true
+  }
+]

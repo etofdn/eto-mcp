@@ -4,7 +4,7 @@
 
 ## What This Is
 
-This is the MCP (Model Context Protocol) server for The Singularity — an agent-native blockchain with 112 tools for on-chain operations. Connect from Claude Code, Cursor, Windsurf, or any MCP-compatible AI agent.
+This is the MCP (Model Context Protocol) server for The Singularity — an agent-native blockchain with 80 tools for on-chain operations. Connect from Claude Code, Cursor, Windsurf, or any MCP-compatible AI agent.
 
 SSE endpoint: https://eto-mcp.fly.dev/sse
 Health check: https://eto-mcp.fly.dev/health
@@ -49,7 +49,7 @@ The Singularity: one state root, four VMs (SVM, EVM, WASM, Move) sharing it, zer
 - $0.0007 per signature, any size
 - Two patents pending on multi-VM shared-state
 
-## Tool Categories (112 tools)
+## Tool Categories (80 tools)
 
 ### Wallets & Accounts
 - `create_wallet` — Generate new wallet (SVM + EVM addresses)

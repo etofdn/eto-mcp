@@ -8,6 +8,21 @@ import { buildCreateMintTx, buildMintToTx, buildBurnTx, buildTokenTransferTx, ge
 import { blockhashCache } from "../write/blockhash-cache.js";
 import { submitter } from "../write/submitter.js";
 import { getTokenMetadata, registerTokenMetadata } from "../read/token-metadata.js";
+import { deriveAta, buildCreateAtaIdempotentTx } from "../utils/ata.js";
+
+// Send an AtaProgram::CreateIdempotent tx to ensure the recipient's ATA exists
+// before MintTo / Transfer. No-op on chain if the account is already initialized.
+async function ensureAta(signer: any, owner: string, mint: string): Promise<string> {
+  const { blockhash } = await blockhashCache.refresh();
+  const { txBytes, ata } = buildCreateAtaIdempotentTx(signer.getPublicKey(), owner, mint, blockhash);
+  const signedTx = await signer.sign(txBytes);
+  await submitter.submitAndConfirm({
+    signedTxBase64: Buffer.from(signedTx).toString("base64"),
+    vm: "svm",
+    timeoutMs: 15000,
+  }).catch(() => null); // idempotent — failures are acceptable if account exists
+  return ata;
+}
 
 export function registerTokenTools(server: McpServer): void {
   server.tool(
@@ -33,8 +48,21 @@ export function registerTokenTools(server: McpServer): void {
         const mintAddress = mintKeypair.publicKey;
         const { blockhash } = await blockhashCache.getBlockhash();
         const txBytes = buildCreateMintTx(fromSvm, mintAddress, fromSvm, decimals, blockhash);
-        const signedTx = await signer.sign(txBytes);
-        const txBase64 = Buffer.from(signedTx).toString("base64");
+
+        // The CreateMint tx requires 2 signers: payer (slot 0) and the new
+        // mint account itself (slot 1, proving its keypair authorized
+        // creation). Without the second signature InitializeMint runs against
+        // an unsigned mint slot, the account is allocated but never
+        // initialized, and downstream MintTo fails with "Token program failed".
+        const ed = await import("@noble/ed25519");
+        const sigCountLE = new DataView(txBytes.buffer, txBytes.byteOffset, 4).getUint32(0, true);
+        const messageBytes = txBytes.slice(4 + sigCountLE * 64);
+        const payerSigned = await signer.sign(txBytes);
+        const mintSecret = Uint8Array.from(Buffer.from(mintKeypair.secretKey, "hex"));
+        const mintSig = await ed.sign(messageBytes, mintSecret);
+        const fullySigned = new Uint8Array(payerSigned);
+        fullySigned.set(mintSig, 4 + 64); // sig slot 1
+        const txBase64 = Buffer.from(fullySigned).toString("base64");
         const result = await submitter.submitAndConfirm({ signedTxBase64: txBase64, vm: "svm", timeoutMs: 15000 });
         const lines: string[] = [];
         if (result.status === "confirmed" || result.status === "finalized") {
@@ -91,9 +119,13 @@ export function registerTokenTools(server: McpServer): void {
         const signer = await getSignerFactory().getSigner(walletId);
         const fromSvm = signer.getPublicKey();
         const { blockhash } = await blockhashCache.getBlockhash();
-        const decimals = 9;
+        const decimals = (await getTokenMetadata(mint))?.decimals ?? 9;
         const rawAmount = BigInt(Math.round(parseFloat(amount) * 10 ** decimals));
-        const txBytes = buildMintToTx(fromSvm, mint, to, rawAmount, blockhash);
+        // SPL semantics: MintTo writes the balance into the recipient's
+        // associated token account, not into the wallet pubkey itself.
+        // Materialize the ATA first (idempotent — no-op if it already exists).
+        const destinationAta = await ensureAta(signer, to, mint);
+        const txBytes = buildMintToTx(fromSvm, mint, destinationAta, rawAmount, blockhash);
         const signedTx = await signer.sign(txBytes);
         const txBase64 = Buffer.from(signedTx).toString("base64");
         const result = await submitter.submitAndConfirm({ signedTxBase64: txBase64, vm: "svm", timeoutMs: 15000 });
@@ -103,7 +135,8 @@ export function registerTokenTools(server: McpServer): void {
           lines.push(`Signature:   ${result.signature}`);
           lines.push(`Status:      ${result.status}`);
           lines.push(`Mint:        ${mint}`);
-          lines.push(`Destination: ${to}`);
+          lines.push(`Owner:       ${to}`);
+          lines.push(`Destination: ${destinationAta} (derived ATA)`);
           lines.push(`Amount:      ${amount} (raw: ${rawAmount})`);
           if (result.fee !== undefined) lines.push(`Fee:         ${result.fee} lamports`);
         } else if (result.status === "timeout") {
@@ -139,9 +172,13 @@ export function registerTokenTools(server: McpServer): void {
         const signer = await getSignerFactory().getSigner(walletId);
         const fromSvm = signer.getPublicKey();
         const { blockhash } = await blockhashCache.getBlockhash();
-        const decimals = 9;
+        const decimals = (await getTokenMetadata(mint))?.decimals ?? 9;
         const rawAmount = BigInt(Math.round(parseFloat(amount) * 10 ** decimals));
-        const txBytes = buildTokenTransferTx(fromSvm, fromSvm, to, rawAmount, decimals, blockhash);
+        // SPL Transfer is between two token accounts (ATAs of source/dest wallets),
+        // not between the wallet pubkeys themselves. Make sure both exist first.
+        const srcAta = await ensureAta(signer, fromSvm, mint);
+        const dstAta = await ensureAta(signer, to, mint);
+        const txBytes = buildTokenTransferTx(fromSvm, srcAta, dstAta, rawAmount, decimals, blockhash);
         const signedTx = await signer.sign(txBytes);
         const txBase64 = Buffer.from(signedTx).toString("base64");
         const result = await submitter.submitAndConfirm({ signedTxBase64: txBase64, vm: "svm", timeoutMs: 15000 });
@@ -187,7 +224,7 @@ export function registerTokenTools(server: McpServer): void {
         const signer = await getSignerFactory().getSigner(walletId);
         const fromSvm = signer.getPublicKey();
         const { blockhash } = await blockhashCache.getBlockhash();
-        const decimals = 9;
+        const decimals = (await getTokenMetadata(mint))?.decimals ?? 9;
         const rawAmount = BigInt(Math.round(parseFloat(amount) * 10 ** decimals));
         // tokenAccount = owner's token account for this mint; pass owner address directly
         const txBytes = buildBurnTx(fromSvm, fromSvm, mint, rawAmount, blockhash);
@@ -276,39 +313,52 @@ export function registerTokenTools(server: McpServer): void {
     async (args) => {
       try {
         const { address, mint } = args;
-        const tokenAccounts = await rpc.getTokenAccountsByOwner(address, { mint });
+        // Read at the deterministic SPL associated-token-account address
+        // (PDA([wallet, TOKEN_PROGRAM_ID, mint], ATA_PROGRAM_ID)) instead of
+        // scanning getTokenAccountsByOwner — the chain doesn't index by owner
+        // and the prior scan returned 0 accounts even after a confirmed mint.
+        const { address: ataAddress } = deriveAta(address, mint);
 
-        if (!tokenAccounts || tokenAccounts.length === 0) {
-          return { content: [{ type: "text" as const, text: `No token accounts found for address: ${address}` }] };
+        // Retry briefly to ride out the chain's commit-vs-state-apply lag right
+        // after a mint or transfer.
+        let info: any = null;
+        let raw: Buffer | null = null;
+        for (let i = 0; i < 4; i++) {
+          info = await rpc.getAccountInfo(ataAddress);
+          const acct = info?.value !== undefined ? info.value : info;
+          if (acct && acct.data) {
+            const data = Array.isArray(acct.data) ? acct.data[0] : acct.data;
+            if (typeof data === "string" && data.length > 0) {
+              raw = Buffer.from(data, "base64");
+              if (raw.length >= 72) break;
+            }
+          }
+          await new Promise((r) => setTimeout(r, 200));
         }
 
-        // Filter by mint
-        const matching = tokenAccounts.filter((acct: any) => {
-          const acctMint = acct?.account?.data?.parsed?.info?.mint ?? acct?.mint ?? acct?.info?.mint;
-          return acctMint === mint;
-        });
-
-        if (matching.length === 0) {
+        if (!raw) {
           return {
-            content: [{ type: "text" as const, text: `No token account found for mint ${mint} at address ${address}` }],
+            content: [{ type: "text" as const, text: `No token account found for ${mint} at owner ${address} (derived ATA: ${ataAddress})` }],
           };
         }
 
-        const acct = matching[0];
-        const parsed = acct?.account?.data?.parsed?.info ?? acct?.info ?? acct;
-        const rawAmount = parsed?.tokenAmount?.amount ?? parsed?.amount ?? "0";
-        const decimals = parsed?.tokenAmount?.decimals ?? parsed?.decimals ?? 9;
-        const humanAmount = parsed?.tokenAmount?.uiAmountString ?? parsed?.uiAmount ?? null;
+        // SPL TokenAccount layout: mint(32) | owner(32) | amount(u64 LE) | ...
+        const amountLo = raw.readUInt32LE(64);
+        const amountHi = raw.readUInt32LE(68);
+        const rawAmount = (BigInt(amountHi) * 0x100000000n + BigInt(amountLo)).toString();
+        const meta = await getTokenMetadata(mint);
+        const decimals = meta?.decimals ?? 9;
+        const human = toTokenAmount(BigInt(rawAmount), decimals).human;
 
         const lines = [
           `Token Balance`,
-          `Owner:   ${address}`,
-          `Mint:    ${mint}`,
-          `Raw:     ${rawAmount}`,
+          `Owner:    ${address}`,
+          `Mint:     ${mint}`,
+          `ATA:      ${ataAddress}`,
+          `Raw:      ${rawAmount}`,
           `Decimals: ${decimals}`,
-          `Balance: ${humanAmount ?? toTokenAmount(BigInt(rawAmount), decimals).human}`,
+          `Balance:  ${human}`,
         ];
-
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error fetching token balance: ${err?.message ?? String(err)}` }] };
@@ -357,19 +407,4 @@ export function registerTokenTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "freeze_token_account",
-    "Freezes a token account, preventing any further transfers in or out until the account is thawed by the mint's freeze authority. Requires the caller to hold freeze authority over the mint. This tool interface is ready — full transaction building integration is coming in the next iteration.",
-    {
-      mint: z.string().describe("Mint address whose freeze authority will be used"),
-      account: z.string().describe("Token account address to freeze"),
-    },
-    async (_args) => {
-      const text =
-        "Token account freezing is planned but requires full transaction building integration. " +
-        "The tool interface is ready — implementation will land in the next iteration. " +
-        "Planned flow: verify freeze authority → build FreezeAccount instruction → sign → submit.";
-      return { content: [{ type: "text" as const, text }] };
-    }
-  );
 }

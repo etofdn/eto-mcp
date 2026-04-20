@@ -7,6 +7,44 @@ import { PROGRAM_IDS } from "../config.js";
 import { blockhashCache } from "../write/blockhash-cache.js";
 import { submitter } from "../write/submitter.js";
 import bs58 from "bs58";
+import { BorshReader, decodeAccountData } from "../utils/borsh-reader.js";
+
+// SwarmState on-chain layout (Rust borsh, see runtime/src/programs/swarm.rs):
+//   discriminator: [u8; 8]
+//   leader: Pubkey (32)
+//   sub_tasks: Vec<SubTask>  // SubTask = agent[32] + task_key[32] + status(u8) + result_hash[32] = 97 B
+//   status: u8, strategy: u8
+//   created_slot: u64, deadline_slot: u64
+//   escrow_total: u64, escrow_per_task: u64
+function parseSwarmState(rawData: any): {
+  leader: string;
+  subTaskCount: number;
+  statusByte: number;
+  strategyByte: number;
+  createdSlot: bigint;
+  deadlineSlot: bigint;
+  escrowTotal: bigint;
+  escrowPerTask: bigint;
+} | null {
+  const buf = decodeAccountData(rawData);
+  if (!buf || buf.length < 40) return null;
+  try {
+    const r = new BorshReader(buf);
+    r.skip(8); // discriminator
+    const leader = r.readPubkey();
+    const subTaskCount = r.readU32();
+    r.skip(subTaskCount * 97); // skip SubTask entries
+    const statusByte = r.readU8();
+    const strategyByte = r.readU8();
+    const createdSlot = r.readU64();
+    const deadlineSlot = r.readU64();
+    const escrowTotal = r.readU64();
+    const escrowPerTask = r.readU64();
+    return { leader, subTaskCount, statusByte, strategyByte, createdSlot, deadlineSlot, escrowTotal, escrowPerTask };
+  } catch {
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Minimal tx builder helpers for swarm instructions
@@ -135,70 +173,24 @@ export function registerSwarmTools(server: McpServer): void {
       initial_funding: z.string().optional()
         .describe("Initial funding in lamports transferred to the swarm treasury"),
     },
-    async ({ name, max_members, consensus_type, join_policy, initial_funding }) => {
-      try {
-        const walletId = getActiveWalletId();
-        if (!walletId) {
-          return {
-            content: [{ type: "text" as const, text: "No active wallet set. Use set_active_wallet first." }],
-          };
-        }
-
-        const factory = getSignerFactory();
-        const signer = await factory.getSigner(walletId);
-        const payerSvm = signer.getPublicKey();
-
-        const swarmAccount = deriveSwarmAddress(payerSvm, name);
-
-        // Instruction: discriminator 0 = CreateSwarm
-        const data: number[] = [];
-        writeU8(data, 0);
-        writeStr(data, name);
-        writeU32LE(data, max_members ?? 10);
-        writeU8(data, CONSENSUS_MAP[consensus_type ?? "majority"] ?? 2);
-        writeU8(data, JOIN_POLICY_MAP[join_policy ?? "invite_only"] ?? 1);
-        writeU64LE(data, BigInt(initial_funding ?? "0"));
-
-        const { blockhash } = await blockhashCache.getBlockhash();
-        const txBytes = buildSwarmTx(payerSvm, swarmAccount, new Uint8Array(data), blockhash);
-        const signedBytes = await signer.sign(txBytes);
-        const signedBase64 = Buffer.from(signedBytes).toString("base64");
-
-        const result = await submitter.submitAndConfirm({
-          signedTxBase64: signedBase64,
-          vm: "svm",
-          idempotencyKey: `create-swarm-${payerSvm}-${name}-${blockhash}`,
-        });
-
-        if (result.status === "confirmed" || result.status === "finalized") {
-          const lines = [
-            "Swarm created successfully.",
-            `Swarm Address: ${swarmAccount}`,
-            `Name:          ${name}`,
-            `Max Members:   ${max_members ?? 10}`,
-            `Consensus:     ${consensus_type ?? "majority"}`,
-            `Join Policy:   ${join_policy ?? "invite_only"}`,
-            `Creator:       ${payerSvm}`,
-            `Signature:     ${result.signature}`,
-          ];
-          if (initial_funding) lines.push(`Funded:        ${initial_funding} lamports`);
-          return { content: [{ type: "text" as const, text: lines.join("\n") }] };
-        } else if (result.status === "timeout") {
-          return {
-            content: [{ type: "text" as const, text: `Swarm creation submitted but timed out.\nSwarm Address: ${swarmAccount}\nSignature: ${result.signature}` }],
-          };
-        } else {
-          return {
-            content: [{ type: "text" as const, text: `Swarm creation failed: ${result.error?.explanation ?? "Unknown error"}` }],
-            isError: true,
-          };
-        }
-      } catch (err: any) {
-        return {
-          content: [{ type: "text" as const, text: `Error: ${err?.message ?? String(err)}` }],
-          isError: true,
-        };
-      }
+    async (_args) => {
+      // The swarm program has no standalone CreateSwarm instruction. Swarms are
+      // spawned exclusively via the agent_triggers system (TriggerType::CreateSwarm
+      // + CreateSwarmPayload), which fans out work to a pre-registered set of
+      // agents. The previous standalone tool was sending an instruction that no
+      // on-chain handler accepted — txs confirmed but no account was ever created,
+      // making downstream get_swarm/swarm_propose/swarm_vote impossible.
+      return {
+        content: [{ type: "text" as const, text:
+          "create_swarm is not available as a standalone instruction.\n\n" +
+          "Swarms on ETO are spawned by the agent_triggers program. To create a swarm:\n" +
+          "  1. Register the participating agents (create_agent for each).\n" +
+          "  2. Set up an AgentTrigger of type CreateSwarm with a CreateSwarmPayload\n" +
+          "     containing { agents: [Pubkey], strategy, deadline_slot, task_data }.\n" +
+          "  3. Fire the trigger; the swarm SubTask records appear in SwarmState.\n\n" +
+          "A dedicated trigger-based create_swarm wrapper is on the roadmap." }],
+        isError: true,
+      };
     }
   );
 
@@ -422,49 +414,43 @@ export function registerSwarmTools(server: McpServer): void {
     },
     async ({ swarm_id }) => {
       try {
-        const account = await rpc.getAccountInfo(swarm_id);
-
+        const info: any = await rpc.getAccountInfo(swarm_id);
+        if (!info) {
+          return {
+            content: [{ type: "text" as const, text: `Swarm account not found: ${swarm_id}` }],
+          };
+        }
+        const account: any = info.value === null
+          ? null
+          : (info.value && typeof info.value === "object" ? info.value : info);
         if (!account) {
           return {
             content: [{ type: "text" as const, text: `Swarm account not found: ${swarm_id}` }],
           };
         }
 
-        const consensusNames: Record<number, string> = { 0: "unanimous", 1: "leader", 2: "majority/weighted", 3: "leader" };
-        const policyNames: Record<number, string> = { 0: "open", 1: "invite_only", 2: "stake_required" };
+        // Names match the Rust enums in runtime/src/programs/swarm.rs.
+        const statusNames: Record<number, string> = { 0: "active", 1: "completed", 2: "cancelled", 3: "failed" };
+        const strategyNames: Record<number, string> = { 0: "all_required", 1: "k_of_n", 2: "first_complete", 3: "leader_decides" };
 
-        let nameStr = "N/A";
-        let consensusStr = "N/A";
-        let policyStr = "N/A";
-        let memberCount = 0;
-        let maxMembers = 0;
-
-        const rawData = account.data;
-        if (rawData && typeof rawData === "string") {
-          try {
-            const bytes = Buffer.from(rawData, "base64");
-            const consensusByte = bytes[1];
-            consensusStr = consensusNames[consensusByte] ?? `strategy(${consensusByte})`;
-            const policyByte = bytes[2];
-            policyStr = policyNames[policyByte] ?? `policy(${policyByte})`;
-            const nameLen = bytes.readUInt32LE(3);
-            nameStr = bytes.slice(7, 7 + nameLen).toString("utf8");
-            memberCount = bytes.readUInt32LE(7 + nameLen);
-            maxMembers = bytes.readUInt32LE(11 + nameLen);
-          } catch {
-            // leave defaults
-          }
-        }
-
-        const lines = [
-          `Swarm:        ${swarm_id}`,
-          `Name:         ${nameStr}`,
-          `Consensus:    ${consensusStr}`,
-          `Join Policy:  ${policyStr}`,
-          `Members:      ${memberCount} / ${maxMembers}`,
-          `Owner:        ${account.owner ?? bs58.encode(PROGRAM_IDS.swarm)}`,
-          `Balance:      ${account.lamports ?? 0} lamports`,
+        const parsed = parseSwarmState(account.data);
+        const lines: string[] = [
+          `Swarm:           ${swarm_id}`,
+          `Owner program:   ${account.owner ?? bs58.encode(PROGRAM_IDS.swarm)}`,
+          `Balance:         ${account.lamports ?? 0} lamports`,
         ];
+        if (parsed) {
+          lines.push(`Leader:          ${parsed.leader}`);
+          lines.push(`Sub-tasks:       ${parsed.subTaskCount}`);
+          lines.push(`Status:          ${statusNames[parsed.statusByte] ?? `status(${parsed.statusByte})`}`);
+          lines.push(`Strategy:        ${strategyNames[parsed.strategyByte] ?? `strategy(${parsed.strategyByte})`}`);
+          lines.push(`Created slot:    ${parsed.createdSlot}`);
+          lines.push(`Deadline slot:   ${parsed.deadlineSlot === 0n ? "(none)" : parsed.deadlineSlot.toString()}`);
+          lines.push(`Escrow total:    ${parsed.escrowTotal} lamports`);
+          lines.push(`Escrow per task: ${parsed.escrowPerTask} lamports`);
+        } else {
+          lines.push("(account data could not be decoded as SwarmState)");
+        }
 
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {

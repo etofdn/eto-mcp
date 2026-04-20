@@ -33,17 +33,23 @@ function writeBytes(buf: number[], bytes: Uint8Array): void {
 // ---------------------------------------------------------------------------
 
 /** Encode a uint256 decimal or hex string as 32 big-endian bytes */
-function encodeUint256(v: string): Uint8Array {
+function encodeUint256(v: unknown, fieldName = "value"): Uint8Array {
+  if (typeof v !== "string") {
+    throw new Error(`Expected '${fieldName}' to be a decimal or 0x-hex string, got ${v === undefined ? "undefined" : typeof v}`);
+  }
   const clean = v.startsWith("0x") ? v.slice(2) : BigInt(v).toString(16);
   const padded = clean.padStart(64, "0");
   return new Uint8Array(Buffer.from(padded, "hex"));
 }
 
 /** Encode a G1 point {x, y} as 64 bytes (two uint256 big-endian) */
-function encodeG1Point(p: { x: string; y: string }): Uint8Array {
+function encodeG1Point(p: any, name = "point"): Uint8Array {
+  if (!p || typeof p !== "object" || typeof p.x !== "string" || typeof p.y !== "string") {
+    throw new Error(`Expected '${name}' to be { x: string, y: string }`);
+  }
   const out = new Uint8Array(64);
-  out.set(encodeUint256(p.x), 0);
-  out.set(encodeUint256(p.y), 32);
+  out.set(encodeUint256(p.x, `${name}.x`), 0);
+  out.set(encodeUint256(p.y, `${name}.y`), 32);
   return out;
 }
 

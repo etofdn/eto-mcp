@@ -138,6 +138,7 @@ export function registerTransferTools(server: McpServer): void {
 
         let successCount = 0;
         let failCount = 0;
+        let lastBlockhash: string | null = null;
 
         for (let i = 0; i < transfers.length; i++) {
           const { to, amount, memo } = transfers[i];
@@ -147,7 +148,20 @@ export function registerTransferTools(server: McpServer): void {
             const toSvm = toAddresses.svm;
             const lamports = solToLamports(amount);
 
-            const { blockhash } = await blockhashCache.getBlockhash();
+            // Force a fresh blockhash distinct from the previous iteration so identical
+            // transfers (same to + amount + sender) don't collapse to the same signature
+            // and get deduplicated by the chain.
+            let blockhash: string;
+            let attempts = 0;
+            while (true) {
+              const fresh = await blockhashCache.refresh();
+              blockhash = fresh.blockhash;
+              if (blockhash !== lastBlockhash || attempts >= 10) break;
+              attempts++;
+              await new Promise((r) => setTimeout(r, 100));
+            }
+            lastBlockhash = blockhash;
+
             const txBytes = buildTransferTx(fromSvm, toSvm, lamports, blockhash);
             const signedBytes = await signer.sign(txBytes);
             const signedBase64 = Buffer.from(signedBytes).toString("base64");

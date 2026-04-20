@@ -128,15 +128,39 @@ export class TransactionSubmitter {
 
     while (Date.now() < deadline) {
       try {
-        const tx = await rpc.getTransaction(signature);
+        const tx: any = await rpc.getTransaction(signature);
         if (tx) {
+          // The receipt arrives whether the tx succeeded or failed; check
+          // success/error before reporting "confirmed". Otherwise every failed
+          // on-chain instruction looks like a successful submission to callers.
+          const success = tx.success !== false && !tx.error && (tx.meta?.err == null);
+          if (!success) {
+            const errMsg = tx.error ?? tx.meta?.err ?? "transaction failed on-chain";
+            return {
+              status: "failed",
+              signature,
+              block_height: tx.slot ?? tx.blockHeight,
+              timestamp: tx.blockTime,
+              gas_used: tx.meta?.computeUnitsConsumed ?? tx.computeUnitsUsed,
+              fee: tx.meta?.fee ?? tx.fee,
+              retries: 0,
+              latency_ms: 0,
+              error: {
+                code: "CHAIN_EXEC",
+                raw_message: String(errMsg),
+                explanation: String(errMsg),
+                recovery_hints: [],
+                retryable: false,
+              },
+            };
+          }
           return {
             status: "confirmed",
             signature,
-            block_height: tx.slot || tx.blockHeight,
+            block_height: tx.slot ?? tx.blockHeight,
             timestamp: tx.blockTime,
-            gas_used: tx.meta?.computeUnitsConsumed,
-            fee: tx.meta?.fee,
+            gas_used: tx.meta?.computeUnitsConsumed ?? tx.computeUnitsUsed,
+            fee: tx.meta?.fee ?? tx.fee,
             retries: 0,
             latency_ms: 0,
           };

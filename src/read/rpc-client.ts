@@ -79,8 +79,9 @@ export class EtoRpcClient {
     return this.call<number>("getTransactionCount");
   }
 
-  faucet(address: string, amount: number): Promise<string> {
-    return this.call<string>("faucet", [address, amount]);
+  async faucet(address: string, amount: number): Promise<string> {
+    const result: any = await this.call<any>("faucet", [address, amount]);
+    return result?.signature ?? result?.txhash ?? result?.tx_hash ?? (typeof result === "string" ? result : JSON.stringify(result));
   }
 
   getTransaction(signature: string): Promise<any> {
@@ -98,12 +99,14 @@ export class EtoRpcClient {
     return { blockhash: bh, lastValidBlockHeight: height };
   }
 
-  getTokenAccountsByOwner(owner: string, filter?: { mint: string } | { programId: string }): Promise<any[]> {
-    if (filter) {
-      return this.call<any[]>("getTokenAccountsByOwner", [owner, filter]);
-    }
-    // Default: filter by the SPL Token program so the node gets a valid second param
-    return this.call<any[]>("getTokenAccountsByOwner", [owner, { programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" }]);
+  async getTokenAccountsByOwner(owner: string, filter?: { mint: string } | { programId: string }): Promise<any[]> {
+    const params = filter
+      ? [owner, filter]
+      : [owner, { programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" }];
+    const result: any = await this.call<any>("getTokenAccountsByOwner", params);
+    if (Array.isArray(result)) return result;
+    if (Array.isArray(result?.value)) return result.value;
+    return [];
   }
 
   getProgramAccounts(programId: string): Promise<any[]> {

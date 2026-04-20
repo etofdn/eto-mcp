@@ -208,13 +208,13 @@ describe("buildTokenTransferTx", () => {
     expect(tx).toBeInstanceOf(Uint8Array);
   });
 
-  test("instruction data first byte is 12 (TransferChecked discriminator)", () => {
+  test("instruction data first byte is 11 (TransferChecked discriminator)", () => {
     const auth = makeValidPubkey();
     const src = makeValidPubkey();
     const dst = makeValidPubkey();
     const tx = buildTokenTransferTx(auth, src, dst, 1_000n, 9, BLOCKHASH);
     const parsed = parseTransaction(tx);
-    expect(parsed.instructions[0].data[0]).toBe(12);
+    expect(parsed.instructions[0].data[0]).toBe(11);
   });
 
   test("instruction data encodes amount correctly as u64 LE", () => {

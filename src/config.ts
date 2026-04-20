@@ -30,7 +30,7 @@ export const config = {
   auth: {
     sessionTtlSeconds: 300, // 5 min
     refreshTtlSeconds: 86400, // 24h
-    devBypass: process.env.AUTH_DEV_BYPASS === "true" || process.env.NODE_ENV !== "production",
+    devBypass: process.env.AUTH_DEV_BYPASS === "true",
   },
 
   rateLimits: {

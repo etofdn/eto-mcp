@@ -87,6 +87,30 @@ export function registerStakingTools(server: McpServer): void {
           };
         }
 
+        // Validate the validator vote account exists. The on-chain stake program
+        // does not currently reject delegations to arbitrary addresses, so without
+        // this pre-check the user can silently delegate to a typo or a non-validator.
+        try {
+          const va: any = await rpc.getVoteAccounts();
+          const current: any[] = va?.current ?? [];
+          const delinquent: any[] = va?.delinquent ?? [];
+          const total = current.length + delinquent.length;
+          if (total > 0) {
+            const found =
+              current.some((v: any) => v.votePubkey === validator) ||
+              delinquent.some((v: any) => v.votePubkey === validator);
+            if (!found) {
+              return {
+                content: [{ type: "text" as const, text: `Error: '${validator}' is not a known validator vote account on this network. Use list_validators to see eligible validators.` }],
+                isError: true,
+              };
+            }
+          }
+          // total == 0 → no validators on this network (e.g. testnet); allow but warn in output below
+        } catch {
+          // RPC failure: don't block the user, just proceed
+        }
+
         const factory = getSignerFactory();
         const signer = await factory.getSigner(walletId);
         const staker = signer.getPublicKey();

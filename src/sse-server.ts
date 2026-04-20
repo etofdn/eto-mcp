@@ -8,6 +8,9 @@ import { config } from "./config.js";
 import { blockhashCache } from "./write/blockhash-cache.js";
 import { wsManager } from "./read/ws-manager.js";
 import { log, dumpStats } from "./utils/logger.js";
+import { authRouter } from "./gateway/auth-routes.js";
+import { runWithAuth } from "./gateway/auth.js";
+import { sessionStore } from "./signing/session-context.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LLMS_TXT = readFileSync(join(__dirname, "../public/llms.txt"), "utf8");
@@ -39,8 +42,11 @@ app.get("/llms.txt", (_req, res) => {
 
 // Health check for Fly.io
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", version: "1.0.0", tools: 112, network: config.network });
+  res.json({ status: "ok", version: "1.0.0", tools: 81, network: config.network });
 });
+
+// Auth endpoints: /auth/login, /auth/verify, /auth/me
+app.use(authRouter);
 
 // Track active transports for cleanup
 const transports = new Map<string, SSEServerTransport>();
@@ -68,16 +74,42 @@ app.get("/sse", async (req, res) => {
 // Message endpoint — client sends JSON-RPC messages here
 // Note: SSEServerTransport.handlePostMessage reads the body itself via raw-body,
 // so express.json() middleware is NOT used here.
+//
+// Auth flow: the bearer token (if any) is stashed in an AsyncLocalStorage via
+// runWithAuth(). The MCP tool-handler wrapper in tools/index.ts reads that ALS,
+// runs authenticate() + requireCapability() + rateLimiter.check(), and then
+// calls runInScope(session.sub, ...) to land the handler in the right
+// persistence bucket. We seed a placeholder scope ("__pending__") here so
+// anything that peeks at currentScope() before the scope is resolved gets a
+// clearly named fallback instead of __default__.
 app.post("/message", async (req, res) => {
   const sessionId = req.query.sessionId as string;
-  const transport = transports.get(sessionId);
 
+  // Auth gate runs first: callers with no Bearer get 401, not 400, when auth
+  // is enforced. This keeps unauthenticated probes from learning about session
+  // state.
+  const bearer = req.header("authorization")?.replace(/^Bearer\s+/i, "");
+  if (!bearer && !config.auth.devBypass) {
+    res.status(401).json({
+      code: "AUTH_001",
+      category: "auth",
+      message: "Authentication required",
+      explanation: "No Bearer token. Call POST /auth/login → sign → POST /auth/verify.",
+    });
+    return;
+  }
+
+  const transport = transports.get(sessionId);
   if (!transport) {
     res.status(400).json({ error: "Invalid or expired session. Connect to /sse first." });
     return;
   }
 
-  await transport.handlePostMessage(req, res);
+  await runWithAuth(bearer, () =>
+    sessionStore.run({ sessionId, scope: "__pending__" }, () =>
+      transport.handlePostMessage(req, res),
+    ),
+  );
 });
 
 // Start

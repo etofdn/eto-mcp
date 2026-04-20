@@ -3,6 +3,7 @@ import { sha512 } from "@noble/hashes/sha512";
 import bs58 from "bs58";
 import type { Signer, SignerFactory } from "./signer-interface.js";
 import { WalletStore } from "./wallet-store.js";
+import { currentScope } from "./session-context.js";
 
 ed.etc.sha512Sync = (...m: Uint8Array[]) => sha512(ed.etc.concatBytes(...m));
 
@@ -53,34 +54,79 @@ interface WalletEntry {
 }
 
 export class LocalSignerFactory implements SignerFactory {
-  private readonly wallets = new Map<string, WalletEntry>();
-  private readonly store = new WalletStore();
+  // Wallets are scoped per caller via the AsyncLocalStorage in session-context.ts.
+  // Authed SSE calls land in a scope keyed by `session.sub` (thirdweb address);
+  // stdio uses `"__stdio__"`, dev-bypass uses `"__dev__"`.
+  //
+  // We also keep a matching WalletStore per scope so each scope has its own
+  // encrypted file on disk (`~/.eto/wallets/<scope>.enc`). This is what makes
+  // P0-01 (wallet persistence across reconnects) work — the same thirdweb
+  // identity always lands on the same wallets regardless of SSE sessionId churn.
+  private readonly walletsByScope = new Map<string, Map<string, WalletEntry>>();
+  private readonly storesByScope = new Map<string, WalletStore>();
+  private readonly configured: boolean;
 
   constructor() {
-    if (!this.store.isConfigured()) {
+    // Check configuration via a probe store; all scope stores share the same
+    // ETO_WALLET_PASSPHRASE and so share the same isConfigured() result.
+    this.configured = new WalletStore("__probe__").isConfigured();
+    if (!this.configured) {
       console.error("[eto-mcp] Warning: ETO_WALLET_PASSPHRASE not set — wallets stored in-memory only");
-    } else {
-      // Load persisted wallets asynchronously; beginLoad stores the promise for ensureLoaded()
-      this.store.beginLoad(loaded => {
-        for (const [id, w] of loaded) {
-          this.wallets.set(id, w);
-        }
-      });
     }
   }
 
+  private walletsForScope(scope: string): Map<string, WalletEntry> {
+    let m = this.walletsByScope.get(scope);
+    if (!m) {
+      m = new Map();
+      this.walletsByScope.set(scope, m);
+    }
+    return m;
+  }
+
+  private storeFor(scope: string): WalletStore {
+    let s = this.storesByScope.get(scope);
+    if (!s) {
+      s = new WalletStore(scope);
+      this.storesByScope.set(scope, s);
+      if (this.configured) {
+        // Kick off an async load into the scope's in-memory map. Subsequent
+        // ensureLoaded()s wait on the same promise.
+        s.beginLoad(loaded => {
+          const bucket = this.walletsForScope(scope);
+          for (const [id, w] of loaded) bucket.set(id, w);
+        });
+      }
+    }
+    return s;
+  }
+
+  private wallets(): Map<string, WalletEntry> {
+    return this.walletsForScope(currentScope());
+  }
+
+  private toWalletData(entry: WalletEntry): { label: string; privateKey: Uint8Array; publicKey: Uint8Array } {
+    return { label: entry.label, privateKey: entry.privateKey, publicKey: entry.publicKey };
+  }
+
+  private async persistScope(scope: string): Promise<void> {
+    if (!this.configured) return;
+    const bucket = this.walletsForScope(scope);
+    const serializable = new Map<string, { label: string; privateKey: Uint8Array; publicKey: Uint8Array }>();
+    for (const [id, w] of bucket) serializable.set(id, this.toWalletData(w));
+    await this.storeFor(scope).save(serializable);
+  }
+
   async createWallet(label: string): Promise<{ walletId: string; svmAddress: string; evmAddress: string }> {
-    await this.store.ensureLoaded();
+    const scope = currentScope();
+    await this.storeFor(scope).ensureLoaded();
     const privateKey = new Uint8Array(32);
     crypto.getRandomValues(privateKey);
     const publicKey = ed.getPublicKey(privateKey);
     const walletId = crypto.randomUUID();
 
-    this.wallets.set(walletId, { label, privateKey, publicKey });
-
-    if (this.store.isConfigured()) {
-      await this.store.save(this.wallets);
-    }
+    this.wallets().set(walletId, { label, privateKey, publicKey });
+    await this.persistScope(scope);
 
     const signer = new LocalSigner(privateKey);
     return {
@@ -91,8 +137,9 @@ export class LocalSignerFactory implements SignerFactory {
   }
 
   async getSigner(walletId: string): Promise<Signer> {
-    await this.store.ensureLoaded();
-    const entry = this.wallets.get(walletId);
+    const scope = currentScope();
+    await this.storeFor(scope).ensureLoaded();
+    const entry = this.wallets().get(walletId);
     if (!entry) {
       throw new Error(`Wallet not found: ${walletId}`);
     }
@@ -100,11 +147,15 @@ export class LocalSignerFactory implements SignerFactory {
   }
 
   async listWallets(): Promise<string[]> {
-    await this.store.ensureLoaded();
-    return Array.from(this.wallets.keys());
+    const scope = currentScope();
+    await this.storeFor(scope).ensureLoaded();
+    return Array.from(this.wallets().keys());
   }
 
-  importWallet(label: string, privateKeyHex: string): { walletId: string; svmAddress: string; evmAddress: string } {
+  async importWallet(label: string, privateKeyHex: string): Promise<{ walletId: string; svmAddress: string; evmAddress: string }> {
+    const scope = currentScope();
+    await this.storeFor(scope).ensureLoaded();
+
     const hex = privateKeyHex.startsWith("0x") ? privateKeyHex.slice(2) : privateKeyHex;
     if (hex.length !== 64) {
       throw new Error("Private key must be 32 bytes (64 hex characters)");
@@ -116,13 +167,8 @@ export class LocalSignerFactory implements SignerFactory {
     const publicKey = ed.getPublicKey(privateKey);
     const walletId = crypto.randomUUID();
 
-    this.wallets.set(walletId, { label, privateKey, publicKey });
-
-    if (this.store.isConfigured()) {
-      this.store.save(this.wallets).catch(err => {
-        console.error("[eto-mcp] Failed to persist wallet after import:", err);
-      });
-    }
+    this.wallets().set(walletId, { label, privateKey, publicKey });
+    await this.persistScope(scope);
 
     const signer = new LocalSigner(privateKey);
     return {
@@ -130,6 +176,16 @@ export class LocalSignerFactory implements SignerFactory {
       svmAddress: signer.getPublicKey(),
       evmAddress: signer.getEvmAddress(),
     };
+  }
+
+  /** Expose the scope's store for callers that need readActive()/writeActive(). */
+  storeForScope(scope: string): WalletStore {
+    return this.storeFor(scope);
+  }
+
+  /** Look up a wallet entry in a specific scope without switching scopes. */
+  getWalletEntry(scope: string, walletId: string): WalletEntry | undefined {
+    return this.walletsForScope(scope).get(walletId);
   }
 }
 

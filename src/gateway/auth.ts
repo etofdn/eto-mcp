@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { config } from "../config.js";
 import { verifySession, hasCapability, CAPABILITY_SCOPES, type Capability, type SessionPayload } from "./session.js";
 import { McpError } from "../errors/index.js";
@@ -6,6 +7,24 @@ export interface AuthContext {
   session: SessionPayload;
   userId: string;
   walletId: string;
+}
+
+// Ambient bearer token for the current request. The SSE server extracts the
+// Authorization header in POST /message and wraps the handler chain in
+// runWithAuth(bearer, fn). The MCP SDK's tool-handler dispatch doesn't pass the
+// original HTTP headers through, so authenticate() falls back to this ALS when
+// called with no explicit header (e.g. from instrumentServer's wrapper).
+interface AuthAmbient {
+  bearer?: string;
+}
+const authStore = new AsyncLocalStorage<AuthAmbient>();
+
+export function runWithAuth<T>(bearer: string | undefined, fn: () => T): T {
+  return authStore.run({ bearer }, fn);
+}
+
+function getAmbientBearer(): string | undefined {
+  return authStore.getStore()?.bearer;
 }
 
 // Dev bypass session for testnet/dev mode
@@ -19,6 +38,7 @@ const DEV_SESSION: SessionPayload = {
   caps: Object.keys(CAPABILITY_SCOPES),
   wallet_id: "dev-wallet",
   network: "testnet",
+  auth_strategy: "dev",
 };
 
 /**
@@ -35,7 +55,11 @@ export function authenticate(authHeader?: string): AuthContext {
     };
   }
 
-  if (!authHeader) {
+  // Fall back to the ambient bearer stashed by runWithAuth when no explicit
+  // header is threaded through (MCP tool-handler dispatch can't see req.headers).
+  const headerOrAmbient = authHeader ?? getAmbientBearer();
+
+  if (!headerOrAmbient) {
     throw new McpError(
       "AUTH_001", "auth", "Authentication required",
       "No authorization header provided. Include a Bearer token.",
@@ -44,7 +68,7 @@ export function authenticate(authHeader?: string): AuthContext {
     );
   }
 
-  const token = authHeader.replace("Bearer ", "");
+  const token = headerOrAmbient.replace(/^Bearer\s+/i, "");
   const session = verifySession(token);
 
   if (!session) {

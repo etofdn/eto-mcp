@@ -64,12 +64,19 @@ export function registerFoundryTools(server: McpServer): void {
         if (!SAFE_NAME.test(name)) {
           return { content: [{ type: "text" as const, text: `Invalid derived contract name "${name}": must match ${SAFE_NAME}` }], isError: true };
         }
-        const artifactPath = `${outDir}/${name}.sol/${name}.json`;
-
+        // Foundry stores artifacts at out/<sourceFileBasename>.sol/<contractName>.json.
+        // The .sol directory name is the source file's basename (typically "Contract.sol"),
+        // not the contract name itself, so first try the conventional path then fall back
+        // to a recursive search for any <contractName>.json.
+        let artifactPath = `${outDir}/${name}.sol/${name}.json`;
         if (!existsSync(artifactPath)) {
-          // List available artifacts
-          const { stdout: ls } = await sh("find", [outDir, "-name", "*.json", "-type", "f"]);
-          return { content: [{ type: "text" as const, text: `Contract "${name}" not found in output.\n\nAvailable artifacts:\n${ls}\n\nBuild output:\n${stdout}` }], isError: true };
+          const { stdout: found } = await sh("find", [outDir, "-name", `${name}.json`, "-type", "f"]);
+          const candidates = found.split("\n").map(s => s.trim()).filter(Boolean);
+          if (candidates.length === 0) {
+            const { stdout: ls } = await sh("find", [outDir, "-name", "*.json", "-type", "f"]);
+            return { content: [{ type: "text" as const, text: `Contract "${name}" not found in output.\n\nAvailable artifacts:\n${ls}\n\nBuild output:\n${stdout}` }], isError: true };
+          }
+          artifactPath = candidates[0];
         }
 
         const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
