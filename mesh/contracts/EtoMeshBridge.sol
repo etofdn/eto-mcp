@@ -8,6 +8,19 @@ contract EtoMeshBridge {
     uint256 public totalLocked;
     uint256 public nonce;
 
+    // Minimal hand-rolled reentrancy guard (avoid OpenZeppelin dep for a 3-line
+    // guard). Locked = 2 so we pay a single SSTORE refund on release.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+    uint256 private _reentrancyStatus = _NOT_ENTERED;
+
+    modifier nonReentrant() {
+        require(_reentrancyStatus != _ENTERED, "Reentrant call");
+        _reentrancyStatus = _ENTERED;
+        _;
+        _reentrancyStatus = _NOT_ENTERED;
+    }
+
     event Locked(
         address indexed sender,
         bytes32 indexed etoRecipient,
@@ -26,6 +39,7 @@ contract EtoMeshBridge {
     mapping(bytes32 => bool) public usedAttestations;
 
     constructor(address _validator) {
+        require(_validator != address(0), "Invalid validator");
         validator = _validator;
     }
 
@@ -41,17 +55,29 @@ contract EtoMeshBridge {
     /// @notice Release ETH back (for ETO→ETH bridge)
     /// @dev In production, verify validator's Ed25519 signature on-chain
     ///      For testnet, we trust the validator address as msg.sender
-    function release(address payable recipient, uint256 amount, bytes32 attestationId) external {
+    function release(address payable recipient, uint256 amount, bytes32 attestationId) external nonReentrant {
         require(msg.sender == validator, "Only validator");
         require(!usedAttestations[attestationId], "Already used");
         require(address(this).balance >= amount, "Insufficient balance");
 
+        // Checks-Effects-Interactions: mark the attestation consumed and bump
+        // accounting before the external call. Cap the totalLocked decrement
+        // so force-sent ETH (selfdestruct beneficiary, coinbase tip, pre-
+        // deployed address) can't brick legitimate releases.
         usedAttestations[attestationId] = true;
-        totalLocked -= amount;
-        recipient.transfer(amount);
-
+        if (amount <= totalLocked) {
+            totalLocked -= amount;
+        } else {
+            totalLocked = 0;
+        }
         nonce++;
         emit Released(recipient, amount, nonce, attestationId);
+
+        // Use .call{value:} instead of .transfer to avoid the 2300-gas stipend
+        // breaking releases to contract wallets (multisigs, AA wallets, proxies
+        // with non-trivial receive/fallback).
+        (bool ok, ) = recipient.call{value: amount}("");
+        require(ok, "ETH transfer failed");
     }
 
     function getBalance() external view returns (uint256) {

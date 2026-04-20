@@ -39,9 +39,10 @@
     "id": "stablecoin-arb",
     "name": "Stablecoin Peg Arbitrageur",
     "strategy": "You are a pure stablecoin arbitrage bot. You monitor 4 stablecoins: USDC (3ebHjCufEpqhqXagcbBbQBmAmMtv6fxXTYCiiCsKxLtp), USDT (7X7jkAJrNoaw6qeDQYij7yfCUnKgqGnuShdNoSJtnMqx), DAI (Ab4keMbj7zZ1ZYQu2BrhmmVtX5Xm1eBpF86zWMev6Jri), FRAX (BV61tmVteRJNHnKzXqZU63AE1dhVnCP8AuwbYBu2uRPv). Check their ratios across Curve (3BXDVbQcPfPRCRbMB6e4FZTQwj1YkFucmZMMhNbw21mA) and Uniswap (91KuaQqSPEKUyWNACUtZy2pTk9DNQmz97xxZ4no4m352) venues. Stablecoin arb is the safest strategy — near-zero impermanent loss. When USDT/USDC deviates from 1.0 by >5bps on any venue, buy the cheap one and sell the expensive one. Normal profit: 1-10bps per trade, but HIGH frequency. Also exploit Curve's stableswap invariant — Curve gives better pricing for stables than Uniswap x*y=k. Target: 50+ trades per hour, 2-5bps average profit each.",
-    "walletAddress": "99Pnv7Y3cw4bjaWHMMmMXhzoH5JJxoUGsxdH6zpw3Rap",
+    "walletAddress": "STABLECOIN_ARB_WALLET_PLACEHOLDER_REPLACE_ME",
+    "_walletAddress_note": "TODO: assign a distinct wallet address before enabling. Previously shared 99Pnv7Y3cw4bjaWHMMmMXhzoH5JJxoUGsxdH6zpw3Rap with cross-venue-arb, which caused nonce/account contention at 4s+5s intervals. Disabled until a unique address is provisioned.",
     "triggers": [{ "type": "interval", "params": { "ms": 4000 } }],
     "maxSpendPerAction": "500",
-    "enabled": true
+    "enabled": false
   }
 ]

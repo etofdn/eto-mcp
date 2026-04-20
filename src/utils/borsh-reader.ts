@@ -77,17 +77,12 @@ export function decodeAccountData(data: any): Buffer | null {
   if (Buffer.isBuffer(data)) return data;
   if (data instanceof Uint8Array) return Buffer.from(data);
   if (typeof data === "string") {
-    // SVM RPC default is base58 for getAccountInfo without encoding param,
-    // but our calls usually return base64. Try base64 first, base58 fallback.
-    try {
-      return Buffer.from(data, "base64");
-    } catch {
-      try {
-        return Buffer.from(bs58.decode(data));
-      } catch {
-        return null;
-      }
-    }
+    // All of our getAccountInfo calls request base64. Buffer.from(str, "base64")
+    // never throws — it silently accepts any input — so the previous "try
+    // base58 on throw" branch was unreachable and would have produced garbage
+    // bytes for base58 input. If you need base58, pass `[str, "base58"]` so we
+    // don't silently misdecode.
+    return Buffer.from(data, "base64");
   }
   if (Array.isArray(data)) {
     const [str, enc] = data;

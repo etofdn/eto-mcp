@@ -262,9 +262,12 @@ async function handleCrossChainTransfer(transfer: CrossChainTransfer): Promise<v
 
   // 4. Credit on destination chain
   if (transfer.to.chain === "eto-testnet") {
-    // Credit on ETO via faucet (in production: mint verified-asset)
+    // Credit on ETO via faucet (in production: mint verified-asset).
+    // Pass the amount as a hex string so bigint precision is preserved
+    // for wei-denominated values above 2**53 − 1.
     try {
-      await etoRpc("faucet", [transfer.to.address, Number(transfer.from.amount)]);
+      const amountHex = "0x" + transfer.from.amount.toString(16);
+      await etoRpc("faucet", [transfer.to.address, amountHex]);
       transfer.status = "settled";
       log("info", `Settled on ETO: ${transfer.to.address} credited ${transfer.from.amount} lamports`);
     } catch (e: any) {
@@ -272,9 +275,14 @@ async function handleCrossChainTransfer(transfer: CrossChainTransfer): Promise<v
       log("error", `ETO credit failed: ${e.message}`);
     }
   } else {
-    // Credit on Ethereum via Anvil's eth_sendTransaction (devnet only)
+    // Credit on Ethereum via Anvil's eth_sendTransaction (devnet only).
     try {
       const accounts = await ethRpc("eth_accounts");
+      if (!Array.isArray(accounts) || accounts.length === 0) {
+        transfer.status = "failed";
+        log("error", "ETH credit failed: eth_accounts returned an empty list");
+        return;
+      }
       await ethRpc("eth_sendTransaction", [{
         from: accounts[0], // Anvil's funded account
         to: transfer.to.address,
@@ -292,11 +300,59 @@ async function handleCrossChainTransfer(transfer: CrossChainTransfer): Promise<v
 }
 
 // ─── HTTP API for MCP integration ───
+// Mutating endpoints (/transfer, /attest, /attest-balance) are gated behind
+// a shared-secret bearer token and a simple in-memory rate limit. This keeps
+// unauthenticated callers off the Anvil signer and the ETO faucet even when
+// the validator is reachable on an open port. Set MESH_AUTH_TOKEN at launch;
+// a blank token disables auth (explicit dev opt-in).
+const MESH_AUTH_TOKEN = process.env.MESH_AUTH_TOKEN || "";
+const MESH_BIND_HOST = process.env.MESH_BIND_HOST || "127.0.0.1";
+const MESH_RATE_LIMIT_PER_MIN = parseInt(process.env.MESH_RATE_LIMIT_PER_MIN || "30");
+
+const MUTATING_PATHS = new Set(["/transfer", "/attest", "/attest-balance"]);
+const rateBuckets = new Map<string, { count: number; windowStart: number }>();
+
+function checkAuth(req: Request): Response | null {
+  if (!MESH_AUTH_TOKEN) return null; // dev: explicitly disabled
+  const header = req.headers.get("authorization") || "";
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  const token = match?.[1]?.trim();
+  if (token !== MESH_AUTH_TOKEN) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  return null;
+}
+
+function checkRateLimit(req: Request): Response | null {
+  const key = req.headers.get("x-forwarded-for") || "local";
+  const now = Date.now();
+  const bucket = rateBuckets.get(key) ?? { count: 0, windowStart: now };
+  if (now - bucket.windowStart > 60_000) {
+    bucket.count = 0;
+    bucket.windowStart = now;
+  }
+  bucket.count++;
+  rateBuckets.set(key, bucket);
+  if (bucket.count > MESH_RATE_LIMIT_PER_MIN) {
+    return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+  }
+  return null;
+}
+
 async function startApi(): Promise<void> {
   const server = Bun.serve({
     port: 9200,
+    hostname: MESH_BIND_HOST,
     async fetch(req) {
       const url = new URL(req.url);
+
+      // Gate mutating endpoints before any work happens.
+      if (MUTATING_PATHS.has(url.pathname) && req.method === "POST") {
+        const authErr = checkAuth(req);
+        if (authErr) return authErr;
+        const rateErr = checkRateLimit(req);
+        if (rateErr) return rateErr;
+      }
 
       // Health
       if (url.pathname === "/health") {

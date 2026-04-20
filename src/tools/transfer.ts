@@ -150,15 +150,21 @@ export function registerTransferTools(server: McpServer): void {
 
             // Force a fresh blockhash distinct from the previous iteration so identical
             // transfers (same to + amount + sender) don't collapse to the same signature
-            // and get deduplicated by the chain.
-            let blockhash: string;
-            let attempts = 0;
-            while (true) {
+            // and get deduplicated by the chain. If we can't obtain a distinct
+            // blockhash after 10 attempts, fail this batch iteration instead of
+            // resubmitting with the same blockhash — that would produce the exact
+            // duplicate the loop is meant to avoid.
+            let blockhash: string | undefined;
+            for (let attempts = 0; attempts <= 10; attempts++) {
               const fresh = await blockhashCache.refresh();
-              blockhash = fresh.blockhash;
-              if (blockhash !== lastBlockhash || attempts >= 10) break;
-              attempts++;
+              if (fresh.blockhash !== lastBlockhash) {
+                blockhash = fresh.blockhash;
+                break;
+              }
               await new Promise((r) => setTimeout(r, 100));
+            }
+            if (!blockhash) {
+              throw new Error("Could not obtain a fresh blockhash for this batch transfer");
             }
             lastBlockhash = blockhash;
 

@@ -89,8 +89,11 @@ app.post("/message", async (req, res) => {
 
   // Auth gate runs first: callers with no Bearer get 401, not 400, when auth
   // is enforced. This keeps unauthenticated probes from learning about session
-  // state.
-  const bearer = req.header("authorization")?.replace(/^Bearer\s+/i, "");
+  // state. We also strictly validate the scheme — "Authorization: Basic ..."
+  // and other non-Bearer schemes must 401, not fall through as if authed.
+  const authHeader = req.header("authorization") ?? "";
+  const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+  const bearer = bearerMatch?.[1]?.trim();
   if (!bearer && !config.auth.devBypass) {
     res.status(401).json({
       code: "AUTH_001",

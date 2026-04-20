@@ -12,16 +12,43 @@ import { deriveAta, buildCreateAtaIdempotentTx } from "../utils/ata.js";
 
 // Send an AtaProgram::CreateIdempotent tx to ensure the recipient's ATA exists
 // before MintTo / Transfer. No-op on chain if the account is already initialized.
+// Failures are only swallowed after confirming the ATA actually exists on
+// chain — otherwise genuine bugs (malformed tx, insufficient payer funds,
+// RPC errors) silently corrupt downstream mint/transfer/burn.
 async function ensureAta(signer: any, owner: string, mint: string): Promise<string> {
   const { blockhash } = await blockhashCache.refresh();
   const { txBytes, ata } = buildCreateAtaIdempotentTx(signer.getPublicKey(), owner, mint, blockhash);
   const signedTx = await signer.sign(txBytes);
-  await submitter.submitAndConfirm({
-    signedTxBase64: Buffer.from(signedTx).toString("base64"),
-    vm: "svm",
-    timeoutMs: 15000,
-  }).catch(() => null); // idempotent — failures are acceptable if account exists
+  try {
+    await submitter.submitAndConfirm({
+      signedTxBase64: Buffer.from(signedTx).toString("base64"),
+      vm: "svm",
+      timeoutMs: 15000,
+    });
+  } catch (err) {
+    const info = await rpc.getAccountInfo(ata).catch(() => null);
+    const account = info?.value !== undefined ? info.value : info;
+    if (!account) throw err;
+  }
   return ata;
+}
+
+// Convert a decimal amount string into a bigint raw token amount scaled by
+// `decimals`. Avoids parseFloat/Math.round precision loss for 18-decimal
+// tokens and amounts above 2**53 − 1.
+function parseTokenAmount(amount: string, decimals: number): bigint {
+  const value = amount.trim();
+  if (!/^\d+(\.\d+)?$/.test(value)) {
+    throw new Error(`Invalid token amount: ${amount}`);
+  }
+  const [whole, fraction = ""] = value.split(".");
+  if (fraction.length > decimals) {
+    throw new Error(`Amount has more than ${decimals} decimal places`);
+  }
+  const scale = 10n ** BigInt(decimals);
+  const fractional =
+    decimals === 0 ? 0n : BigInt(fraction.padEnd(decimals, "0") || "0");
+  return BigInt(whole) * scale + fractional;
 }
 
 export function registerTokenTools(server: McpServer): void {
@@ -120,7 +147,7 @@ export function registerTokenTools(server: McpServer): void {
         const fromSvm = signer.getPublicKey();
         const { blockhash } = await blockhashCache.getBlockhash();
         const decimals = (await getTokenMetadata(mint))?.decimals ?? 9;
-        const rawAmount = BigInt(Math.round(parseFloat(amount) * 10 ** decimals));
+        const rawAmount = parseTokenAmount(amount, decimals);
         // SPL semantics: MintTo writes the balance into the recipient's
         // associated token account, not into the wallet pubkey itself.
         // Materialize the ATA first (idempotent — no-op if it already exists).
@@ -173,7 +200,7 @@ export function registerTokenTools(server: McpServer): void {
         const fromSvm = signer.getPublicKey();
         const { blockhash } = await blockhashCache.getBlockhash();
         const decimals = (await getTokenMetadata(mint))?.decimals ?? 9;
-        const rawAmount = BigInt(Math.round(parseFloat(amount) * 10 ** decimals));
+        const rawAmount = parseTokenAmount(amount, decimals);
         // SPL Transfer is between two token accounts (ATAs of source/dest wallets),
         // not between the wallet pubkeys themselves. Make sure both exist first.
         const srcAta = await ensureAta(signer, fromSvm, mint);
@@ -225,9 +252,12 @@ export function registerTokenTools(server: McpServer): void {
         const fromSvm = signer.getPublicKey();
         const { blockhash } = await blockhashCache.getBlockhash();
         const decimals = (await getTokenMetadata(mint))?.decimals ?? 9;
-        const rawAmount = BigInt(Math.round(parseFloat(amount) * 10 ** decimals));
-        // tokenAccount = owner's token account for this mint; pass owner address directly
-        const txBytes = buildBurnTx(fromSvm, fromSvm, mint, rawAmount, blockhash);
+        const rawAmount = parseTokenAmount(amount, decimals);
+        // SPL Burn operates on the owner's associated token account (the
+        // derived ATA), not on the wallet pubkey itself. Passing the wallet
+        // address here previously targeted a non-token account and failed.
+        const burnAta = deriveAta(fromSvm, mint).address;
+        const txBytes = buildBurnTx(fromSvm, burnAta, mint, rawAmount, blockhash);
         const signedTx = await signer.sign(txBytes);
         const txBase64 = Buffer.from(signedTx).toString("base64");
         const result = await submitter.submitAndConfirm({ signedTxBase64: txBase64, vm: "svm", timeoutMs: 15000 });
@@ -238,6 +268,7 @@ export function registerTokenTools(server: McpServer): void {
           lines.push(`Status:    ${result.status}`);
           lines.push(`Mint:      ${mint}`);
           lines.push(`Owner:     ${fromSvm}`);
+          lines.push(`ATA:       ${burnAta}`);
           lines.push(`Amount:    ${amount} (raw: ${rawAmount})`);
           if (result.fee !== undefined) lines.push(`Fee:       ${result.fee} lamports`);
         } else if (result.status === "timeout") {

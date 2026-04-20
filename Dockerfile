@@ -1,14 +1,20 @@
+FROM ghcr.io/foundry-rs/foundry:stable AS foundry
+
 FROM oven/bun:1.3 AS base
 WORKDIR /app
 
-# Install Foundry (cast / forge / anvil) so the cast_*/forge_* MCP tools work
-# without "Executable not found in $PATH". ~50 MB extra image weight.
+# Pull Foundry binaries (forge/cast/anvil) from the official GHCR image pinned
+# to the `stable` tag. Binaries come with GitHub artifact attestations and are
+# reproducible across builds. Both base images are Debian/glibc, so the copied
+# binaries link against the host libc.
+COPY --from=foundry /usr/local/bin/forge /usr/local/bin/forge
+COPY --from=foundry /usr/local/bin/cast /usr/local/bin/cast
+COPY --from=foundry /usr/local/bin/anvil /usr/local/bin/anvil
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates git \
+    && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -L https://foundry.paradigm.xyz | bash \
-    && /root/.foundry/bin/foundryup
-ENV PATH="/root/.foundry/bin:${PATH}"
+    && forge --version \
+    && cast --version
 
 # Install dependencies
 COPY package.json bun.lock ./

@@ -52,6 +52,12 @@ if [[ -z "$ADDR" ]]; then
   echo "Missing <address>." >&2
   usage
 fi
+# The 0x* pattern above also accepts addresses containing slashes or `..`.
+# Validate canonical EVM-address form before we build any filesystem paths.
+if [[ ! "$ADDR" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+  echo "Invalid <address>; expected 0x followed by 40 hex characters." >&2
+  usage
+fi
 
 LOWER="$(echo "$ADDR" | tr '[:upper:]' '[:lower:]')"
 DIR="${HOME}/.eto/wallets"

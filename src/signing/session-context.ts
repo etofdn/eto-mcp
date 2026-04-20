@@ -28,6 +28,20 @@ export function runInScope<T>(scope: string, fn: () => T): T {
 }
 
 export function currentScope(): string {
+  const scope = sessionStore.getStore()?.scope;
+  if (!scope) {
+    throw new Error(
+      "No session scope is active; wrap execution in runInScope() or use currentScopeOrDefault()"
+    );
+  }
+  return scope;
+}
+
+// Explicit opt-in for callers that genuinely need a fallback (e.g. offline
+// tooling or tests). The SSE server and stdio entrypoint always wrap in a
+// scope before tool execution, so production code paths should use
+// currentScope() and fail closed on missing context.
+export function currentScopeOrDefault(): string {
   return sessionStore.getStore()?.scope ?? DEFAULT_SCOPE;
 }
 

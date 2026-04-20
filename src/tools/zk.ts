@@ -32,13 +32,25 @@ function writeBytes(buf: number[], bytes: Uint8Array): void {
 // BN254 point encoding helpers
 // ---------------------------------------------------------------------------
 
-/** Encode a uint256 decimal or hex string as 32 big-endian bytes */
+/** Encode a uint256 decimal or hex string as 32 big-endian bytes.
+ *
+ * Buffer.from(str, "hex") silently truncates at the first non-hex character
+ * and BigInt conversion doesn't enforce uint256 bounds, so both would let
+ * invalid/out-of-range values corrupt BN254 calldata. Validate format first,
+ * then bound-check, then encode. */
 function encodeUint256(v: unknown, fieldName = "value"): Uint8Array {
   if (typeof v !== "string") {
     throw new Error(`Expected '${fieldName}' to be a decimal or 0x-hex string, got ${v === undefined ? "undefined" : typeof v}`);
   }
-  const clean = v.startsWith("0x") ? v.slice(2) : BigInt(v).toString(16);
-  const padded = clean.padStart(64, "0");
+  const raw = v.trim();
+  if (!/^(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(raw)) {
+    throw new Error(`Expected '${fieldName}' to be a decimal or 0x-hex string`);
+  }
+  const n = BigInt(raw);
+  if (n < 0n || n >= (1n << 256n)) {
+    throw new Error(`Expected '${fieldName}' to fit in uint256`);
+  }
+  const padded = n.toString(16).padStart(64, "0");
   return new Uint8Array(Buffer.from(padded, "hex"));
 }
 

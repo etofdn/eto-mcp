@@ -2,17 +2,20 @@
 # check-env.sh — sanity-check that required env keys exist in the env file
 # used by eto-mcp. The repo's src/config.ts reads process.env directly (no
 # dotenv loader), so whatever shell starts the server must export these vars.
-# Bun auto-loads `.env` from the process CWD — NOT from /home/naman/eto/.env —
-# so either `cd /home/naman/eto` before `bun run ...`, symlink that file into
-# the project root, or `export $(grep -v '^#' /home/naman/eto/.env | xargs)`.
+# Bun auto-loads `.env` from the process CWD, so either `cd` to the repo root
+# before `bun run ...`, symlink your env file into the project root, or
+# `export $(grep -v '^#' path/to/.env | xargs)`.
 #
 # Usage:
-#   bash scripts/check-env.sh                   # uses /home/naman/eto/.env
+#   bash scripts/check-env.sh                   # uses <repo-root>/.env
 #   ENV_FILE=./.env bash scripts/check-env.sh   # override path
 #
 set -euo pipefail
 
-ENV_FILE="${ENV_FILE:-/home/naman/eto/.env}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
+CONFIG_FILE="$REPO_ROOT/src/config.ts"
 
 if [[ -t 1 ]]; then
   RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
@@ -72,11 +75,11 @@ done
 echo
 echo "${BOLD}src/config.ts env references:${RESET}"
 # Note: read-only peek at how env is loaded. No edits.
-grep -n -E "config|\.env|process\.env" /home/naman/eto/eto-mcp/src/config.ts || true
+grep -n -E "config|\.env|process\.env" "$CONFIG_FILE" || true
 
 echo
 echo "${BOLD}src/config.ts (first 30 lines):${RESET}"
-head -n 30 /home/naman/eto/eto-mcp/src/config.ts
+head -n 30 "$CONFIG_FILE" || true
 
 echo
 if (( missing > 0 )); then

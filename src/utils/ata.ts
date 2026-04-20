@@ -110,8 +110,10 @@ export function buildCreateAtaIdempotentTx(
   const recentBlockhash = bs58.decode(recentBlockhashBase58);
   const ata = bs58.decode(deriveAta(walletBase58, mintBase58).address);
 
-  // Message header: 1 signer (payer), 0 readonly signed, 4 readonly unsigned
-  // (wallet, mint, system, token; the ATA is the only writable non-signer).
+  // Message header: 1 signer (payer), 0 readonly signed, 5 readonly unsigned
+  // (wallet, mint, system, token, ataProgram; the ATA itself is the only
+  // writable non-signer). Previously this was 4, which marked `wallet` as
+  // writable and produced account-meta mismatches at runtime.
   const accountKeys = [payer, ata, wallet, mint, SYSTEM_PROGRAM_ID, TOKEN_PROGRAM_ID_BYTES, ATA_PROGRAM_ID];
   const programIdIndex = 6;
   const accountIndices = new Uint8Array([0, 1, 2, 3, 4, 5]);
@@ -120,7 +122,7 @@ export function buildCreateAtaIdempotentTx(
   const sigCount = 1;
   const buf: number[] = [];
   // Header
-  buf.push(sigCount, 0, 4);
+  buf.push(sigCount, 0, 5);
   // Account keys (count + 32B each)
   pushU32(buf, accountKeys.length);
   for (const k of accountKeys) for (const b of k) buf.push(b);
