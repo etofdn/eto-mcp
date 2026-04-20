@@ -17,12 +17,15 @@ export class WebSocketManager {
   private messageBuffer: any[] = [];
 
   constructor() {
-    // Derive WS URL from RPC URL (replace http with ws, port 8899 → 8900)
-    const rpcUrl = config.etoRpcUrl;
-    this.wsUrl = rpcUrl
-      .replace("http://", "ws://")
-      .replace("https://", "wss://")
-      .replace(":8899", ":8900");
+    if (config.etoWsUrl) {
+      this.wsUrl = config.etoWsUrl;
+    } else {
+      const rpcUrl = config.etoRpcUrl;
+      this.wsUrl = rpcUrl
+        .replace("http://", "ws://")
+        .replace("https://", "wss://")
+        .replace(":8899", ":8900");
+    }
   }
 
   async connect(): Promise<boolean> {
