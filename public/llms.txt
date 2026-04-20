@@ -32,6 +32,132 @@ Add to your MCP config (claude_desktop_config.json or equivalent):
 ### Any MCP Client
 Connect via SSE transport to `https://eto-mcp.fly.dev/sse`. Messages are sent via POST to `/message?sessionId=<id>`.
 
+## Authentication
+
+Every `POST /message` requires an `Authorization: Bearer <token>` header. Tokens are short-lived (5 min) HMAC sessions issued after a SIWE handshake. Three strategies converge on the same flow: wallet-extension (`siwe`), thirdweb in-app email (`inapp_email`), thirdweb in-app OAuth Google/Apple (`inapp_oauth`). All three produce an EIP-4361 signed payload; the server stores the strategy tag on the session for audit.
+
+Signing stays client-side. The server never touches your private key — thirdweb is identity-only; local/FROST signs every on-chain transaction.
+
+### Handshake (3 calls)
+
+```
+1. POST /auth/login  {address, chainId}            → LoginPayload (EIP-4361)
+2. client signs payload.message with their wallet  → signature (0x...)
+3. POST /auth/verify {payload, signature, strategy} → {token, exp}
+```
+
+Use the `token` as `Authorization: Bearer <token>` on every subsequent `/message` call. The token survives SSE reconnects — your wallets live under your thirdweb address (`session.sub`) on the server, so dropping and re-opening the stream keeps your state.
+
+### Node / Bun (with a raw private key)
+
+```ts
+import { createThirdwebClient } from "thirdweb";
+import { createAuth } from "thirdweb/auth";
+import { privateKeyToAccount } from "thirdweb/wallets";
+
+const BASE = "https://eto-mcp.fly.dev";
+const client = createThirdwebClient({ clientId: "<your public client id>" });
+const account = privateKeyToAccount({ client, privateKey: process.env.PRIVKEY! });
+const auth = createAuth({ domain: "eto-mcp.fly.dev", client });
+
+const payload = await fetch(`${BASE}/auth/login`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ address: account.address, chainId: 1 }),
+}).then(r => r.json());
+
+const { signature } = await auth.signLoginPayload({ account, payload });
+
+const { token } = await fetch(`${BASE}/auth/verify`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ payload, signature, strategy: "siwe" }),
+}).then(r => r.json());
+```
+
+### Browser / React (wallet extension or in-app wallet)
+
+```tsx
+import { ConnectButton, useActiveAccount } from "thirdweb/react";
+import { createAuth } from "thirdweb/auth";
+
+async function login(account) {
+  const payload = await fetch(`${BASE}/auth/login`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ address: account.address, chainId: 1 }),
+  }).then(r => r.json());
+
+  const auth = createAuth({ domain: "eto-mcp.fly.dev", client });
+  const { signature } = await auth.signLoginPayload({ account, payload });
+
+  const { token } = await fetch(`${BASE}/auth/verify`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ payload, signature, strategy: "siwe" }),
+  }).then(r => r.json());
+
+  localStorage.setItem("eto-mcp-bearer", token);
+}
+```
+
+For passwordless flows, use `inAppWallet({ auth: { options: ["email","google","apple"] } })` from `thirdweb/wallets`. The payload+signature shape is identical — just change `strategy` to `"inapp_email"` or `"inapp_oauth"` on `/auth/verify`.
+
+### Calling tools (JSON-RPC 2.0 over SSE)
+
+1. Open `GET /sse` and read the first `event: endpoint` — it contains `data: /message?sessionId=<uuid>`. Keep the SSE stream open; tool results come back over it.
+2. POST JSON-RPC to `/message?sessionId=<uuid>` with the Bearer:
+
+```http
+POST /message?sessionId=abc-123 HTTP/1.1
+Host: eto-mcp.fly.dev
+Authorization: Bearer eyJ...
+Content-Type: application/json
+
+{"jsonrpc":"2.0","id":1,"method":"tools/call",
+ "params":{"name":"list_wallets","arguments":{}}}
+```
+
+The POST returns HTTP 202 immediately; the actual JSON-RPC result arrives as a `message` event on the SSE stream keyed by the same `id`.
+
+Common first calls: `session_info` (inspect what the server sees — scope, auth_strategy, wallets, active_wallet_id, last_restart_iso), `get_health`, `list_wallets`, `create_wallet`.
+
+### Session lifetime & error shape
+
+Tokens expire after **300 seconds** (`exp` is a unix timestamp in the `/auth/verify` response). On 401, re-run the 3-call handshake. There is no refresh token yet.
+
+Every auth error follows the MCP error envelope:
+```json
+{
+  "code": "AUTH_001",
+  "category": "auth",
+  "message": "Authentication required",
+  "explanation": "No Bearer token. Call POST /auth/login → sign → POST /auth/verify.",
+  "recovery": [{"action":"authenticate","description":"..."}],
+  "retryable": false
+}
+```
+
+Codes you'll see: `AUTH_001` (missing/invalid/expired bearer), `AUTH_002` (insufficient capability for this tool), `AUTH_003` (tool not in the capability map).
+
+### Capabilities & rate limits
+
+Every tool is pinned to a capability scope (`wallet:read`, `token:write`, `deploy:write`, etc.). SIWE logins get the full default capability set; agent-delegated sessions can be issued with narrower scopes. Rate limits bucket requests into three tiers: `read`, `write`, `deploy`. Exceeding a bucket returns a 429 with `rate_limit` in the error category.
+
+### Local / stdio mode
+
+Running the server locally via `bun run start` (stdio transport) sets `AUTH_DEV_BYPASS=true` automatically and uses a single `"__stdio__"` scope — wallets persist to `~/.eto/wallets/__stdio__.enc`. The SSE/HTTP transport does **not** honor dev bypass unless you explicitly set `AUTH_DEV_BYPASS=true` in the environment; production always runs with bypass off.
+
+### Verify the deploy yourself
+
+```bash
+curl -sI  https://eto-mcp.fly.dev/health                    # 200
+curl -sXPOST https://eto-mcp.fly.dev/message?sessionId=x \
+     -d '{}'                                                # 401 AUTH_001
+curl -sXPOST https://eto-mcp.fly.dev/auth/login \
+     -H 'content-type: application/json' \
+     -d '{"address":"0x0000000000000000000000000000000000000001","chainId":1}'
+                                                            # 200 + SIWE payload
+```
+
 ## Why This Exists
 
 AI agents generate $30B+ in transaction volume but are locked to single chains. $600M+ in arbitrage sits on individual chains yearly. Cross-chain agents captured only $868M total — 50x untapped spreads sit across chains.
