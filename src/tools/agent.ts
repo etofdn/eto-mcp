@@ -8,8 +8,39 @@ import { blockhashCache } from "../write/blockhash-cache.js";
 import { submitter } from "../write/submitter.js";
 import bs58 from "bs58";
 import * as ed from "@noble/ed25519";
-import { addTrigger, removeTrigger, getTriggers } from "./agent-triggers.js";
+import { BorshReader, decodeAccountData } from "../utils/borsh-reader.js";
 
+// AgentState on-chain layout (Rust borsh, see runtime/src/programs/agent.rs):
+//   discriminator: [u8; 8]
+//   authority: Pubkey (32)
+//   name: String, model_id: String, metadata_uri: String
+//   reputation: u64
+//   status: u8 (0=active, 1=paused, 2=deactivated)
+//   ...
+function parseAgentState(rawData: any): {
+  authority: string;
+  name: string;
+  modelId: string;
+  metadataUri: string;
+  reputation: bigint;
+  statusByte: number;
+} | null {
+  const buf = decodeAccountData(rawData);
+  if (!buf || buf.length < 40) return null;
+  try {
+    const r = new BorshReader(buf);
+    r.skip(8); // discriminator
+    const authority = r.readPubkey();
+    const name = r.readString();
+    const modelId = r.readString();
+    const metadataUri = r.readString();
+    const reputation = r.readU64();
+    const statusByte = r.readU8();
+    return { authority, name, modelId, metadataUri, reputation, statusByte };
+  } catch {
+    return null;
+  }
+}
 // ---------------------------------------------------------------------------
 // Minimal tx builders for agent instructions (RegisterAgent / SetAgentStatus)
 // ---------------------------------------------------------------------------
@@ -107,15 +138,19 @@ function buildSetStatusTx(
 export function registerAgentTools(server: McpServer): void {
   server.tool(
     "create_agent",
-    "Creates a new autonomous agent account on the ETO network. Generates a fresh Ed25519 keypair for the agent account, builds and signs a RegisterAgent transaction using the active (or specified) wallet as the payer, and submits it on-chain. Returns the new agent's public address. The description and program fields are stored in agent account metadata for discovery by other tools and swarms.",
+    "Creates a new autonomous agent account on the ETO network. Generates a fresh Ed25519 keypair for the agent account, builds and signs a RegisterAgent transaction using the active (or specified) wallet as the payer, and submits it on-chain. The on-chain agent record stores `name`, `model_id` (e.g. 'claude-opus-4-6'), and `metadata_uri` (off-chain capabilities JSON, e.g. an IPFS hash). Returns the new agent's public address.",
     {
       name: z.string().describe("Human-readable name for the agent"),
-      description: z.string().optional().describe("Optional description of the agent's purpose"),
-      program: z.string().optional().describe("Optional program ID (base58) the agent is associated with"),
+      model_id: z.string().optional().describe("Model identifier (e.g. 'claude-opus-4-6'). Aliased as 'description' for back-compat."),
+      description: z.string().optional().describe("Deprecated alias for model_id"),
+      metadata_uri: z.string().optional().describe("Off-chain metadata URI (IPFS/Arweave hash for capabilities JSON). Aliased as 'program' for back-compat."),
+      program: z.string().optional().describe("Deprecated alias for metadata_uri"),
       initial_funding: z.string().default("0").optional().describe("Initial funding in lamports transferred to the agent account"),
       from_wallet: z.string().optional().describe("Wallet ID to pay for agent creation; defaults to active wallet"),
     },
-    async ({ name, description, program, initial_funding, from_wallet }) => {
+    async ({ name, model_id, description, metadata_uri, program, initial_funding, from_wallet }) => {
+      const modelId = model_id ?? description ?? "";
+      const metadataUri = metadata_uri ?? program ?? "";
       try {
         const walletId = from_wallet ?? getActiveWalletId();
         if (!walletId) {
@@ -133,12 +168,12 @@ export function registerAgentTools(server: McpServer): void {
         const agentPubBytes = await ed.getPublicKeyAsync(agentSecretBytes);
         const agentAddress = bs58.encode(agentPubBytes);
 
-        // Build RegisterAgent instruction data: discriminator 0, then name, description, program
+        // Build RegisterAgent instruction data: discriminator 0, then name, model_id, metadata_uri
         const data: number[] = [];
         writeU8(data, 0); // discriminator = RegisterAgent
         writeStr(data, name);
-        writeStr(data, description ?? "");
-        writeStr(data, program ?? "");
+        writeStr(data, modelId);
+        writeStr(data, metadataUri);
         writeU64LE(data, BigInt(initial_funding ?? "0"));
 
         const { blockhash } = await blockhashCache.getBlockhash();
@@ -163,8 +198,8 @@ export function registerAgentTools(server: McpServer): void {
             `Signature:     ${result.signature}`,
             `Status:        ${result.status}`,
           ];
-          if (description) lines.push(`Description:   ${description}`);
-          if (program) lines.push(`Program:       ${program}`);
+          if (modelId) lines.push(`Model:         ${modelId}`);
+          if (metadataUri) lines.push(`Metadata URI:  ${metadataUri}`);
           return { content: [{ type: "text" as const, text: lines.join("\n") }] };
         } else if (result.status === "timeout") {
           return {
@@ -186,61 +221,6 @@ export function registerAgentTools(server: McpServer): void {
   );
 
   server.tool(
-    "configure_agent_trigger",
-    "Configures an on-chain trigger for an autonomous agent. Triggers define when and how an agent automatically executes — for example in response to a price oracle crossing a threshold, a block being produced, or a specific account state changing. The action parameter supports 'add', 'update', or 'remove' to manage the trigger lifecycle. Note: full on-chain trigger execution requires the trigger dispatch program to be deployed.",
-    {
-      agent_id: z.string().describe("Agent account address (base58)"),
-      action: z.enum(["add", "update", "remove"]).describe("Trigger management action"),
-      trigger_id: z.string().optional().describe("Trigger ID for update/remove operations"),
-      trigger: z.any().optional().describe("Trigger definition object (for add/update)"),
-    },
-    async ({ agent_id, action, trigger_id, trigger }) => {
-      try {
-        if (action === "add") {
-          if (!trigger) {
-            return { content: [{ type: "text" as const, text: "trigger definition is required for action=add" }], isError: true };
-          }
-          const t = addTrigger(agent_id, trigger.type, trigger.params ?? trigger);
-          return {
-            content: [{ type: "text" as const, text: `Trigger added.\nTrigger ID: ${t.id}\nAgent:      ${agent_id}\nType:       ${t.type}\nEnabled:    ${t.enabled}` }],
-          };
-        }
-
-        if (action === "update") {
-          if (!trigger_id) {
-            return { content: [{ type: "text" as const, text: "trigger_id is required for action=update" }], isError: true };
-          }
-          removeTrigger(trigger_id);
-          if (!trigger) {
-            return { content: [{ type: "text" as const, text: "trigger definition is required for action=update" }], isError: true };
-          }
-          const t = addTrigger(agent_id, trigger.type, trigger.params ?? trigger);
-          return {
-            content: [{ type: "text" as const, text: `Trigger updated.\nOld Trigger ID: ${trigger_id}\nNew Trigger ID: ${t.id}\nAgent:          ${agent_id}\nType:           ${t.type}` }],
-          };
-        }
-
-        if (action === "remove") {
-          if (!trigger_id) {
-            return { content: [{ type: "text" as const, text: "trigger_id is required for action=remove" }], isError: true };
-          }
-          const removed = removeTrigger(trigger_id);
-          return {
-            content: [{ type: "text" as const, text: removed ? `Trigger ${trigger_id} removed.` : `Trigger ${trigger_id} not found.` }],
-          };
-        }
-
-        return { content: [{ type: "text" as const, text: `Unknown action: ${action}` }], isError: true };
-      } catch (err: any) {
-        return {
-          content: [{ type: "text" as const, text: `Error: ${err?.message ?? String(err)}` }],
-          isError: true,
-        };
-      }
-    }
-  );
-
-  server.tool(
     "list_agents",
     "Lists all agent accounts associated with the current active wallet on the ETO network. Queries the agent program for accounts owned by the current wallet and returns their addresses, names, and status. Use status_filter to narrow results to only active, paused, or depleted agents. The active wallet must be set before calling this tool.",
     {
@@ -249,16 +229,18 @@ export function registerAgentTools(server: McpServer): void {
     },
     async ({ status_filter }) => {
       try {
+        // list_agents is a read-only discovery tool; an active wallet is helpful
+        // for ownership context but not required.
         const walletId = getActiveWalletId();
-        if (!walletId) {
-          return {
-            content: [{ type: "text" as const, text: "No active wallet set. Use set_active_wallet first." }],
-          };
+        let ownerAddress: string | null = null;
+        if (walletId) {
+          try {
+            const signer = await getSignerFactory().getSigner(walletId);
+            ownerAddress = signer.getPublicKey();
+          } catch {
+            // ignore
+          }
         }
-
-        const factory = getSignerFactory();
-        const signer = await factory.getSigner(walletId);
-        const ownerAddress = signer.getPublicKey();
 
         const agentProgramId = bs58.encode(PROGRAM_IDS.agent);
 
@@ -271,33 +253,25 @@ export function registerAgentTools(server: McpServer): void {
         }
 
         if (!accounts || accounts.length === 0) {
+          const ctx = ownerAddress ? `for wallet ${ownerAddress}` : "on this network";
           return {
-            content: [{ type: "text" as const, text: `No agents found for wallet ${ownerAddress} (filter: ${status_filter ?? "all"}).` }],
+            content: [{ type: "text" as const, text: `No agents found ${ctx} (filter: ${status_filter ?? "all"}).` }],
           };
         }
 
-        const statusNames: Record<number, string> = { 0: "active", 1: "paused", 2: "depleted" };
-        const lines = [`Agents for ${ownerAddress} (filter: ${status_filter ?? "all"}):\n`];
+        const statusNames: Record<number, string> = { 0: "active", 1: "paused", 2: "deactivated" };
+        const header = ownerAddress
+          ? `Agents (active wallet: ${ownerAddress}, filter: ${status_filter ?? "all"}):\n`
+          : `Agents (filter: ${status_filter ?? "all"}):\n`;
+        const lines = [header];
 
         for (const acct of accounts) {
           const addr = acct.pubkey ?? acct.address ?? "N/A";
           const rawData = acct.account?.data ?? acct.data;
-          let statusStr = "unknown";
-          let nameStr = "N/A";
-
-          if (rawData && typeof rawData === "string") {
-            try {
-              const bytes = Buffer.from(rawData, "base64");
-              // Skip 9 bytes (1 discriminator + 8 borsh enum prefix heuristic)
-              const statusByte = bytes[1] ?? 0;
-              statusStr = statusNames[statusByte] ?? `status(${statusByte})`;
-              // name is a borsh string: u32 LE length then UTF-8 bytes, starting at offset 2
-              const nameLen = bytes.readUInt32LE(2);
-              nameStr = bytes.slice(6, 6 + nameLen).toString("utf8");
-            } catch {
-              // leave defaults
-            }
-          }
+          const parsed = parseAgentState(rawData);
+          const nameStr = parsed?.name || "N/A";
+          const statusStr = parsed ? (statusNames[parsed.statusByte] ?? `status(${parsed.statusByte})`) : "unknown";
+          const ownerStr = parsed?.authority ?? null;
 
           if (status_filter && status_filter !== "all" && statusStr !== status_filter) {
             continue;
@@ -306,6 +280,7 @@ export function registerAgentTools(server: McpServer): void {
           lines.push(`  Address: ${addr}`);
           lines.push(`  Name:    ${nameStr}`);
           lines.push(`  Status:  ${statusStr}`);
+          if (ownerStr) lines.push(`  Owner:   ${ownerStr}`);
           lines.push("");
         }
 
@@ -327,82 +302,46 @@ export function registerAgentTools(server: McpServer): void {
     },
     async ({ agent_id }) => {
       try {
-        const account = await rpc.getAccountInfo(agent_id);
-
+        const info: any = await rpc.getAccountInfo(agent_id);
+        if (!info) {
+          return {
+            content: [{ type: "text" as const, text: `Agent account not found: ${agent_id}` }],
+          };
+        }
+        // SVM RPC can return either {value: null|account} or the account fields directly.
+        const account: any = info.value === null
+          ? null
+          : (info.value && typeof info.value === "object" ? info.value : info);
         if (!account) {
           return {
             content: [{ type: "text" as const, text: `Agent account not found: ${agent_id}` }],
           };
         }
 
-        const statusNames: Record<number, string> = { 0: "active", 1: "paused", 2: "depleted" };
+        const statusNames: Record<number, string> = { 0: "active", 1: "paused", 2: "deactivated" };
         const agentProgramId = bs58.encode(PROGRAM_IDS.agent);
 
-        let statusStr = "unknown";
-        let nameStr = "N/A";
-        let descStr = "N/A";
-
-        const rawData = account.data;
-        if (rawData && typeof rawData === "string") {
-          try {
-            const bytes = Buffer.from(rawData, "base64");
-            const statusByte = bytes[1] ?? 0;
-            statusStr = statusNames[statusByte] ?? `status(${statusByte})`;
-            const nameLen = bytes.readUInt32LE(2);
-            nameStr = bytes.slice(6, 6 + nameLen).toString("utf8");
-            const descOffset = 6 + nameLen;
-            const descLen = bytes.readUInt32LE(descOffset);
-            descStr = bytes.slice(descOffset + 4, descOffset + 4 + descLen).toString("utf8");
-          } catch {
-            // leave defaults
-          }
-        }
+        const parsed = parseAgentState(account.data);
+        const nameStr = parsed?.name || "N/A";
+        const modelStr = parsed?.modelId || "N/A";
+        const metaStr = parsed?.metadataUri || "";
+        const statusStr = parsed ? (statusNames[parsed.statusByte] ?? `status(${parsed.statusByte})`) : "unknown";
+        const authorityStr = parsed?.authority ?? "N/A";
+        const reputationStr = parsed ? parsed.reputation.toString() : "N/A";
 
         const lines = [
           `Agent:       ${agent_id}`,
           `Name:        ${nameStr}`,
-          `Description: ${descStr}`,
+          `Authority:   ${authorityStr}`,
+          `Model:       ${modelStr}`,
           `Status:      ${statusStr}`,
-          `Owner:       ${account.owner ?? agentProgramId}`,
+          `Reputation:  ${reputationStr}`,
+          `Program:     ${account.owner ?? agentProgramId}`,
           `Balance:     ${account.lamports ?? 0} lamports`,
         ];
+        if (metaStr) lines.push(`Metadata:    ${metaStr}`);
 
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
-      } catch (err: any) {
-        return {
-          content: [{ type: "text" as const, text: `Error: ${err?.message ?? String(err)}` }],
-          isError: true,
-        };
-      }
-    }
-  );
-
-  server.tool(
-    "execute_agent",
-    "Manually triggers execution of an autonomous agent with optional parameters. In the full implementation, this dispatches a trigger event to the agent's on-chain execution queue and returns a job ID for tracking. Note: manual agent execution requires the trigger dispatch integration to be deployed. For automated execution, use configure_agent_trigger to set up event-driven triggers.",
-    {
-      agent_id: z.string().describe("Agent account address (base58)"),
-      params: z.any().optional().describe("Optional execution parameters to pass to the agent"),
-    },
-    async ({ agent_id, params }) => {
-      try {
-        const triggers = getTriggers(agent_id);
-        if (triggers.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "No triggers configured for this agent. Use configure_agent_trigger to add triggers first." }],
-          };
-        }
-
-        const results: string[] = [];
-        for (const trigger of triggers) {
-          trigger.lastFired = Date.now();
-          trigger.fireCount++;
-          results.push(`Trigger ${trigger.id} (${trigger.type}): fired (count: ${trigger.fireCount})`);
-        }
-
-        return {
-          content: [{ type: "text" as const, text: `Agent ${agent_id} executed manually.\n\n${results.join("\n")}\n\nTotal triggers fired: ${results.length}` }],
-        };
       } catch (err: any) {
         return {
           content: [{ type: "text" as const, text: `Error: ${err?.message ?? String(err)}` }],

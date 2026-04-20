@@ -1,8 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { log, logToolCall, recordToolStat } from "../utils/logger.js";
 import { authenticate, requireCapability } from "../gateway/auth.js";
+import type { Capability } from "../gateway/session.js";
 import { rateLimiter } from "../gateway/rate-limiter.js";
-import { McpError } from "../errors/index.js";
+import { runInScope } from "../signing/session-context.js";
 
 const TOOL_CAPS: Record<string, { cap: string; rate: "read" | "write" | "deploy" }> = {
   // Query tools (read)
@@ -40,7 +41,6 @@ const TOOL_CAPS: Record<string, { cap: string; rate: "read" | "write" | "deploy"
   get_token_info:         { cap: "token:read",      rate: "read" },
   get_token_balance:      { cap: "token:read",      rate: "read" },
   list_token_holdings:    { cap: "token:read",      rate: "read" },
-  freeze_token_account:   { cap: "token:write",     rate: "write" },
   // Deploy tools
   deploy_evm_contract:    { cap: "deploy:write",    rate: "deploy" },
   deploy_wasm_contract:   { cap: "deploy:write",    rate: "deploy" },
@@ -67,10 +67,8 @@ const TOOL_CAPS: Record<string, { cap: string; rate: "read" | "write" | "deploy"
   zk_bn254_ops:           { cap: "zk:write",        rate: "write" },
   // Agent tools
   create_agent:           { cap: "agent:write",     rate: "write" },
-  configure_agent_trigger: { cap: "agent:write",    rate: "write" },
   list_agents:            { cap: "agent:read",      rate: "read" },
   get_agent:              { cap: "agent:read",      rate: "read" },
-  execute_agent:          { cap: "agent:write",     rate: "write" },
   pause_agent:            { cap: "agent:write",     rate: "write" },
   resume_agent:           { cap: "agent:write",     rate: "write" },
   // A2A tools
@@ -98,39 +96,6 @@ const TOOL_CAPS: Record<string, { cap: string; rate: "read" | "write" | "deploy"
   // Batch tools
   batch_execute:          { cap: "batch:write",     rate: "write" },
   batch_query:            { cap: "chain:read",      rate: "read" },
-  // Policy tools
-  set_spending_limit:     { cap: "policy:admin",    rate: "write" },
-  set_tool_permissions:   { cap: "policy:admin",    rate: "write" },
-  set_address_whitelist:  { cap: "policy:admin",    rate: "write" },
-  get_policy:             { cap: "policy:admin",    rate: "read" },
-  // Security tools
-  manage_key_shares:      { cap: "security:admin",  rate: "write" },
-  configure_step_up_auth: { cap: "security:admin",  rate: "write" },
-  get_audit_log:          { cap: "security:admin",  rate: "read" },
-  // Intent tools
-  execute_intent:         { cap: "contract:write",  rate: "write" },
-  plan_execution:         { cap: "chain:read",      rate: "read" },
-  // Template tools
-  list_templates:         { cap: "chain:read",      rate: "read" },
-  execute_template:       { cap: "contract:write",  rate: "write" },
-  // Analytics tools
-  get_portfolio:          { cap: "wallet:read",     rate: "read" },
-  get_activity_feed:      { cap: "account:read",    rate: "read" },
-  get_gas_analytics:      { cap: "chain:read",      rate: "read" },
-  // Identity tools
-  register_agent_identity: { cap: "agent:write",   rate: "write" },
-  get_agent_reputation:   { cap: "agent:read",      rate: "read" },
-  discover_agents:        { cap: "agent:read",      rate: "read" },
-  // Marketplace tools
-  list_agent_services:    { cap: "agent:read",      rate: "read" },
-  hire_agent:             { cap: "agent:write",     rate: "write" },
-  // DAO tools
-  create_dao:             { cap: "vote:write",      rate: "write" },
-  dao_propose:            { cap: "vote:write",      rate: "write" },
-  dao_vote:               { cap: "vote:write",      rate: "write" },
-  dao_delegate:           { cap: "vote:write",      rate: "write" },
-  // EPL tools
-  create_policy_program:  { cap: "policy:admin",    rate: "deploy" },
   // Foundry tools
   forge_compile:          { cap: "contract:read",   rate: "read" },
   forge_create:           { cap: "deploy:write",    rate: "deploy" },
@@ -140,12 +105,8 @@ const TOOL_CAPS: Record<string, { cap: string; rate: "read" | "write" | "deploy"
   anchor_init:            { cap: "deploy:write",    rate: "write" },
   anchor_build:           { cap: "deploy:write",    rate: "write" },
   anchor_test:            { cap: "deploy:write",    rate: "write" },
-  // Mesh tools
-  mesh_state:             { cap: "chain:read",      rate: "read" },
-  mesh_transfer:          { cap: "transfer:write",  rate: "write" },
-  mesh_attest_balance:    { cap: "chain:read",      rate: "read" },
-  mesh_verify:            { cap: "chain:read",      rate: "read" },
-  mesh_history:           { cap: "chain:read",      rate: "read" },
+  // Session introspection
+  session_info:           { cap: "wallet:read",     rate: "read" },
 };
 
 /** Wrap an McpServer so every tool() call gets automatic timing + logging + auth + rate limiting */
@@ -161,26 +122,22 @@ function instrumentServer(server: McpServer): McpServer {
       const start = performance.now();
       logToolCall(name, toolArgs ?? {});
       try {
-        // Auth + rate limiting
-        const authHeader = extra?.authInfo?.token
-          ? `Bearer ${extra.authInfo.token}`
-          : undefined;
-        const session = authenticate(authHeader);
-        const toolCap = TOOL_CAPS[name];
-        if (!toolCap) {
-          throw new McpError(
-            "AUTH_003",
-            "auth",
-            "Tool not authorized",
-            `Tool "${name}" is not registered in the authorization map and cannot be called.`,
-            [],
-            false,
-          );
+        // Auth + capability + rate limit. authenticate() reads the ambient
+        // bearer set by runWithAuth in sse-server (dev-bypass short-circuits
+        // to DEV_SESSION).
+        const meta = TOOL_CAPS[name];
+        const { session } = authenticate();
+        if (meta) {
+          requireCapability(session, meta.cap as Capability);
+        } else {
+          log("warn", "auth", `Tool '${name}' not in TOOL_CAPS — no capability enforced`);
         }
-        requireCapability(session.session, toolCap.cap as any);
-        rateLimiter.check(session.userId, toolCap.rate);
+        rateLimiter.check(session.sub, meta?.rate ?? "read");
 
-        const result = await origHandler(toolArgs, extra);
+        // Scope everything below by session.sub so the wallet store, active
+        // wallet sidecar, and every other per-caller map lands in the right
+        // bucket. This is what persists wallets across SSE reconnects.
+        const result = await runInScope(session.sub, () => origHandler(toolArgs, extra));
         const ms = performance.now() - start;
         recordToolStat(name, ms, !result?.isError);
         log("info", "perf", `${name} ${ms.toFixed(0)}ms ${result?.isError ? "FAIL" : "OK"}`);
@@ -220,61 +177,37 @@ import { registerMcpProgramTools } from "./mcp-program.js";
 import { registerSwarmTools } from "./swarm.js";
 import { registerSubscriptionTools } from "./subscription.js";
 import { registerBatchTools } from "./batch.js";
-import { registerPolicyTools } from "./policy.js";
-// Phase 3 tools
-import { registerSecurityTools } from "./security.js";
-// Phase 4 tools
-import { registerIntentTools } from "./intent.js";
-import { registerTemplateTools } from "./templates.js";
-import { registerAnalyticsTools } from "./analytics.js";
-// Phase 5 tools
-import { registerIdentityTools } from "./identity.js";
-import { registerMarketplaceTools } from "./marketplace.js";
-import { registerDaoTools } from "./dao.js";
-import { registerEplTools } from "./epl.js";
 // Dev toolchains
 import { registerFoundryTools } from "./foundry.js";
 import { registerAnchorTools } from "./anchor.js";
-// Cross-chain mesh
-import { registerMeshTools } from "./mesh.js";
+// Session introspection
+import { registerSessionTools } from "./session.js";
 
 export function registerAllTools(server: McpServer): void {
   instrumentServer(server);
-  // Phase 1 (49 tools)
+  // Phase 1 (48 tools)
   registerQueryTools(server);       // 8 tools
   registerValidatorTools(server);   // 3 tools
   registerDevnetTools(server);      // 2 tools
   registerWalletTools(server);      // 6 tools
   registerTransferTools(server);    // 3 tools
-  registerTokenTools(server);       // 8 tools
+  registerTokenTools(server);       // 7 tools
   registerDeployTools(server);      // 4 tools
   registerContractTools(server);    // 4 tools
   registerCrossVmTools(server);     // 3 tools
   registerStakingTools(server);     // 5 tools
   registerZkTools(server);          // 3 tools
-  // Phase 2 (31 tools)
-  registerAgentTools(server);       // 7 tools
+  // Phase 2 (24 tools)
+  registerAgentTools(server);       // 5 tools
   registerA2ATools(server);         // 5 tools
   registerMcpProgramTools(server);  // 4 tools
   registerSwarmTools(server);       // 5 tools
   registerSubscriptionTools(server);// 4 tools
   registerBatchTools(server);       // 2 tools
-  registerPolicyTools(server);      // 4 tools
-  // Phase 3 (3 tools)
-  registerSecurityTools(server);    // 3 tools
-  // Phase 4 (7 tools)
-  registerIntentTools(server);      // 2 tools
-  registerTemplateTools(server);    // 2 tools
-  registerAnalyticsTools(server);   // 3 tools
-  // Phase 5 (10 tools)
-  registerIdentityTools(server);    // 3 tools
-  registerMarketplaceTools(server); // 2 tools
-  registerDaoTools(server);         // 4 tools
-  registerEplTools(server);         // 1 tool
   // Dev toolchains (7 tools)
   registerFoundryTools(server);     // 4 tools: forge_compile, forge_create, cast_call, cast_abi_encode
   registerAnchorTools(server);      // 3 tools: anchor_init, anchor_build, anchor_test
-  // Cross-chain mesh (5 tools)
-  registerMeshTools(server);        // 5 tools: mesh_state, mesh_transfer, mesh_attest_balance, mesh_verify, mesh_history
-  // Total: 112 tools
+  // Session introspection (1 tool)
+  registerSessionTools(server);     // session_info
+  // Total: 81 tools
 }

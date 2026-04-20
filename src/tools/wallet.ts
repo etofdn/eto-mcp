@@ -6,10 +6,54 @@ import { rpc } from "../read/rpc-client.js";
 import { resolveAddresses } from "../utils/address.js";
 import { lamportsToSol } from "../utils/units.js";
 
-let activeWalletId: string | null = null;
+// Active wallet is scoped per caller (thirdweb sub / __stdio__ / __dev__) via
+// the AsyncLocalStorage in signing/session-context.ts. Persistence is a
+// plaintext sidecar `~/.eto/wallets/<scope>.active` (wallet_id only — no key
+// material). We keep an in-memory write-through cache so list_wallets and the
+// sync getActiveWalletId() helper don't hit disk every call; the cache is
+// populated lazily from disk on first access per scope.
+import { currentScope } from "../signing/session-context.js";
+const activeWalletCache = new Map<string, string | null>();
+const activeLoadInflight = new Map<string, Promise<void>>();
 
+function activeStore(scope: string) {
+  return localSignerFactory.storeForScope(scope);
+}
+
+function ensureActiveLoaded(scope: string): Promise<void> {
+  if (activeWalletCache.has(scope)) return Promise.resolve();
+  let p = activeLoadInflight.get(scope);
+  if (!p) {
+    p = activeStore(scope)
+      .readActive()
+      .then((id) => {
+        activeWalletCache.set(scope, id);
+      })
+      .catch(() => {
+        activeWalletCache.set(scope, null);
+      })
+      .finally(() => {
+        activeLoadInflight.delete(scope);
+      });
+    activeLoadInflight.set(scope, p);
+  }
+  return p;
+}
+
+/**
+ * Synchronous read used by list_wallets / get_wallet to annotate [ACTIVE].
+ * Returns null if the on-disk value hasn't been cached yet — the async
+ * setters below always populate the cache, and list_wallets awaits
+ * ensureActiveLoaded() before calling this.
+ */
 export function getActiveWalletId(): string | null {
-  return activeWalletId;
+  return activeWalletCache.get(currentScope()) ?? null;
+}
+
+async function setActiveWalletId(id: string): Promise<void> {
+  const scope = currentScope();
+  activeWalletCache.set(scope, id);
+  await activeStore(scope).writeActive(id);
 }
 
 export function registerWalletTools(server: McpServer): void {
@@ -41,23 +85,24 @@ export function registerWalletTools(server: McpServer): void {
 
   server.tool(
     "import_wallet",
-    "Imports an existing wallet into the ETO MCP server using a raw Ed25519 private key (hex-encoded) or a BIP-39 mnemonic phrase. For ed25519_secret key type, provide the 32-byte private key as a 64-character hex string (with or without 0x prefix). Mnemonic import is planned for a future iteration. Returns both SVM and EVM addresses on success.",
+    "Imports an existing wallet into the ETO MCP server using a raw Ed25519 private key (hex-encoded). Provide the 32-byte private key as a 64-character hex string (with or without 0x prefix). Returns both SVM and EVM addresses on success.",
     {
-      key_type: z.enum(["ed25519_secret", "mnemonic"]),
-      key_material: z.string().describe("Private key as 64-char hex string, or mnemonic phrase"),
+      key_type: z.enum(["ed25519_secret"]),
+      key_material: z.string().describe("Private key as 64-char hex string"),
       label: z.string().describe("Human-readable label for this wallet"),
     },
     async (args) => {
       try {
         const { key_type, key_material, label } = args;
 
-        if (key_type === "mnemonic") {
+        if ((key_type as string) !== "ed25519_secret") {
           return {
-            content: [{ type: "text" as const, text: "Mnemonic import not yet supported. Please provide an ed25519_secret (hex-encoded 32-byte private key) instead." }],
+            content: [{ type: "text" as const, text: `Unsupported key_type '${key_type}'. Only 'ed25519_secret' (hex-encoded 32-byte private key) is supported.` }],
+            isError: true,
           };
         }
 
-        const result = localSignerFactory.importWallet(label, key_material);
+        const result = await localSignerFactory.importWallet(label, key_material);
         const text = [
           "Wallet imported successfully.",
           `Wallet ID: ${result.walletId}`,
@@ -83,6 +128,7 @@ export function registerWalletTools(server: McpServer): void {
         const { include_balances = true } = args;
         const factory = getSignerFactory();
         const walletIds = await factory.listWallets();
+        await ensureActiveLoaded(currentScope());
 
         if (walletIds.length === 0) {
           return { content: [{ type: "text" as const, text: "No wallets found. Use create_wallet or import_wallet to add one." }] };
@@ -95,7 +141,7 @@ export function registerWalletTools(server: McpServer): void {
             const signer = await factory.getSigner(walletId);
             const svmAddress = signer.getPublicKey();
             const evmAddress = signer.getEvmAddress();
-            const isActive = walletId === activeWalletId;
+            const isActive = walletId === getActiveWalletId();
 
             lines.push(`${isActive ? "[ACTIVE] " : ""}Wallet: ${walletId}`);
             lines.push(`  SVM: ${svmAddress}`);
@@ -137,7 +183,8 @@ export function registerWalletTools(server: McpServer): void {
         const signer = await factory.getSigner(wallet_id);
         const svmAddress = signer.getPublicKey();
         const evmAddress = signer.getEvmAddress();
-        const isActive = wallet_id === activeWalletId;
+        await ensureActiveLoaded(currentScope());
+        const isActive = wallet_id === getActiveWalletId();
 
         let balanceLine = "  Balance: (unavailable)";
         try {
@@ -177,7 +224,7 @@ export function registerWalletTools(server: McpServer): void {
         const svmAddress = signer.getPublicKey();
         const evmAddress = signer.getEvmAddress();
 
-        activeWalletId = wallet_id;
+        await setActiveWalletId(wallet_id);
 
         const text = [
           `Active wallet set to: ${wallet_id}`,

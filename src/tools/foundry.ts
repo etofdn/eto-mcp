@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { execFile } from "child_process";
-import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync } from "fs";
 import { config } from "../config.js";
 
 const WORK_DIR = "/tmp/eto-foundry";
@@ -51,10 +51,13 @@ export function registerFoundryTools(server: McpServer): void {
         writeFileSync(`${WORK_DIR}/src/Contract.sol`, source);
         writeFileSync(`${WORK_DIR}/foundry.toml`, `[profile.default]\nsrc = "src"\nout = "out"\nsolc_version = "${solc_version || "0.8.28"}"\n`);
 
+        // Clear the out dir before building so a stale artifact from a
+        // previous or concurrent compile can't satisfy the lookup below.
+        const outDir = `${WORK_DIR}/out`;
+        rmSync(outDir, { recursive: true, force: true });
+
         const { stdout, stderr } = await sh("forge", ["build", "--force"]);
 
-        // Find compiled artifacts
-        const outDir = `${WORK_DIR}/out`;
         if (!existsSync(outDir)) {
           return { content: [{ type: "text" as const, text: `Compilation failed:\n${stdout}\n${stderr}` }], isError: true };
         }
@@ -64,10 +67,14 @@ export function registerFoundryTools(server: McpServer): void {
         if (!SAFE_NAME.test(name)) {
           return { content: [{ type: "text" as const, text: `Invalid derived contract name "${name}": must match ${SAFE_NAME}` }], isError: true };
         }
-        const artifactPath = `${outDir}/${name}.sol/${name}.json`;
-
+        // Foundry stores artifacts at out/<sourceFileBasename>.sol/<contractName>.json.
+        // We always write the source to src/Contract.sol, so the canonical
+        // artifact path is out/Contract.sol/<contractName>.json. If the
+        // artifact isn't at that path, the compile didn't produce one for
+        // this contract — don't fall back to a recursive find (it would
+        // happily return an unrelated stale artifact).
+        const artifactPath = `${outDir}/Contract.sol/${name}.json`;
         if (!existsSync(artifactPath)) {
-          // List available artifacts
           const { stdout: ls } = await sh("find", [outDir, "-name", "*.json", "-type", "f"]);
           return { content: [{ type: "text" as const, text: `Contract "${name}" not found in output.\n\nAvailable artifacts:\n${ls}\n\nBuild output:\n${stdout}` }], isError: true };
         }

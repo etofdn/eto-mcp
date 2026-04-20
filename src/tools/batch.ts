@@ -125,13 +125,17 @@ export function registerBatchTools(server: McpServer): void {
       queries: z.array(
         z.object({
           tool: z.string().describe("Read-only tool name to query"),
-          params: z.any().describe("Parameters for the query"),
-        })
+          params: z.any().optional().describe("Parameters for the query"),
+          arguments: z.any().optional().describe("Alias for params"),
+          args: z.any().optional().describe("Alias for params"),
+        }).passthrough()
       ).max(20).describe("List of read queries to execute in parallel (max 20)"),
     },
     async ({ queries }) => {
       try {
-        const executeQuery = async (tool: string, params: any): Promise<string> => {
+        const executeQuery = async (tool: string, paramsIn: any): Promise<string> => {
+          // Accept either {params: {...}} or {arguments: {...}} or top-level fields
+          const params: any = paramsIn ?? {};
           switch (tool) {
             case "get_balance": {
               const result = await rpc.getBalance(params.address);
@@ -195,7 +199,7 @@ export function registerBatchTools(server: McpServer): void {
 
         // Execute all queries in parallel
         const settled = await Promise.allSettled(
-          queries.map(({ tool, params }) => executeQuery(tool, params))
+          queries.map((q: any) => executeQuery(q.tool, q.params ?? q.arguments ?? q.args ?? {}))
         );
 
         const lines = [`Batch query: ${queries.length} queries executed in parallel`, ""];

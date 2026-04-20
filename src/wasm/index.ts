@@ -334,8 +334,9 @@ export function buildTokenTransferTx(
   const destinationKey = pubkeyBytes(destination);
   const blockhash = blockhashBytes(recentBlockhash);
 
-  // Account keys: source (0), destination (1), authority (2), token program (3)
-  const accountKeys = [sourceKey, destinationKey, authorityKey, TOKEN_PROGRAM_ID];
+  // Authority must be in slot 0 so its signature verifies AND SPL's authority
+  // signer check passes inside the program.
+  const accountKeys = [authorityKey, sourceKey, destinationKey, TOKEN_PROGRAM_ID];
 
   // Instruction data: [11] + amount u64 LE + decimals u8
   const data: number[] = [];
@@ -345,7 +346,7 @@ export function buildTokenTransferTx(
 
   const instruction: CompiledInstruction = {
     programIdIndex: 3, // token program
-    accounts: new Uint8Array([0, 1, 2]), // source, destination, authority
+    accounts: new Uint8Array([1, 2, 0]), // source, destination, authority
     data: new Uint8Array(data),
   };
 
@@ -353,7 +354,7 @@ export function buildTokenTransferTx(
     accountKeys,
     blockhash,
     [instruction],
-    1, // authority is signer
+    1, // authority is signer (slot 0)
     0,
     1  // token program readonly
   );
@@ -838,8 +839,11 @@ export function buildMintToTx(
   const destinationKey = pubkeyBytes(destination);
   const blockhash = blockhashBytes(recentBlockhash);
 
-  // Account keys: mint(0), destination(1), authority(2), token program(3)
-  const accountKeys = [mintKey, destinationKey, mintAuthorityKey, TOKEN_PROGRAM_ID];
+  // Solana message-format invariant: the first numRequiredSignatures account
+  // keys are the signers. Authority must be in slot 0 so its signature is
+  // checked AND so SPL Token's "is authority a signer?" check passes
+  // (otherwise MintTo returns "Token program failed" with computeUnits=0).
+  const accountKeys = [mintAuthorityKey, mintKey, destinationKey, TOKEN_PROGRAM_ID];
 
   // Instruction data: [6] + amount u64 LE
   const data: number[] = [];
@@ -848,7 +852,7 @@ export function buildMintToTx(
 
   const instruction: CompiledInstruction = {
     programIdIndex: 3, // token program
-    accounts: new Uint8Array([0, 1, 2]), // mint, destination, authority
+    accounts: new Uint8Array([1, 2, 0]), // mint, destination, authority
     data: new Uint8Array(data),
   };
 
@@ -856,7 +860,7 @@ export function buildMintToTx(
     accountKeys,
     blockhash,
     [instruction],
-    1, // authority is signer
+    1, // authority is signer (slot 0)
     0,
     1  // token program readonly
   );
@@ -876,8 +880,9 @@ export function buildBurnTx(
   const mintKey = pubkeyBytes(mint);
   const blockhash = blockhashBytes(recentBlockhash);
 
-  // Account keys: tokenAccount(0), mint(1), owner(2), token program(3)
-  const accountKeys = [tokenAccountKey, mintKey, ownerKey, TOKEN_PROGRAM_ID];
+  // Owner must be in slot 0 so its signature is verified AND SPL's authority
+  // signer check passes inside the program.
+  const accountKeys = [ownerKey, tokenAccountKey, mintKey, TOKEN_PROGRAM_ID];
 
   // Instruction data: [7] + amount u64 LE
   const data: number[] = [];
@@ -886,7 +891,7 @@ export function buildBurnTx(
 
   const instruction: CompiledInstruction = {
     programIdIndex: 3, // token program
-    accounts: new Uint8Array([0, 1, 2]), // tokenAccount, mint, owner
+    accounts: new Uint8Array([1, 2, 0]), // tokenAccount, mint, owner
     data: new Uint8Array(data),
   };
 
@@ -894,7 +899,7 @@ export function buildBurnTx(
     accountKeys,
     blockhash,
     [instruction],
-    1, // owner is signer
+    1, // owner is signer (slot 0)
     0,
     1  // token program readonly
   );

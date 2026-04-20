@@ -12,14 +12,23 @@ export function registerQueryTools(server: McpServer): void {
     async ({ address }) => {
       try {
         const addrType = detectAddressType(address);
-        let balanceLamports: bigint;
 
-        if (addrType === "evm") {
-          const hexWei = await rpc.ethGetBalance(address);
-          balanceLamports = BigInt(hexWei);
-        } else {
+        // The chain commits txs before applying state writes, so a getBalance
+        // immediately after airdrop/transfer can read 0 even though the tx was
+        // confirmed. Briefly retry-on-zero so well-funded accounts don't show
+        // up empty in QA / first-touch reads.
+        const fetchOnce = async (): Promise<bigint> => {
+          if (addrType === "evm") {
+            return BigInt(await rpc.ethGetBalance(address));
+          }
           const result = await rpc.getBalance(address);
-          balanceLamports = BigInt(result.value);
+          return BigInt(result.value);
+        };
+
+        let balanceLamports = await fetchOnce();
+        for (let i = 0; balanceLamports === 0n && i < 3; i++) {
+          await new Promise((r) => setTimeout(r, 200));
+          balanceLamports = await fetchOnce();
         }
 
         const amount = lamportsToSol(balanceLamports);
@@ -61,9 +70,29 @@ export function registerQueryTools(server: McpServer): void {
           };
         }
 
-        const balance = account.lamports !== undefined
-          ? `${lamportsToSol(account.lamports)} ETO (${account.lamports} lamports)`
-          : "N/A";
+        // etoGetAccount may not include lamports; fall back to getBalance for SVM addresses
+        // and ethGetBalance for EVM addresses so we never report N/A for a funded account.
+        let lamports: bigint | number | undefined =
+          account.lamports ?? account.balance ?? account.value?.lamports;
+        if (lamports === undefined || lamports === null) {
+          try {
+            const addrType = detectAddressType(address);
+            if (addrType === "evm") {
+              const hexWei = await rpc.ethGetBalance(address);
+              lamports = BigInt(hexWei);
+            } else {
+              const result = await rpc.getBalance(address);
+              lamports = BigInt(result.value);
+            }
+          } catch {
+            // leave undefined → "N/A"
+          }
+        }
+
+        const balance =
+          lamports !== undefined && lamports !== null
+            ? `${lamportsToSol(lamports as any)} ETO (${lamports} lamports)`
+            : "N/A";
 
         const lines = [
           `Address:    ${address}`,
@@ -235,11 +264,22 @@ export function registerQueryTools(server: McpServer): void {
           };
         }
 
+        // Field names match the Rust ChainStats struct in rpc/explorer.rs
+        const tpsRecent = stats.tps_recent ?? stats.tpsRecent ?? stats.tps;
+        const tpsLifetime = stats.tps_lifetime ?? stats.tpsLifetime;
+        const totalTxs = stats.total_transactions ?? stats.totalTransactions ?? stats.totalTxs ?? stats.total_txs;
+        const validators = stats.validator_count ?? stats.validatorCount ?? stats.validators;
+        const accounts = stats.total_accounts ?? stats.totalAccounts;
+        const mempool = stats.mempool_size ?? stats.mempoolSize;
         const lines = [
-          `Block Height: ${stats.blockHeight ?? stats.block_height ?? "N/A"}`,
-          `TPS:          ${stats.tps ?? "N/A"}`,
-          `Total TXs:    ${stats.totalTxs ?? stats.total_txs ?? "N/A"}`,
-          `Validators:   ${stats.validators ?? "N/A"}`,
+          `Block Height:   ${stats.block_height ?? stats.blockHeight ?? "N/A"}`,
+          `TPS (recent):   ${tpsRecent ?? "N/A"}`,
+          `TPS (lifetime): ${tpsLifetime ?? "N/A"}`,
+          `Total TXs:      ${totalTxs ?? "N/A"}`,
+          `Total Accounts: ${accounts ?? "N/A"}`,
+          `Mempool Size:   ${mempool ?? "N/A"}`,
+          `Validators:     ${validators ?? "N/A"}`,
+          `Chain ID:       ${stats.chain_id ?? stats.chainId ?? "N/A"}`,
         ];
 
         const vms = stats.vmBreakdown ?? stats.vm_breakdown;

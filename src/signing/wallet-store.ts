@@ -2,9 +2,10 @@ import { scrypt } from "@noble/hashes/scrypt";
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
-import { mkdir, readFile, rename, writeFile } from "fs/promises";
+import { mkdir, readFile, rename, writeFile, stat } from "fs/promises";
 
-const WALLET_PATH = join(homedir(), ".eto", "wallets.enc");
+const WALLET_DIR = join(homedir(), ".eto", "wallets");
+const LEGACY_WALLET_PATH = join(homedir(), ".eto", "wallets.enc");
 
 export interface WalletData {
   label: string;
@@ -21,8 +22,10 @@ export class WalletStore {
   private key: Uint8Array | null = null;
   private _passphrase: string | null = null;
   private loadPromise: Promise<void> | null = null;
+  private readonly scope: string;
 
-  constructor() {
+  constructor(scope: string = "__default__") {
+    this.scope = scope;
     const passphrase = process.env.ETO_WALLET_PASSPHRASE;
     if (passphrase) {
       // We defer key derivation to load/save so we can use the stored salt
@@ -33,6 +36,36 @@ export class WalletStore {
 
   isConfigured(): boolean {
     return this._passphrase !== null;
+  }
+
+  private walletPath(): string {
+    return join(WALLET_DIR, `${this.scope}.enc`);
+  }
+
+  /** Plaintext sidecar file storing only the active wallet id (no key material). */
+  static activeWalletPath(scope: string): string {
+    return join(WALLET_DIR, `${scope}.active`);
+  }
+
+  async readActive(): Promise<string | null> {
+    try {
+      const raw = (await readFile(WalletStore.activeWalletPath(this.scope), "utf8")).trim();
+      return raw.length > 0 ? raw : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async writeActive(walletId: string | null): Promise<void> {
+    const path = WalletStore.activeWalletPath(this.scope);
+    await mkdir(WALLET_DIR, { recursive: true });
+    if (walletId === null || walletId === "") {
+      await writeFile(path, "", { mode: 0o600 });
+      return;
+    }
+    const tmp = path + ".tmp";
+    await writeFile(tmp, walletId, { mode: 0o600 });
+    await rename(tmp, path);
   }
 
   beginLoad(onLoaded: (wallets: Map<string, WalletData>) => void): void {
@@ -76,20 +109,28 @@ export class WalletStore {
     const payload = Buffer.concat([salt, nonce, tag, ciphertext]);
 
     // Atomic write: write to tmp, then rename
-    const dir = join(homedir(), ".eto");
-    await mkdir(dir, { recursive: true });
-    const tmp = WALLET_PATH + ".tmp";
+    await mkdir(WALLET_DIR, { recursive: true });
+    const walletPath = this.walletPath();
+    const tmp = walletPath + ".tmp";
     await writeFile(tmp, payload, { mode: 0o600 });
-    await rename(tmp, WALLET_PATH);
+    await rename(tmp, walletPath);
   }
 
   async load(): Promise<Map<string, WalletData>> {
     const wallets = new Map<string, WalletData>();
     if (!this._passphrase) return wallets;
 
+    // One-shot migration of the legacy single-file store into the __stdio__ scope.
+    // If we're loading __stdio__ and the new file does NOT exist, but the legacy
+    // file does, decrypt from legacy → save under the new scope → rename legacy
+    // to ".migrated" so it never re-runs. Idempotent.
+    if (this.scope === "__stdio__") {
+      await this.migrateLegacyIfNeeded();
+    }
+
     let payload: Buffer;
     try {
-      payload = await readFile(WALLET_PATH);
+      payload = await readFile(this.walletPath());
     } catch {
       // File doesn't exist yet — return empty map
       return wallets;
@@ -100,6 +141,11 @@ export class WalletStore {
       return wallets;
     }
 
+    return this.decryptPayload(payload) ?? wallets;
+  }
+
+  private decryptPayload(payload: Buffer): Map<string, WalletData> | null {
+    const wallets = new Map<string, WalletData>();
     const salt = payload.subarray(0, SALT_LEN);
     const nonce = payload.subarray(SALT_LEN, SALT_LEN + NONCE_LEN);
     const tag = payload.subarray(SALT_LEN + NONCE_LEN, SALT_LEN + NONCE_LEN + TAG_LEN);
@@ -123,10 +169,43 @@ export class WalletStore {
           publicKey: Uint8Array.from(Buffer.from(w.publicKey, "hex")),
         });
       }
+      return wallets;
     } catch {
       console.error("[eto-mcp] Failed to decrypt wallet file — wrong passphrase or corrupted data");
+      return null;
+    }
+  }
+
+  private async migrateLegacyIfNeeded(): Promise<void> {
+    // Only run if legacy file exists and new scoped file does not.
+    const newPath = this.walletPath();
+    let newExists = false;
+    try {
+      await stat(newPath);
+      newExists = true;
+    } catch {
+      // not there — proceed
+    }
+    if (newExists) return;
+
+    let legacyBuf: Buffer;
+    try {
+      legacyBuf = await readFile(LEGACY_WALLET_PATH);
+    } catch {
+      return; // nothing to migrate
     }
 
-    return wallets;
+    if (legacyBuf.length < SALT_LEN + NONCE_LEN + TAG_LEN) return;
+
+    const decrypted = this.decryptPayload(legacyBuf);
+    if (!decrypted) return;
+
+    await this.save(decrypted);
+    try {
+      await rename(LEGACY_WALLET_PATH, LEGACY_WALLET_PATH + ".migrated");
+    } catch (e) {
+      console.error("[eto-mcp] Migrated legacy wallets but could not rename legacy file:", e);
+    }
+    console.error("[eto-mcp] Migrated legacy wallets.enc into scoped store (__stdio__).");
   }
 }

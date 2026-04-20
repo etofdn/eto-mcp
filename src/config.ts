@@ -1,6 +1,7 @@
 export const config = {
   port: parseInt(process.env.PORT || "3000"),
   etoRpcUrl: process.env.ETO_RPC_URL || "http://localhost:8899",
+  etoWsUrl: process.env.ETO_WS_URL || "",
   network: (process.env.NETWORK || "testnet") as "mainnet" | "testnet" | "devnet",
   logLevel: (process.env.LOG_LEVEL || "info") as "debug" | "info" | "warn" | "error",
   corsOrigins: process.env.CORS_ORIGINS || "*",
@@ -30,7 +31,7 @@ export const config = {
   auth: {
     sessionTtlSeconds: 300, // 5 min
     refreshTtlSeconds: 86400, // 24h
-    devBypass: process.env.AUTH_DEV_BYPASS === "true" || process.env.NODE_ENV !== "production",
+    devBypass: process.env.AUTH_DEV_BYPASS === "true",
   },
 
   rateLimits: {

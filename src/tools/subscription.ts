@@ -380,6 +380,7 @@ export function registerSubscriptionTools(server: McpServer): void {
         if (!sub) {
           return {
             content: [{ type: "text" as const, text: `Subscription not found: ${subscription_id}` }],
+            isError: true,
           };
         }
 

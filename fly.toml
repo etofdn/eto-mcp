@@ -22,3 +22,5 @@ primary_region = "sjc"
   PORT = "8080"
   NETWORK = "testnet"
   LOG_LEVEL = "info"
+  AUTH_DEV_BYPASS = "false"
+  # ETO_RPC_URL and ETO_WS_URL are set via `flyctl secrets set` (source of truth).

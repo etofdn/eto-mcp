@@ -47,11 +47,11 @@ describe("LocalSignerFactory.createWallet", () => {
 });
 
 describe("LocalSignerFactory.importWallet", () => {
-  test("imports known private key and returns expected addresses", () => {
+  test("imports known private key and returns expected addresses", async () => {
     const factory = new LocalSignerFactory();
     // Known 32-byte private key (all 0x01 bytes)
     const knownPrivKey = "01".repeat(32);
-    const result = factory.importWallet("imported", knownPrivKey);
+    const result = await factory.importWallet("imported", knownPrivKey);
 
     // Derive expected addresses from known key
     const privBytes = new Uint8Array(32).fill(0x01);
@@ -64,25 +64,25 @@ describe("LocalSignerFactory.importWallet", () => {
     expect(result.evmAddress).toBe(expectedEvm);
   });
 
-  test("imported wallet has valid walletId", () => {
+  test("imported wallet has valid walletId", async () => {
     const factory = new LocalSignerFactory();
-    const result = factory.importWallet("imp", "aa".repeat(32));
+    const result = await factory.importWallet("imp", "aa".repeat(32));
     expect(result.walletId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   });
 
-  test("accepts 0x-prefixed private key", () => {
+  test("accepts 0x-prefixed private key", async () => {
     const factory = new LocalSignerFactory();
     const hex = "02".repeat(32);
-    const result1 = factory.importWallet("a", hex);
-    const result2 = factory.importWallet("b", "0x" + hex);
+    const result1 = await factory.importWallet("a", hex);
+    const result2 = await factory.importWallet("b", "0x" + hex);
     expect(result1.svmAddress).toBe(result2.svmAddress);
     expect(result1.evmAddress).toBe(result2.evmAddress);
   });
 
-  test("throws for wrong-length private key", () => {
+  test("throws for wrong-length private key", async () => {
     const factory = new LocalSignerFactory();
-    expect(() => factory.importWallet("bad", "aabb")).toThrow();
-    expect(() => factory.importWallet("bad", "aa".repeat(31))).toThrow();
+    await expect(factory.importWallet("bad", "aabb")).rejects.toThrow();
+    await expect(factory.importWallet("bad", "aa".repeat(31))).rejects.toThrow();
   });
 });
 
@@ -105,7 +105,7 @@ describe("LocalSignerFactory.listWallets", () => {
 
   test("includes imported wallet", async () => {
     const factory = new LocalSignerFactory();
-    const imported = factory.importWallet("imp", "cc".repeat(32));
+    const imported = await factory.importWallet("imp", "cc".repeat(32));
     const list = await factory.listWallets();
     expect(list).toContain(imported.walletId);
   });

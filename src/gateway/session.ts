@@ -7,6 +7,8 @@ import { timingSafeEqual } from "crypto";
  * Phase 1: Simple HMAC-signed JSON tokens (PASETO v4 deferred to Phase 2).
  */
 
+export type AuthStrategy = "siwe" | "inapp_email" | "inapp_oauth" | "dev";
+
 export interface SessionPayload {
   sub: string;           // user ID
   iss: "eto-mcp";
@@ -18,6 +20,7 @@ export interface SessionPayload {
   wallet_id: string;     // active wallet
   network: "mainnet" | "testnet" | "devnet";
   agent_id?: string;
+  auth_strategy?: AuthStrategy;
 }
 
 export const CAPABILITY_SCOPES = {
@@ -83,6 +86,7 @@ export function createSession(opts: {
   capabilities?: Capability[];
   agentId?: string;
   ttlSeconds?: number;
+  authStrategy?: AuthStrategy;
 }): string {
   const now = Math.floor(Date.now() / 1000);
   const payload: SessionPayload = {
@@ -96,6 +100,7 @@ export function createSession(opts: {
     wallet_id: opts.walletId,
     network: opts.network || "testnet",
     agent_id: opts.agentId,
+    auth_strategy: opts.authStrategy,
   };
   const json = JSON.stringify(payload);
   const sig = hmacSign(json);
@@ -136,5 +141,6 @@ export function createDevSession(walletId: string): string {
     network: "testnet",
     capabilities: ALL_CAPS,
     ttlSeconds: 86400, // 24h for dev
+    authStrategy: "dev",
   });
 }
