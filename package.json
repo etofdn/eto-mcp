@@ -9,7 +9,7 @@
     "start": "bun run src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "bun build ./src/index.ts --outdir ./dist --target bun",
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun && bun build ./src/login.tsx --outdir ./public --target browser --minify",
     "start:sse": "bun run src/sse-server.ts"
   },
   "dependencies": {
@@ -17,9 +17,13 @@
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@noble/ed25519": "^2.2.3",
     "@noble/hashes": "^1.7.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "borsh": "^2.0.0",
     "bs58": "^6.0.0",
     "express": "^5.2.1",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
     "thirdweb": "^5",
     "zod": "^3.24.4"
   },

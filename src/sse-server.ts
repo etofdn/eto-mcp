@@ -3,32 +3,100 @@ import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { createServer } from "./server.js";
-import { config } from "./config.js";
+import { config, ISSUER_URL } from "./config.js";
 import { blockhashCache } from "./write/blockhash-cache.js";
 import { wsManager } from "./read/ws-manager.js";
 import { log, dumpStats } from "./utils/logger.js";
 import { authRouter } from "./gateway/auth-routes.js";
 import { runWithAuth } from "./gateway/auth.js";
 import { sessionStore } from "./signing/session-context.js";
+import { oauthProvider, issueAuthCode } from "./gateway/oauth-provider.js";
+import { verifyPayload } from "./gateway/thirdweb.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LLMS_TXT = readFileSync(join(__dirname, "../public/llms.txt"), "utf8");
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
+const RESOURCE_METADATA_URL = `${ISSUER_URL}/.well-known/oauth-protected-resource`;
 
 const app = express();
 
-// CORS for cross-origin MCP clients
+// CORS — must be first so OPTIONS preflight works for all routes including oauth endpoints
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, MCP-Protocol-Version");
   if (req.method === "OPTIONS") {
     res.sendStatus(204);
     return;
   }
   next();
+});
+
+// OAuth 2.1 authorization server — serves /.well-known/*, /register, /authorize, /token, /revoke
+// Must be installed at the application root per MCP SDK requirements.
+app.use(mcpAuthRouter({
+  provider: oauthProvider,
+  issuerUrl: new URL(ISSUER_URL),
+  scopesSupported: ["mcp:tools"],
+  resourceName: "Singularity MCP Server",
+}));
+
+// Static assets (login.js bundle, etc.)
+app.use(express.static(join(__dirname, "../public")));
+
+// Auth UI — thirdweb ConnectButton → SIWE → bearer token (standalone + OAuth mode)
+app.get("/login", (_req, res) => {
+  res.sendFile(join(__dirname, "../public/login.html"));
+});
+
+// OAuth callback — login.tsx POSTs here after SIWE sign-in in OAuth mode
+// Body: { payload: LoginPayload, signature: string, oauth_state: string (base64url JSON) }
+app.post("/oauth-callback", express.json(), async (req, res) => {
+  const { payload, signature, oauth_state } = req.body ?? {};
+  if (!payload || !signature || !oauth_state) {
+    res.status(400).json({ error: "Missing payload, signature, or oauth_state" });
+    return;
+  }
+
+  let params: {
+    client_id: string;
+    redirect_uri: string;
+    code_challenge: string;
+    scope?: string[];
+    state?: string;
+  };
+  try {
+    params = JSON.parse(Buffer.from(oauth_state, "base64url").toString());
+  } catch {
+    res.status(400).json({ error: "Invalid oauth_state" });
+    return;
+  }
+
+  const result = await verifyPayload({ payload, signature }).catch(() => ({ valid: false as const, error: "verify failed" }));
+  if (!result.valid) {
+    const redirectErr = new URL(params.redirect_uri);
+    redirectErr.searchParams.set("error", "access_denied");
+    if (params.state) redirectErr.searchParams.set("state", params.state);
+    res.redirect(redirectErr.toString());
+    return;
+  }
+
+  const address = (result as any).payload?.address ?? payload.address;
+  const code = issueAuthCode(address, {
+    codeChallenge: params.code_challenge,
+    client_id: params.client_id,
+    redirectUri: params.redirect_uri,
+    scopes: params.scope,
+    state: params.state,
+  });
+
+  const redirectUrl = new URL(params.redirect_uri);
+  redirectUrl.searchParams.set("code", code);
+  if (params.state) redirectUrl.searchParams.set("state", params.state);
+  res.redirect(redirectUrl.toString());
 });
 
 // llms.txt — agent-readable description of this server
@@ -45,9 +113,7 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", version: "1.0.0", tools: 81, network: config.network });
 });
 
-// Auth endpoints: /auth/login, /auth/verify, /auth/me. Mounted under /auth so
-// the router's body-parser never intercepts /message, which must reach the
-// MCP SDK with its raw stream intact.
+// Auth endpoints: /auth/login, /auth/verify, /auth/me.
 app.use("/auth", authRouter);
 
 // Track active transports for cleanup
@@ -61,7 +127,6 @@ app.get("/sse", async (req, res) => {
   const sessionId = transport.sessionId;
   transports.set(sessionId, transport);
 
-  // Clean up on disconnect
   res.on("close", () => {
     transports.delete(sessionId);
     log("info", "sse", "SSE connection closed", { sessionId });
@@ -74,32 +139,19 @@ app.get("/sse", async (req, res) => {
 });
 
 // Message endpoint — client sends JSON-RPC messages here
-// Note: SSEServerTransport.handlePostMessage reads the body itself via raw-body,
-// so express.json() middleware is NOT used here.
-//
-// Auth flow: the bearer token (if any) is stashed in an AsyncLocalStorage via
-// runWithAuth(). The MCP tool-handler wrapper in tools/index.ts reads that ALS,
-// runs authenticate() + requireCapability() + rateLimiter.check(), and then
-// calls runInScope(session.sub, ...) to land the handler in the right
-// persistence bucket. We seed a placeholder scope ("__pending__") here so
-// anything that peeks at currentScope() before the scope is resolved gets a
-// clearly named fallback instead of __default__.
 app.post("/message", async (req, res) => {
   const sessionId = req.query.sessionId as string;
 
-  // Auth gate runs first: callers with no Bearer get 401, not 400, when auth
-  // is enforced. This keeps unauthenticated probes from learning about session
-  // state. We also strictly validate the scheme — "Authorization: Basic ..."
-  // and other non-Bearer schemes must 401, not fall through as if authed.
   const authHeader = req.header("authorization") ?? "";
   const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
   const bearer = bearerMatch?.[1]?.trim();
   if (!bearer && !config.auth.devBypass) {
+    res.set("WWW-Authenticate", `Bearer realm="mcp", resource_metadata="${RESOURCE_METADATA_URL}"`);
     res.status(401).json({
       code: "AUTH_001",
       category: "auth",
       message: "Authentication required",
-      explanation: "No Bearer token. Call POST /auth/login → sign → POST /auth/verify.",
+      explanation: "No Bearer token. Add this MCP server to your client and complete the OAuth flow.",
     });
     return;
   }

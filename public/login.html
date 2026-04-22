@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in · Singularity</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 24px;
+    }
+    #app { display: flex; flex-direction: column; align-items: center; gap: 28px; width: 100%; max-width: 480px; }
+    .wordmark { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+    .sub { font-size: 13px; color: #555; text-align: center; margin-top: 4px; }
+    .status { font-size: 13px; color: #555; }
+    .token-card { display: flex; flex-direction: column; gap: 16px; width: 100%; }
+    .ok-badge { color: #22c55e; font-size: 14px; font-weight: 600; }
+    .box { background: #0d0d0d; border: 1px solid #1a1a1a; border-radius: 10px; padding: 16px; }
+    .label { font-size: 11px; color: #444; text-transform: uppercase; letter-spacing: .8px; margin-bottom: 6px; }
+    .mono { font-family: monospace; font-size: 11px; color: #a78bfa; word-break: break-all; line-height: 1.5; }
+    .meta { font-size: 11px; color: #444; margin-top: 6px; }
+    .cfg { background: #0d0d0d; border: 1px solid #1a1a1a; border-radius: 10px; overflow: hidden; }
+    .cfg-head { padding: 8px 14px; font-size: 11px; color: #444; border-bottom: 1px solid #1a1a1a; display: flex; justify-content: space-between; align-items: center; }
+    .cfg-body { padding: 12px 14px; font-family: monospace; font-size: 10.5px; color: #555; white-space: pre-wrap; line-height: 1.6; }
+    .copy-btn {
+      background: transparent; border: 1px solid #1a1a1a; border-radius: 6px;
+      color: #444; font-size: 11px; cursor: pointer; padding: 4px 10px; transition: all .15s;
+    }
+    .copy-btn:hover { border-color: #7c3aed; color: #fff; }
+    .copy-btn.ok { border-color: #22c55e !important; color: #22c55e !important; }
+    .copy-btn:not(.small) { width: 100%; padding: 8px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/login.js"></script>
+</body>
+</html>

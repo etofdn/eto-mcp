@@ -21,6 +21,7 @@ export interface SessionPayload {
   network: "mainnet" | "testnet" | "devnet";
   agent_id?: string;
   auth_strategy?: AuthStrategy;
+  client_id?: string;    // OAuth client ID (set when issued via OAuth 2.1 flow)
 }
 
 export const CAPABILITY_SCOPES = {
@@ -87,6 +88,7 @@ export function createSession(opts: {
   agentId?: string;
   ttlSeconds?: number;
   authStrategy?: AuthStrategy;
+  clientId?: string;
 }): string {
   const now = Math.floor(Date.now() / 1000);
   const payload: SessionPayload = {
@@ -101,6 +103,7 @@ export function createSession(opts: {
     network: opts.network || "testnet",
     agent_id: opts.agentId,
     auth_strategy: opts.authStrategy,
+    client_id: opts.clientId,
   };
   const json = JSON.stringify(payload);
   const sig = hmacSign(json);
