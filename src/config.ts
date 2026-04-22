@@ -1,3 +1,5 @@
+export const ISSUER_URL = process.env.ISSUER_URL || "https://eto-mcp.fly.dev";
+
 export const config = {
   port: parseInt(process.env.PORT || "3000"),
   etoRpcUrl: process.env.ETO_RPC_URL || "http://localhost:8899",
