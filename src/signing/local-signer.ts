@@ -1,5 +1,10 @@
 import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
+import { sha256 } from "@noble/hashes/sha256";
+import { hkdf } from "@noble/hashes/hkdf";
+import { keccak_256 } from "@noble/hashes/sha3";
+import { secp256k1 } from "@noble/curves/secp256k1";
+import { numberToBytesBE } from "@noble/curves/abstract/utils";
 import bs58 from "bs58";
 import type { Signer, SignerFactory } from "./signer-interface.js";
 import { WalletStore } from "./wallet-store.js";
@@ -44,6 +49,25 @@ export class LocalSigner implements Signer {
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
     return `0x${hex}`;
+  }
+
+  /** Derive a secp256k1 key from the Ed25519 key via HKDF-SHA256. */
+  private evmKey(): Uint8Array {
+    return hkdf(sha256, this.privateKey, new Uint8Array(0), new TextEncoder().encode("eto-evm-secp256k1-v1"), 32);
+  }
+
+  async signEvm(msgHash: Uint8Array): Promise<{ r: Uint8Array; s: Uint8Array; recoveryBit: number }> {
+    const key = this.evmKey();
+    const sig = secp256k1.sign(msgHash, key);
+    return { r: numberToBytesBE(sig.r, 32), s: numberToBytesBE(sig.s, 32), recoveryBit: sig.recovery! };
+  }
+
+  getEvmSigningAddress(): string {
+    const key = this.evmKey();
+    const pubKey = secp256k1.getPublicKey(key, false); // uncompressed 65 bytes
+    const hash = keccak_256(pubKey.slice(1)); // keccak256 of 64-byte uncompressed key (skip 0x04 prefix)
+    const addr = hash.slice(12); // last 20 bytes
+    return "0x" + Array.from(addr).map(b => b.toString(16).padStart(2, "0")).join("");
   }
 }
 

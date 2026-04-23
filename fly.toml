@@ -17,10 +17,15 @@ primary_region = "sjc"
   path = "/health"
   timeout = "5s"
 
+[[mounts]]
+  source = "eto_wallets"
+  destination = "/data/wallets"
+
 [env]
   NODE_ENV = "production"
   PORT = "8080"
   NETWORK = "testnet"
   LOG_LEVEL = "info"
   AUTH_DEV_BYPASS = "false"
+  ETO_WALLET_DIR = "/data/wallets"
   # ETO_RPC_URL and ETO_WS_URL are set via `flyctl secrets set` (source of truth).

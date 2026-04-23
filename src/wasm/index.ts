@@ -362,6 +362,140 @@ export function buildTokenTransferTx(
   return unsignedTransaction(msg);
 }
 
+// ---------------------------------------------------------------------------
+// RLP helpers for EVM transactions (EIP-155 legacy)
+// ---------------------------------------------------------------------------
+
+function bigintToBeBytes(n: bigint): Uint8Array {
+  if (n === 0n) return new Uint8Array(0);
+  const hex = n.toString(16);
+  const padded = hex.length % 2 === 0 ? hex : "0" + hex;
+  return new Uint8Array(Buffer.from(padded, "hex"));
+}
+
+function rlpEncodeItem(bytes: Uint8Array): number[] {
+  if (bytes.length === 0) return [0x80];
+  if (bytes.length === 1 && bytes[0] < 0x80) return [bytes[0]];
+  if (bytes.length <= 55) return [0x80 + bytes.length, ...bytes];
+  const lenBytes = bigintToBeBytes(BigInt(bytes.length));
+  return [0xb7 + lenBytes.length, ...Array.from(lenBytes), ...bytes];
+}
+
+function rlpEncodeInt(n: bigint): number[] {
+  return rlpEncodeItem(bigintToBeBytes(n));
+}
+
+function rlpEncodeList(items: number[][]): Uint8Array {
+  const flat = items.flat();
+  const len = flat.length;
+  if (len <= 55) return new Uint8Array([0xc0 + len, ...flat]);
+  const lenBytes = bigintToBeBytes(BigInt(len));
+  return new Uint8Array([0xf7 + lenBytes.length, ...Array.from(lenBytes), ...flat]);
+}
+
+/** EIP-155 signing hash for a legacy EVM deploy transaction (to = null). */
+export function buildEvmDeploySigningHash(
+  bytecode: string,
+  chainId: bigint,
+  nonce: bigint,
+  gasPrice: bigint,
+  gasLimit: bigint,
+  value: bigint = 0n,
+): Uint8Array {
+  const hex = bytecode.startsWith("0x") ? bytecode.slice(2) : bytecode;
+  const data = new Uint8Array(Buffer.from(hex, "hex"));
+  const encoded = rlpEncodeList([
+    rlpEncodeInt(nonce), rlpEncodeInt(gasPrice), rlpEncodeInt(gasLimit),
+    [0x80], // to = null (contract creation)
+    rlpEncodeInt(value), rlpEncodeItem(data),
+    rlpEncodeInt(chainId), rlpEncodeInt(0n), rlpEncodeInt(0n), // EIP-155
+  ]);
+  return keccak_256(encoded);
+}
+
+/** EIP-155 signing hash for a legacy EVM call transaction (to = contract). */
+export function buildEvmCallSigningHash(
+  contract: string,
+  calldata: string,
+  chainId: bigint,
+  nonce: bigint,
+  gasPrice: bigint,
+  gasLimit: bigint,
+  value: bigint = 0n,
+): Uint8Array {
+  const toHex = contract.startsWith("0x") ? contract.slice(2) : contract;
+  const to = new Uint8Array(Buffer.from(toHex.padStart(40, "0"), "hex"));
+  const cdHex = calldata.startsWith("0x") ? calldata.slice(2) : calldata;
+  const cd = new Uint8Array(Buffer.from(cdHex, "hex"));
+  const encoded = rlpEncodeList([
+    rlpEncodeInt(nonce), rlpEncodeInt(gasPrice), rlpEncodeInt(gasLimit),
+    rlpEncodeItem(to), rlpEncodeInt(value), rlpEncodeItem(cd),
+    rlpEncodeInt(chainId), rlpEncodeInt(0n), rlpEncodeInt(0n),
+  ]);
+  return keccak_256(encoded);
+}
+
+function wrapEvmRlpInSvmTx(deployer: string, rlp: Uint8Array, recentBlockhash: string): Uint8Array {
+  const deployerKey = pubkeyBytes(deployer);
+  const blockhash = blockhashBytes(recentBlockhash);
+  const instruction: CompiledInstruction = { programIdIndex: 1, accounts: new Uint8Array([0]), data: rlp };
+  const msg = buildMessage([deployerKey, EVM_PROGRAM_ID], blockhash, [instruction], 1, 0, 1);
+  return unsignedTransaction(msg);
+}
+
+/** Build fully signed EVM deploy tx (RLP) wrapped in SVM instruction envelope. */
+export function buildSignedEvmDeployTx(
+  deployer: string,
+  bytecode: string,
+  r: Uint8Array,
+  s: Uint8Array,
+  v: bigint,
+  chainId: bigint,
+  nonce: bigint,
+  gasPrice: bigint,
+  gasLimit: bigint,
+  value: bigint,
+  recentBlockhash: string,
+): Uint8Array {
+  const hex = bytecode.startsWith("0x") ? bytecode.slice(2) : bytecode;
+  const data = new Uint8Array(Buffer.from(hex, "hex"));
+  const rlp = rlpEncodeList([
+    rlpEncodeInt(nonce), rlpEncodeInt(gasPrice), rlpEncodeInt(gasLimit),
+    [0x80], // to = null (contract creation)
+    rlpEncodeInt(value), rlpEncodeItem(data),
+    rlpEncodeInt(v), rlpEncodeItem(r), rlpEncodeItem(s),
+  ]);
+  return wrapEvmRlpInSvmTx(deployer, rlp, recentBlockhash);
+}
+
+/** Build fully signed EVM call tx (RLP) wrapped in SVM instruction envelope. */
+export function buildSignedEvmCallTx(
+  caller: string,
+  contract: string,
+  calldata: string,
+  r: Uint8Array,
+  s: Uint8Array,
+  v: bigint,
+  chainId: bigint,
+  nonce: bigint,
+  gasPrice: bigint,
+  gasLimit: bigint,
+  value: bigint,
+  recentBlockhash: string,
+): Uint8Array {
+  const toHex = contract.startsWith("0x") ? contract.slice(2) : contract;
+  const to = new Uint8Array(Buffer.from(toHex.padStart(40, "0"), "hex"));
+  const cdHex = calldata.startsWith("0x") ? calldata.slice(2) : calldata;
+  const cd = new Uint8Array(Buffer.from(cdHex, "hex"));
+  const rlp = rlpEncodeList([
+    rlpEncodeInt(nonce), rlpEncodeInt(gasPrice), rlpEncodeInt(gasLimit),
+    rlpEncodeItem(to), rlpEncodeInt(value), rlpEncodeItem(cd),
+    rlpEncodeInt(v), rlpEncodeItem(r), rlpEncodeItem(s),
+  ]);
+  return wrapEvmRlpInSvmTx(caller, rlp, recentBlockhash);
+}
+
+/** Legacy: wraps raw bytecode in SVM envelope (kept for backward compat). */
 export function buildEvmDeployTx(
   deployer: string,
   bytecode: string,
@@ -371,29 +505,10 @@ export function buildEvmDeployTx(
 ): Uint8Array {
   const deployerKey = pubkeyBytes(deployer);
   const blockhash = blockhashBytes(recentBlockhash);
-
-  // Account keys: deployer (0), EVM program (1)
-  const accountKeys = [deployerKey, EVM_PROGRAM_ID];
-
-  // Instruction data: bytecode bytes (hex-decoded, strip 0x prefix)
   const hex = bytecode.startsWith("0x") ? bytecode.slice(2) : bytecode;
   const data = new Uint8Array(Buffer.from(hex, "hex"));
-
-  const instruction: CompiledInstruction = {
-    programIdIndex: 1, // EVM program
-    accounts: new Uint8Array([0]), // deployer
-    data,
-  };
-
-  const msg = buildMessage(
-    accountKeys,
-    blockhash,
-    [instruction],
-    1, // deployer is signer
-    0,
-    1  // EVM program readonly
-  );
-
+  const instruction: CompiledInstruction = { programIdIndex: 1, accounts: new Uint8Array([0]), data };
+  const msg = buildMessage([deployerKey, EVM_PROGRAM_ID], blockhash, [instruction], 1, 0, 1);
   return unsignedTransaction(msg);
 }
 
@@ -789,8 +904,8 @@ export function buildCreateMintTx(
   // Space for mint = 82 bytes; lamports = 1461600 (typical rent-exempt for mint)
   const createData: number[] = [];
   writeU32LE(createData, 0); // CreateAccount discriminator
-  writeU64LE(createData, 1461600n); // lamports
-  writeU64LE(createData, 82n); // space
+  writeU64LE(createData, 1461600n); // lamports (rent-exempt)
+  writeU64LE(createData, 0n); // space=0: token program writes data on InitializeMint
   writeBytes(createData, TOKEN_PROGRAM_ID); // owner = token program
 
   const createIx: CompiledInstruction = {
@@ -805,9 +920,8 @@ export function buildCreateMintTx(
   const initData: number[] = [];
   writeU8(initData, 0); // InitializeMint discriminator
   writeU8(initData, decimals);
-  writeU8(initData, 1); // Some(mint_authority)
-  writeBytes(initData, mintAuthorityKey);
-  writeU8(initData, 0); // None (freeze_authority)
+  writeBytes(initData, mintAuthorityKey); // mint_authority: Pubkey (not Option)
+  writeU8(initData, 0); // freeze_authority: Option<Pubkey> = None
 
   const initIx: CompiledInstruction = {
     programIdIndex: 3, // token program
@@ -1242,117 +1356,130 @@ export function buildSetDelegateTx(
 }
 
 // ---------------------------------------------------------------------------
-// A2A Program Instructions
+// A2A Program Instructions (RegisterCard / CreateTask / SendMessage protocol)
 // ---------------------------------------------------------------------------
 
+function writeString(buf: number[], s: string): void {
+  const bytes = new TextEncoder().encode(s);
+  writeU32LE(buf, bytes.length);
+  for (const b of bytes) buf.push(b);
+}
+
+/**
+ * RegisterCard (variant 0) — create an agent card making the agent addressable for A2A tasks.
+ * Accounts: funder(0,signer,writable), cardPDA(1,writable), agentAccount(2,readonly), authority(3,signer)
+ */
 export function buildCreateA2AChannelTx(
   owner: string,
-  channelAccount: string,
-  counterparty: string,
-  capacity: number,
-  recentBlockhash: string
+  cardAccount: string,
+  agentAccount: string,
+  _capacity: number,
+  recentBlockhash: string,
+  name: string = "Agent Card",
+  description: string = "A2A agent card",
+  endpointUri: string = "",
+  capabilitiesUri: string = "",
+  version: string = "1.0",
 ): Uint8Array {
   const ownerKey = pubkeyBytes(owner);
-  const channelAccountKey = pubkeyBytes(channelAccount);
-  const counterpartyKey = pubkeyBytes(counterparty);
+  const cardKey = pubkeyBytes(cardAccount);
+  const agentKey = pubkeyBytes(agentAccount);
   const blockhash = blockhashBytes(recentBlockhash);
 
-  // Account keys: owner(0), channelAccount(1), A2A program(2)
-  const accountKeys = [ownerKey, channelAccountKey, A2A_PROGRAM_ID];
+  const accountKeys = [ownerKey, cardKey, agentKey, A2A_PROGRAM_ID];
 
-  // Instruction data: [0] + counterparty 32 bytes + capacity u32 LE
   const data: number[] = [];
-  writeU8(data, 0); // CreateChannel discriminator
-  writeBytes(data, counterpartyKey);
-  writeU32LE(data, capacity);
-
-  const instruction: CompiledInstruction = {
-    programIdIndex: 2, // A2A program
-    accounts: new Uint8Array([0, 1]), // owner, channelAccount
-    data: new Uint8Array(data),
-  };
-
-  const msg = buildMessage(
-    accountKeys,
-    blockhash,
-    [instruction],
-    1, // owner is signer
-    0,
-    1  // A2A program readonly
-  );
-
-  return unsignedTransaction(msg);
-}
-
-export function buildSendA2AMessageTx(
-  sender: string,
-  channelAccount: string,
-  message: Uint8Array,
-  recentBlockhash: string
-): Uint8Array {
-  const senderKey = pubkeyBytes(sender);
-  const channelAccountKey = pubkeyBytes(channelAccount);
-  const blockhash = blockhashBytes(recentBlockhash);
-
-  // Account keys: sender(0), channelAccount(1), A2A program(2)
-  const accountKeys = [senderKey, channelAccountKey, A2A_PROGRAM_ID];
-
-  // Instruction data: [1] + message_len u32 LE + message bytes
-  const data: number[] = [];
-  writeU8(data, 1); // SendMessage discriminator
-  writeVec(data, message);
-
-  const instruction: CompiledInstruction = {
-    programIdIndex: 2, // A2A program
-    accounts: new Uint8Array([0, 1]), // sender, channelAccount
-    data: new Uint8Array(data),
-  };
-
-  const msg = buildMessage(
-    accountKeys,
-    blockhash,
-    [instruction],
-    1, // sender is signer
-    0,
-    1  // A2A program readonly
-  );
-
-  return unsignedTransaction(msg);
-}
-
-export function buildCloseA2AChannelTx(
-  owner: string,
-  channelAccount: string,
-  rentDestination: string,
-  recentBlockhash: string
-): Uint8Array {
-  const ownerKey = pubkeyBytes(owner);
-  const channelAccountKey = pubkeyBytes(channelAccount);
-  const rentDestinationKey = pubkeyBytes(rentDestination);
-  const blockhash = blockhashBytes(recentBlockhash);
-
-  // Account keys: channelAccount(0), rentDestination(1), owner(2), A2A program(3)
-  const accountKeys = [channelAccountKey, rentDestinationKey, ownerKey, A2A_PROGRAM_ID];
-
-  // Instruction data: [4] (CloseChannel discriminator)
-  const data: number[] = [];
-  writeU8(data, 4);
+  writeU8(data, 0); // RegisterCard variant
+  writeString(data, name);
+  writeString(data, description);
+  writeString(data, endpointUri);
+  writeString(data, capabilitiesUri);
+  writeString(data, version);
+  writeU8(data, 0); // AuthType::None
 
   const instruction: CompiledInstruction = {
     programIdIndex: 3, // A2A program
-    accounts: new Uint8Array([0, 1, 2]), // channelAccount, rentDestination, owner
+    accounts: new Uint8Array([0, 1, 2, 0]), // funder, cardPDA, agentAccount, authority=owner
     data: new Uint8Array(data),
   };
 
-  const msg = buildMessage(
-    accountKeys,
-    blockhash,
-    [instruction],
-    1, // owner is signer
-    0,
-    1  // A2A program readonly
-  );
+  const msg = buildMessage(accountKeys, blockhash, [instruction], 1, 0, 2);
+  return unsignedTransaction(msg);
+}
 
+/**
+ * CreateTask (variant 4) — send a task request to another agent with escrow.
+ * Accounts: sender(0,signer,writable), taskPDA(1,writable), escrowPDA(2,writable), senderCard(3), receiverCard(4), A2A program(5)
+ */
+export function buildSendA2AMessageTx(
+  sender: string,
+  taskAccount: string,
+  message: Uint8Array,
+  recentBlockhash: string,
+  escrowLamports: bigint = 1000n,
+  deadlineSlot: bigint = 999999999n,
+  receiverCard: string = sender,
+  senderCard: string = sender,
+): Uint8Array {
+  const senderKey = pubkeyBytes(sender);
+  const taskKey = pubkeyBytes(taskAccount);
+  const escrowKey = sha256(new TextEncoder().encode(`escrow:${taskAccount}`));
+  const senderCardKey = pubkeyBytes(senderCard);
+  const receiverCardKey = pubkeyBytes(receiverCard);
+  const blockhash = blockhashBytes(recentBlockhash);
+
+  const metadataUri = new TextDecoder().decode(message).slice(0, 200);
+  const taskId = sha256(message.slice(0, 32));
+
+  const accountKeys = [senderKey, taskKey, escrowKey, senderCardKey, receiverCardKey, A2A_PROGRAM_ID];
+
+  const data: number[] = [];
+  writeU8(data, 4); // CreateTask variant
+  writeBytes(data, taskId); // task_id: [u8; 32]
+  writeU64LE(data, escrowLamports); // escrow_lamports: u64
+  writeU64LE(data, deadlineSlot); // deadline_slot: u64
+  writeString(data, metadataUri); // metadata_uri: String
+
+  const instruction: CompiledInstruction = {
+    programIdIndex: 5, // A2A program
+    accounts: new Uint8Array([0, 1, 2, 3, 4]), // sender, taskPDA, escrowPDA, senderCard, receiverCard
+    data: new Uint8Array(data),
+  };
+
+  const msg = buildMessage(accountKeys, blockhash, [instruction], 1, 0, 3);
+  return unsignedTransaction(msg);
+}
+
+/**
+ * CancelTask (variant 10) — cancel a task and reclaim escrow.
+ * Accounts: taskPDA(0,writable), escrowPDA(1,writable), senderWallet(2,writable), senderCard(3), authority(4,signer)
+ */
+export function buildCloseA2AChannelTx(
+  owner: string,
+  taskAccount: string,
+  rentDestination: string,
+  recentBlockhash: string,
+): Uint8Array {
+  const ownerKey = pubkeyBytes(owner);
+  const taskKey = pubkeyBytes(taskAccount);
+  const destKey = pubkeyBytes(rentDestination);
+  const escrowKey = sha256(new TextEncoder().encode(`escrow:${taskAccount}`));
+  const blockhash = blockhashBytes(recentBlockhash);
+
+  const accountKeys = [taskKey, escrowKey, destKey, ownerKey, A2A_PROGRAM_ID];
+
+  const currentSlot = BigInt(Date.now() / 400 | 0); // rough slot estimate
+  const data: number[] = [];
+  writeU8(data, 10); // CancelTask variant
+  writeU64LE(data, currentSlot);
+
+  const instruction: CompiledInstruction = {
+    programIdIndex: 4, // A2A program
+    accounts: new Uint8Array([0, 1, 2, 3, 3]), // taskPDA, escrowPDA, senderWallet, senderCard, authority
+    data: new Uint8Array(data),
+  };
+
+  const msg = buildMessage(accountKeys, blockhash, [instruction], 1, 0, 3);
   return unsignedTransaction(msg);
 }
 

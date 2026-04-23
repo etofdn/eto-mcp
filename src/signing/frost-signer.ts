@@ -67,6 +67,14 @@ export class FrostSigner implements Signer {
     const last20 = pubkeyBytes.slice(12);
     return "0x" + Buffer.from(last20).toString("hex");
   }
+
+  async signEvm(_msgHash: Uint8Array): Promise<{ r: Uint8Array; s: Uint8Array; recoveryBit: number }> {
+    throw new Error("EVM signing not supported for FrostSigner");
+  }
+
+  getEvmSigningAddress(): string {
+    throw new Error("EVM signing not supported for FrostSigner");
+  }
 }
 
 // In-memory mapping of walletId → keyId + publicKey
