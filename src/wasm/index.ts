@@ -220,24 +220,19 @@ export function findPda(
   seeds: Uint8Array[],
   programId: string
 ): { address: string; bump: number } {
+  // ETO PDA: SHA256(seeds... || [bump] || program_id || "ProgramDerivedAddress")
+  // ETO's create_program_address does NOT reject on-curve points, so bump=255 always.
   const programIdBytes = pubkeyBytes(programId);
+  const PDA_MARKER = new TextEncoder().encode("ProgramDerivedAddress");
+  const bump = 255;
 
-  for (let bump = 255; bump >= 0; bump--) {
-    const buf: number[] = [];
-    for (const seed of seeds) writeBytes(buf, seed);
-    writeBytes(buf, programIdBytes);
-    writeU8(buf, bump);
+  const buf: number[] = [];
+  for (const seed of seeds) writeBytes(buf, seed);
+  writeU8(buf, bump);
+  writeBytes(buf, programIdBytes);
+  writeBytes(buf, PDA_MARKER);
 
-    const hashInput = new Uint8Array(buf);
-    const candidate = sha256(hashInput);
-
-    // Reject if the candidate is a valid Ed25519 point (must be off-curve)
-    if (!isOnEd25519Curve(candidate)) {
-      return { address: bs58.encode(candidate), bump };
-    }
-  }
-
-  throw new Error("Could not find valid PDA for given seeds and programId");
+  return { address: bs58.encode(sha256(new Uint8Array(buf))), bump };
 }
 
 // ---------------------------------------------------------------------------
@@ -1080,11 +1075,13 @@ export function buildCreateStakeTx(
     SYSVAR_RENT_PUBKEY,
   ];
 
-  // Instruction 0: System CreateAccount with space=200, owner=StakeProgramID
+  // Instruction 0: System CreateAccount with space=0 (stake program writes
+  // state in Initialize; space>0 causes Borsh trailing-bytes failure when
+  // deserializing zero-padded data).
   const createData: number[] = [];
   writeU32LE(createData, 0); // CreateAccount discriminator
   writeU64LE(createData, lamports);
-  writeU64LE(createData, 200n); // space
+  writeU64LE(createData, 0n); // space=0
   writeBytes(createData, STAKE_PROGRAM_ID); // owner
 
   const createIx: CompiledInstruction = {
@@ -1093,12 +1090,16 @@ export function buildCreateStakeTx(
     data: new Uint8Array(createData),
   };
 
-  // Instruction 1: Stake Initialize
-  // discriminator [0,0,0,0] (u32 LE = 0) + authorized staker 32 bytes + authorized withdrawer 32 bytes
+  // Instruction 1: Stake Initialize(Authorized, Lockup)
+  // Borsh: u8 variant 0, then Authorized { staker, withdrawer } (64 bytes),
+  // then Lockup { unix_timestamp: i64, epoch: u64, custodian: Pubkey }.
   const initData: number[] = [];
-  writeU32LE(initData, 0); // Initialize discriminator
-  writeBytes(initData, stakerKey); // authorized staker
-  writeBytes(initData, stakerKey); // authorized withdrawer (same as staker)
+  writeU8(initData, 0); // Initialize variant (Borsh u8 discriminant)
+  writeBytes(initData, stakerKey); // authorized.staker
+  writeBytes(initData, stakerKey); // authorized.withdrawer (same)
+  writeU64LE(initData, 0n); // lockup.unix_timestamp (no lockup)
+  writeU64LE(initData, 0n); // lockup.epoch
+  writeBytes(initData, new Uint8Array(32)); // lockup.custodian = zero
 
   const initIx: CompiledInstruction = {
     programIdIndex: 3, // stake program
