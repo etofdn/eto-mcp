@@ -1,10 +1,20 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { hmac } from "@noble/hashes/hmac";
 import { timingSafeEqual } from "crypto";
+import { homedir } from "os";
+import { join } from "path";
+import { atomicWriteJson, loadJsonArray } from "./persisted-store.js";
 
 /**
- * Session management using signed tokens.
- * Phase 1: Simple HMAC-signed JSON tokens (PASETO v4 deferred to Phase 2).
+ * Session management using HMAC-SHA256 signed JSON tokens.
+ *
+ * Token format: base64url(json_payload).hex(hmac_sha256(payload))
+ * NOT a standard JWT — no `alg` header, no JWS envelope. If this needs to be
+ * consumed by a third party JWT verifier in the future, migrate to PASETO v4
+ * or JWS and drop this format.
+ *
+ * Signing key is sourced from SESSION_SIGNING_KEY, falling back to the
+ * historical PASETO_SIGNING_KEY env var for backwards compatibility.
  */
 
 export type AuthStrategy = "siwe" | "inapp_email" | "inapp_oauth" | "dev";
@@ -61,12 +71,16 @@ export type Capability = keyof typeof CAPABILITY_SCOPES;
 
 const ALL_CAPS = Object.keys(CAPABILITY_SCOPES) as Capability[];
 
-// Signing key: must be set in production
+// Signing key: must be set in production.
+// Accepts either SESSION_SIGNING_KEY (preferred) or PASETO_SIGNING_KEY
+// (legacy name — the implementation is HMAC-SHA256, not PASETO).
 const signingKey = (() => {
-  const envKey = process.env.PASETO_SIGNING_KEY;
+  const envKey = process.env.SESSION_SIGNING_KEY ?? process.env.PASETO_SIGNING_KEY;
   if (process.env.NODE_ENV === "production") {
     if (!envKey || envKey.length < 32) {
-      console.error("FATAL: PASETO_SIGNING_KEY must be set to at least 32 characters in production");
+      console.error(
+        "FATAL: SESSION_SIGNING_KEY (or legacy PASETO_SIGNING_KEY) must be set to at least 32 characters in production",
+      );
       process.exit(1);
     }
   }
@@ -78,6 +92,50 @@ const signingKey = (() => {
 function hmacSign(data: string): string {
   const mac = hmac(sha256, signingKey, new TextEncoder().encode(data));
   return Buffer.from(mac).toString("hex");
+}
+
+// Access-token denylist. Access tokens are stateless HMAC so we can't revoke
+// them structurally — a revocation list is the only way. Keyed by jti -> exp;
+// entries expire naturally when the underlying token would have.
+const DENYLIST_PATH = join(
+  process.env.ETO_WALLET_DIR || join(homedir(), ".eto", "wallets"),
+  "revoked_jtis.json",
+);
+const denyList = new Map<string, number>();
+(function loadDenyList() {
+  const now = Math.floor(Date.now() / 1000);
+  for (const [jti, exp] of loadJsonArray<[string, number]>(DENYLIST_PATH)) {
+    if (exp > now) denyList.set(jti, exp);
+  }
+})();
+
+export function revokeJti(jti: string, exp: number): void {
+  denyList.set(jti, exp);
+  atomicWriteJson(DENYLIST_PATH, [...denyList.entries()]);
+}
+
+// Signed oauth_state used to carry /authorize params through /login to
+// /oauth-callback. Same HMAC key as session tokens — clients (or a
+// compromised /login page) can't tamper with redirect_uri, code_challenge,
+// client_id, scope, or state without the signature breaking.
+export function signOauthState(payload: object): string {
+  const json = JSON.stringify(payload);
+  const sig = hmacSign(json);
+  return `${Buffer.from(json).toString("base64url")}.${sig}`;
+}
+
+export function verifyOauthState<T = unknown>(token: string): T | null {
+  try {
+    const [b64, sig] = token.split(".");
+    if (!b64 || !sig) return null;
+    const json = Buffer.from(b64, "base64url").toString();
+    const expected = Buffer.from(hmacSign(json), "hex");
+    const actual = Buffer.from(sig, "hex");
+    if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
+    return JSON.parse(json) as T;
+  } catch {
+    return null;
+  }
 }
 
 export function createSession(opts: {
@@ -125,6 +183,9 @@ export function verifySession(token: string): SessionPayload | null {
 
     // Check expiry
     if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+
+    // Check revocation list (access-token denylist)
+    if (denyList.has(payload.jti)) return null;
 
     return payload;
   } catch {

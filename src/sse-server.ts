@@ -14,6 +14,7 @@ import { runWithAuth } from "./gateway/auth.js";
 import { sessionStore } from "./signing/session-context.js";
 import { oauthProvider, issueAuthCode } from "./gateway/oauth-provider.js";
 import { verifyPayload } from "./gateway/thirdweb.js";
+import { verifyOauthState } from "./gateway/session.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LLMS_TXT = readFileSync(join(__dirname, "../public/llms.txt"), "utf8");
@@ -65,17 +66,23 @@ app.post("/oauth-callback", express.json(), async (req, res) => {
     return;
   }
 
-  let params: {
+  const params = verifyOauthState<{
     client_id: string;
     redirect_uri: string;
     code_challenge: string;
     scope?: string[];
     state?: string;
-  };
-  try {
-    params = JSON.parse(Buffer.from(oauth_state, "base64url").toString());
-  } catch {
-    res.status(400).json({ error: "Invalid oauth_state" });
+    iat?: number;
+  }>(oauth_state);
+  if (!params) {
+    res.status(400).json({ error: "Invalid or tampered oauth_state" });
+    return;
+  }
+  // Bound authorize->callback round-trip at 30 min — defends against stale
+  // state replay after the login session expired.
+  const MAX_STATE_AGE_SEC = 30 * 60;
+  if (typeof params.iat === "number" && Date.now() / 1000 - params.iat > MAX_STATE_AGE_SEC) {
+    res.status(400).json({ error: "oauth_state expired; restart login" });
     return;
   }
 
@@ -84,7 +91,10 @@ app.post("/oauth-callback", express.json(), async (req, res) => {
     const redirectErr = new URL(params.redirect_uri);
     redirectErr.searchParams.set("error", "access_denied");
     if (params.state) redirectErr.searchParams.set("state", params.state);
-    res.redirect(redirectErr.toString());
+    // Return JSON instead of 302 so the browser can navigate even when
+    // redirect_uri is a custom scheme (cursor://, vscode://, cloud://...).
+    // fetch() can't follow cross-scheme redirects; the client JS does it.
+    res.json({ location: redirectErr.toString(), error: "access_denied" });
     return;
   }
 
@@ -100,7 +110,7 @@ app.post("/oauth-callback", express.json(), async (req, res) => {
   const redirectUrl = new URL(params.redirect_uri);
   redirectUrl.searchParams.set("code", code);
   if (params.state) redirectUrl.searchParams.set("state", params.state);
-  res.redirect(redirectUrl.toString());
+  res.json({ location: redirectUrl.toString() });
 });
 
 // llms.txt — agent-readable description of this server
@@ -175,6 +185,18 @@ app.post("/message", async (req, res) => {
 
 // Start
 async function startSseServer(): Promise<void> {
+  // Warn loudly if ISSUER_URL wasn't set explicitly in production. The
+  // /.well-known/* metadata advertises this URL to MCP clients; a mismatch
+  // with the public hostname makes /authorize and /token route to the wrong
+  // host and the client looks like it's in a redirect loop.
+  if (process.env.NODE_ENV === "production" && !process.env.ISSUER_URL) {
+    console.error(
+      `[eto-mcp] WARN: ISSUER_URL not set — defaulting to ${ISSUER_URL}. ` +
+      `If you reverse-proxy this server under a different hostname, set ` +
+      `ISSUER_URL explicitly or MCP clients will hit the default host.`,
+    );
+  }
+
   blockhashCache.startRefresh();
 
   wsManager.connect().then(ok => {
