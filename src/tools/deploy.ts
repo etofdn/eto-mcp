@@ -40,7 +40,6 @@ export function registerDeployTools(server: McpServer): void {
 
         const factory = getSignerFactory();
         const signer = await factory.getSigner(walletId);
-        const deployer = signer.getPublicKey();
 
         // Normalize bytecode: strip 0x prefix, append constructor args if provided
         const hexStripped = bytecode.startsWith("0x") ? bytecode.slice(2) : bytecode;

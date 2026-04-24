@@ -35,8 +35,9 @@ function pubkeyBytes(b58: string): Uint8Array {
 function blockhashBytesOf(b58: string): Uint8Array {
   const decoded = bs58.decode(b58);
   if (decoded.length === 32) return decoded;
-  const p = new Uint8Array(32); p.set(decoded, 32 - decoded.length); return p;
-  return decoded;
+  const p = new Uint8Array(32);
+  p.set(decoded, 32 - decoded.length);
+  return p;
 }
 
 function buildA2ATx(

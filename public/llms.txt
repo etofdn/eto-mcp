@@ -148,7 +148,7 @@ Every auth error follows the MCP error envelope:
   "code": "AUTH_001",
   "category": "auth",
   "message": "Authentication required",
-  "explanation": "No Bearer token. Call POST /auth/login → sign → POST /auth/verify.",
+  "explanation": "No Bearer token. Complete the OAuth flow advertised in the WWW-Authenticate header, or (programmatic SIWE) POST /auth/login → sign → POST /auth/verify.",
   "recovery": [{"action":"authenticate","description":"..."}],
   "retryable": false
 }
