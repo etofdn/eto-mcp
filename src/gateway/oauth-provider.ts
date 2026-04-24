@@ -1,4 +1,6 @@
 import { randomBytes } from "crypto";
+import { homedir } from "os";
+import { join } from "path";
 import type { Response } from "express";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
@@ -6,6 +8,12 @@ import type { OAuthClientInformationFull, OAuthTokenRevocationRequest, OAuthToke
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { createSession, verifySession } from "./session.js";
 import { config } from "../config.js";
+import { atomicWriteJson, loadJsonArray } from "./persisted-store.js";
+
+const STORE_DIR = process.env.ETO_WALLET_DIR || join(homedir(), ".eto", "wallets");
+const CLIENTS_PATH = join(STORE_DIR, "oauth_clients.json");
+const PENDING_CODES_PATH = join(STORE_DIR, "oauth_pending_codes.json");
+const REFRESH_TOKENS_PATH = join(STORE_DIR, "refresh_tokens.json");
 
 interface PendingCode {
   address: string;
@@ -16,9 +24,38 @@ interface PendingCode {
   exp: number;
 }
 
+type RefreshEntry = { address: string; client_id: string; scope: string[] };
+
 const clientsMap = new Map<string, OAuthClientInformationFull>();
 const pendingCodes = new Map<string, PendingCode>();
-const refreshTokens = new Map<string, { address: string; client_id: string; scope: string[] }>();
+const refreshTokens = new Map<string, RefreshEntry>();
+
+// Load persisted state on module init. Fly.io machines restart on deploy and
+// may restart on idle with auto_stop_machines="stop"; without persistence the
+// in-memory maps are wiped and clients see "unknown client" / "expired code"
+// mid-flow.
+(function loadAll() {
+  const now = Math.floor(Date.now() / 1000);
+  for (const [k, v] of loadJsonArray<[string, OAuthClientInformationFull]>(CLIENTS_PATH)) {
+    clientsMap.set(k, v);
+  }
+  for (const [k, v] of loadJsonArray<[string, PendingCode]>(PENDING_CODES_PATH)) {
+    if (v.exp > now) pendingCodes.set(k, v);
+  }
+  for (const [k, v] of loadJsonArray<[string, RefreshEntry]>(REFRESH_TOKENS_PATH)) {
+    refreshTokens.set(k, v);
+  }
+  const loaded = clientsMap.size + pendingCodes.size + refreshTokens.size;
+  if (loaded > 0) {
+    console.error(
+      `[eto-mcp] Loaded OAuth state: ${clientsMap.size} clients, ${pendingCodes.size} pending codes, ${refreshTokens.size} refresh tokens`,
+    );
+  }
+})();
+
+function persistClients() { atomicWriteJson(CLIENTS_PATH, [...clientsMap.entries()]); }
+function persistPendingCodes() { atomicWriteJson(PENDING_CODES_PATH, [...pendingCodes.entries()]); }
+function persistRefreshTokens() { atomicWriteJson(REFRESH_TOKENS_PATH, [...refreshTokens.entries()]); }
 
 const clientsStore: OAuthRegisteredClientsStore = {
   getClient(clientId: string) {
@@ -32,6 +69,7 @@ const clientsStore: OAuthRegisteredClientsStore = {
       client_id_issued_at: Math.floor(Date.now() / 1000),
     };
     clientsMap.set(client_id, client);
+    persistClients();
     return client;
   },
 };
@@ -50,6 +88,7 @@ export function issueAuthCode(
     scope: params.scopes ?? ["mcp:tools"],
     exp: Math.floor(Date.now() / 1000) + 600,
   });
+  persistPendingCodes();
   return code;
 }
 
@@ -86,9 +125,11 @@ export const oauthProvider: OAuthServerProvider = {
     if (!pending) throw new Error("Unknown or expired authorization code");
     if (pending.exp < Math.floor(Date.now() / 1000)) {
       pendingCodes.delete(code);
+      persistPendingCodes();
       throw new Error("Authorization code expired");
     }
     pendingCodes.delete(code);
+    persistPendingCodes();
 
     const accessToken = createSession({
       userId: pending.address,
@@ -105,6 +146,7 @@ export const oauthProvider: OAuthServerProvider = {
       client_id: client.client_id,
       scope: pending.scope,
     });
+    persistRefreshTokens();
 
     return {
       access_token: accessToken,
@@ -155,6 +197,6 @@ export const oauthProvider: OAuthServerProvider = {
   },
 
   async revokeToken(_client: OAuthClientInformationFull, request: OAuthTokenRevocationRequest) {
-    refreshTokens.delete(request.token);
+    if (refreshTokens.delete(request.token)) persistRefreshTokens();
   },
 };
