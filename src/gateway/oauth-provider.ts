@@ -118,7 +118,7 @@ export const oauthProvider: OAuthServerProvider = {
     client: OAuthClientInformationFull,
     code: string,
     _codeVerifier?: string,
-    _redirectUri?: string,
+    redirectUri?: string,
     _resource?: URL
   ): Promise<OAuthTokens> {
     const pending = pendingCodes.get(code);
@@ -128,6 +128,16 @@ export const oauthProvider: OAuthServerProvider = {
       persistPendingCodes();
       throw new Error("Authorization code expired");
     }
+    // OAuth 2.1 §5.2: if redirect_uri was used at /authorize, the same value
+    // MUST be sent at /token. The SDK forwards whatever the client sent here;
+    // if it's missing the client already violated its own flow, but we still
+    // enforce match when present.
+    if (redirectUri !== undefined && redirectUri !== pending.redirect_uri) {
+      pendingCodes.delete(code);
+      persistPendingCodes();
+      throw new Error("redirect_uri mismatch");
+    }
+    // Codes are single-use: burn on any exit (success or failure past this point).
     pendingCodes.delete(code);
     persistPendingCodes();
 
