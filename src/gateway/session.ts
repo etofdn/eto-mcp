@@ -1,6 +1,9 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { hmac } from "@noble/hashes/hmac";
 import { timingSafeEqual } from "crypto";
+import { homedir } from "os";
+import { join } from "path";
+import { atomicWriteJson, loadJsonArray } from "./persisted-store.js";
 
 /**
  * Session management using signed tokens.
@@ -80,6 +83,26 @@ function hmacSign(data: string): string {
   return Buffer.from(mac).toString("hex");
 }
 
+// Access-token denylist. Access tokens are stateless HMAC so we can't revoke
+// them structurally — a revocation list is the only way. Keyed by jti -> exp;
+// entries expire naturally when the underlying token would have.
+const DENYLIST_PATH = join(
+  process.env.ETO_WALLET_DIR || join(homedir(), ".eto", "wallets"),
+  "revoked_jtis.json",
+);
+const denyList = new Map<string, number>();
+(function loadDenyList() {
+  const now = Math.floor(Date.now() / 1000);
+  for (const [jti, exp] of loadJsonArray<[string, number]>(DENYLIST_PATH)) {
+    if (exp > now) denyList.set(jti, exp);
+  }
+})();
+
+export function revokeJti(jti: string, exp: number): void {
+  denyList.set(jti, exp);
+  atomicWriteJson(DENYLIST_PATH, [...denyList.entries()]);
+}
+
 export function createSession(opts: {
   userId: string;
   walletId: string;
@@ -125,6 +148,9 @@ export function verifySession(token: string): SessionPayload | null {
 
     // Check expiry
     if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+
+    // Check revocation list (access-token denylist)
+    if (denyList.has(payload.jti)) return null;
 
     return payload;
   } catch {

@@ -6,7 +6,7 @@ import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprot
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { OAuthClientInformationFull, OAuthTokenRevocationRequest, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { createSession, verifySession } from "./session.js";
+import { createSession, verifySession, revokeJti } from "./session.js";
 import { config } from "../config.js";
 import { atomicWriteJson, loadJsonArray } from "./persisted-store.js";
 
@@ -272,6 +272,13 @@ export const oauthProvider: OAuthServerProvider = {
       });
       persistRefreshTokens();
       persistRetiredRefresh();
+      return;
     }
+    // Not a known refresh token — try access-token path. Access tokens are
+    // stateless HMAC; revocation adds the jti to a denylist checked at
+    // verify time. RFC 7009 says the token type hint is advisory, so we
+    // don't rely on request.token_type_hint.
+    const session = verifySession(request.token);
+    if (session) revokeJti(session.jti, session.exp);
   },
 };
