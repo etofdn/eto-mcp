@@ -125,6 +125,8 @@ export const oauthProvider: OAuthServerProvider = {
       code_challenge: params.codeChallenge,
       scope: params.scopes,
       state: params.state,
+      // Bind state to the authorize/callback window so stale login state
+      // cannot be replayed after the original flow expires.
       iat: Math.floor(Date.now() / 1000),
     });
     res.redirect(`/login?oauth_state=${encodeURIComponent(oauthState)}`);
@@ -160,6 +162,7 @@ export const oauthProvider: OAuthServerProvider = {
       persistPendingCodes();
       throw new InvalidGrantError("redirect_uri mismatch");
     }
+    // Codes are single-use: burn on any exit (success or failure past this point).
     pendingCodes.delete(code);
     persistPendingCodes();
 
@@ -196,6 +199,7 @@ export const oauthProvider: OAuthServerProvider = {
     _scopes?: string[],
     _resource?: URL
   ): Promise<OAuthTokens> {
+    // Refresh-token reuse means the token leaked; revoke the whole family.
     const retired = retiredRefresh.get(refreshToken);
     if (retired) {
       const revoked = revokeFamily(retired.family_id);
@@ -208,6 +212,7 @@ export const oauthProvider: OAuthServerProvider = {
       throw new InvalidGrantError("Invalid refresh token");
     }
 
+    // Rotate: retire the old token and mint a new one in the same family.
     refreshTokens.delete(refreshToken);
     retiredRefresh.set(refreshToken, {
       family_id: stored.family_id,

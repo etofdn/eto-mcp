@@ -133,6 +133,7 @@ app.post("/oauth-callback", express.json(), async (req, res) => {
     res.status(400).json({ error: "Invalid or tampered oauth_state" });
     return;
   }
+  // Bound authorize/callback round-trip to 30 minutes to reject stale state.
   const MAX_STATE_AGE_SEC = 30 * 60;
   if (typeof params.iat === "number" && Date.now() / 1000 - params.iat > MAX_STATE_AGE_SEC) {
     res.status(400).json({ error: "oauth_state expired; restart login" });
@@ -144,6 +145,7 @@ app.post("/oauth-callback", express.json(), async (req, res) => {
     const redirectErr = new URL(params.redirect_uri);
     redirectErr.searchParams.set("error", "access_denied");
     if (params.state) redirectErr.searchParams.set("state", params.state);
+    // Return JSON because fetch() cannot follow native callback schemes.
     res.json({ location: redirectErr.toString(), error: "access_denied" });
     return;
   }
