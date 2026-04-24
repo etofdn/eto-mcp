@@ -87,7 +87,10 @@ app.post("/oauth-callback", express.json(), async (req, res) => {
     const redirectErr = new URL(params.redirect_uri);
     redirectErr.searchParams.set("error", "access_denied");
     if (params.state) redirectErr.searchParams.set("state", params.state);
-    res.redirect(redirectErr.toString());
+    // Return JSON instead of 302 so the browser can navigate even when
+    // redirect_uri is a custom scheme (cursor://, vscode://, cloud://...).
+    // fetch() can't follow cross-scheme redirects; the client JS does it.
+    res.json({ location: redirectErr.toString(), error: "access_denied" });
     return;
   }
 
@@ -103,7 +106,7 @@ app.post("/oauth-callback", express.json(), async (req, res) => {
   const redirectUrl = new URL(params.redirect_uri);
   redirectUrl.searchParams.set("code", code);
   if (params.state) redirectUrl.searchParams.set("state", params.state);
-  res.redirect(redirectUrl.toString());
+  res.json({ location: redirectUrl.toString() });
 });
 
 // llms.txt — agent-readable description of this server
