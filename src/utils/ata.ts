@@ -29,9 +29,12 @@ function isOnCurve(bytes: Uint8Array): boolean {
 }
 
 /**
- * Solana-style PDA derivation: try bumps 255..=0; for each, sha256 the seed
- * material concatenated with the bump and the program ID. If the resulting 32
- * bytes are NOT on the ed25519 curve they qualify as a valid PDA.
+ * ETO-style PDA derivation: ETO's Pubkey::create_program_address does NOT
+ * perform the on-curve check that Solana does — it always returns
+ * `Ok(Pubkey(hash))`. So on ETO, `find_program_address` always succeeds on
+ * the first iteration (bump=255). We match that exactly.
+ *
+ * Hash input: `seeds... || [bump] || program_id || "ProgramDerivedAddress"`.
  */
 export function findProgramAddress(
   seeds: Uint8Array[],
@@ -46,22 +49,17 @@ export function findProgramAddress(
     }
   }
 
-  for (let bump = 255; bump >= 0; bump--) {
-    const parts: Uint8Array[] = [...seeds, new Uint8Array([bump]), programId, PDA_MARKER];
-    let total = 0;
-    for (const p of parts) total += p.length;
-    const buf = new Uint8Array(total);
-    let off = 0;
-    for (const p of parts) {
-      buf.set(p, off);
-      off += p.length;
-    }
-    const hash = sha256(buf);
-    if (!isOnCurve(hash)) {
-      return { address: hash, bump };
-    }
+  const bump = 255;
+  const parts: Uint8Array[] = [...seeds, new Uint8Array([bump]), programId, PDA_MARKER];
+  let total = 0;
+  for (const p of parts) total += p.length;
+  const buf = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    buf.set(p, off);
+    off += p.length;
   }
-  throw new Error("Unable to find a valid program address");
+  return { address: sha256(buf), bump };
 }
 
 /**

@@ -2,7 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getSignerFactory } from "../signing/index.js";
 import { getActiveWalletId } from "./wallet.js";
-import { buildEvmDeployTx, buildWasmDeployTx, buildMoveDeployTx, buildSvmDeployTx } from "../wasm/index.js";
+import { buildEvmDeployTx, buildSignedEvmDeployTx, buildEvmDeploySigningHash, buildWasmDeployTx, buildMoveDeployTx, buildSvmDeployTx } from "../wasm/index.js";
+import { config } from "../config.js";
 import { blockhashCache } from "../write/blockhash-cache.js";
 import { submitter } from "../write/submitter.js";
 import bs58 from "bs58";
@@ -46,12 +47,25 @@ export function registerDeployTools(server: McpServer): void {
         const fullBytecode = constructor_args ? hexStripped + constructor_args.replace(/^0x/, "") : hexStripped;
 
         const valueBigInt = BigInt(value ?? "0");
+        const chainId = BigInt(config.chain.id);
+        const gasPrice = 1_000_000_000n; // 1 gwei
         const gasLimit = 1_000_000n;
+        const nonce = 0n; // single-use per wallet; chain ignores nonce
 
         const { blockhash } = await blockhashCache.getBlockhash();
 
-        const txBytes = buildEvmDeployTx(deployer, fullBytecode, valueBigInt, gasLimit, blockhash);
+        // EIP-155 secp256k1 signing — chain uses ecrecover to get sender
+        const signingHash = buildEvmDeploySigningHash(fullBytecode, chainId, nonce, gasPrice, gasLimit, valueBigInt);
+        const { r, s, recoveryBit } = await signer.signEvm(signingHash);
+        const v = BigInt(recoveryBit) + chainId * 2n + 35n; // EIP-155
 
+        // SVM wrapper uses the Ed25519 pubkey (for SVM-level signing);
+        // the EVM sender is recovered from (v,r,s) via ecrecover independently.
+        const txBytes = buildSignedEvmDeployTx(
+          signer.getPublicKey(), fullBytecode, r, s, v, chainId, nonce, gasPrice, gasLimit, valueBigInt, blockhash
+        );
+
+        // The SVM-envelope tx is pre-signed via EVM secp256k1; Ed25519 sign still needed for SVM layer
         const signedBytes = await signer.sign(txBytes);
         const signedBase64 = Buffer.from(signedBytes).toString("base64");
 

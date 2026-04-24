@@ -31,8 +31,8 @@ export const config = {
   },
 
   auth: {
-    sessionTtlSeconds: 300, // 5 min
-    refreshTtlSeconds: 86400, // 24h
+    sessionTtlSeconds: 86400, // 24h
+    refreshTtlSeconds: 2592000, // 30 days
     devBypass: process.env.AUTH_DEV_BYPASS === "true",
   },
 

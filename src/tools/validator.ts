@@ -22,17 +22,16 @@ export function registerValidatorTools(server: McpServer): void {
         const lines = [
           `Validators (${validators.length} total):`,
           "",
-          `${"Identity".padEnd(46)}  ${"Vote Key".padEnd(46)}  ${"Stake".padEnd(16)}  ${"Comm%".padEnd(6)}  Status`,
-          "-".repeat(130),
+          `${"#".padEnd(4)}  ${"Address".padEnd(22)}  ${"Block Server".padEnd(22)}  Status`,
+          "-".repeat(70),
         ];
 
         for (const v of validators) {
-          const identity = (v.identity ?? v.nodePubkey ?? "N/A").padEnd(46);
-          const voteKey = (v.votePubkey ?? v.voteKey ?? "N/A").padEnd(46);
-          const stake = String(v.activatedStake ?? v.stake ?? "N/A").padEnd(16);
-          const commission = String(v.commission ?? "N/A").padEnd(6);
-          const status = v.delinquent ? "delinquent" : "active";
-          lines.push(`${identity}  ${voteKey}  ${stake}  ${commission}  ${status}`);
+          const idx = String(v.publicKeySeed ?? v.index ?? "?").padEnd(4);
+          const address = (v.address ?? v.identity ?? v.nodePubkey ?? "N/A").padEnd(22);
+          const blockServer = (v.blockServer ?? v.voteKey ?? v.votePubkey ?? "N/A").padEnd(22);
+          const status = (v.active === false || v.delinquent) ? "delinquent" : "active";
+          lines.push(`${idx}  ${address}  ${blockServer}  ${status}`);
         }
 
         return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -81,37 +80,31 @@ export function registerValidatorTools(server: McpServer): void {
       try {
         const result = await rpc.getVoteAccounts();
 
-        if (!result) {
+        const current: any[] = result?.current ?? [];
+        const delinquent: any[] = result?.delinquent ?? [];
+
+        // ETO uses a proprietary consensus model — use list_validators for active validator info.
+        if (current.length === 0 && delinquent.length === 0) {
+          const validators = await rpc.etoListValidators().catch(() => []);
+          const active = validators.filter((v: any) => v.active !== false).length;
           return {
-            content: [{ type: "text", text: "No vote account data available." }],
+            content: [{
+              type: "text",
+              text: `ETO uses a proprietary multi-VM consensus (not Solana-style vote accounts).\nActive validators: ${active}\nUse list_validators for full validator details.`,
+            }],
           };
         }
-
-        const current: any[] = result.current ?? [];
-        const delinquent: any[] = result.delinquent ?? [];
 
         const lines = [
           `Vote Accounts — Current: ${current.length}, Delinquent: ${delinquent.length}`,
           "",
         ];
 
-        if (current.length > 0) {
-          lines.push("=== Current ===");
-          for (const v of current) {
-            lines.push(
-              `  Vote: ${v.votePubkey ?? "N/A"}  Node: ${v.nodePubkey ?? "N/A"}  Stake: ${v.activatedStake ?? "N/A"}  Commission: ${v.commission ?? "N/A"}%`
-            );
-          }
+        for (const v of current) {
+          lines.push(`  Vote: ${v.votePubkey ?? "N/A"}  Node: ${v.nodePubkey ?? "N/A"}  Stake: ${v.activatedStake ?? "N/A"}  Commission: ${v.commission ?? "N/A"}%`);
         }
-
-        if (delinquent.length > 0) {
-          lines.push("");
-          lines.push("=== Delinquent ===");
-          for (const v of delinquent) {
-            lines.push(
-              `  Vote: ${v.votePubkey ?? "N/A"}  Node: ${v.nodePubkey ?? "N/A"}  Stake: ${v.activatedStake ?? "N/A"}  Commission: ${v.commission ?? "N/A"}%`
-            );
-          }
+        for (const v of delinquent) {
+          lines.push(`  [delinquent] Vote: ${v.votePubkey ?? "N/A"}  Node: ${v.nodePubkey ?? "N/A"}`);
         }
 
         return { content: [{ type: "text", text: lines.join("\n") }] };

@@ -5,6 +5,10 @@ export interface Signer {
   getPublicKey(): string;
   /** Get the EVM address derived from this key */
   getEvmAddress(): string;
+  /** Sign a 32-byte EVM tx hash with secp256k1. Returns {r, s, recoveryBit}. */
+  signEvm(msgHash: Uint8Array): Promise<{ r: Uint8Array; s: Uint8Array; recoveryBit: number }>;
+  /** EVM address derived from the secp256k1 key (keccak256(pubKey)[12:]) */
+  getEvmSigningAddress(): string;
 }
 
 export interface SignerFactory {
