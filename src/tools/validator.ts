@@ -7,7 +7,7 @@ const SLOTS_PER_EPOCH = 432_000;
 export function registerValidatorTools(server: McpServer): void {
   server.tool(
     "list_validators",
-    "List all active validators on the ETO network with their identity, stake, commission, and status.",
+    "List all validators on the ETO network with their index, address, block-server endpoint, and active/delinquent status.",
     {},
     async () => {
       try {

@@ -6,7 +6,7 @@ import { getActiveWalletId } from "./wallet.js";
 import { PROGRAM_IDS } from "../config.js";
 import { blockhashCache } from "../write/blockhash-cache.js";
 import { submitter } from "../write/submitter.js";
-import { buildCreateA2AChannelTx } from "../wasm/index.js";
+import { buildCreateA2AChannelTx, findPda } from "../wasm/index.js";
 import bs58 from "bs58";
 
 // ---------------------------------------------------------------------------
@@ -35,8 +35,9 @@ function pubkeyBytes(b58: string): Uint8Array {
 function blockhashBytesOf(b58: string): Uint8Array {
   const decoded = bs58.decode(b58);
   if (decoded.length === 32) return decoded;
-  const p = new Uint8Array(32); p.set(decoded, 32 - decoded.length); return p;
-  return decoded;
+  const p = new Uint8Array(32);
+  p.set(decoded, 32 - decoded.length);
+  return p;
 }
 
 function buildA2ATx(
@@ -76,23 +77,18 @@ function buildA2ATx(
   return new Uint8Array(txBuf);
 }
 
-// Derive a deterministic channel PDA from two participants
-function deriveChannelAddress(partyA: string, partyB: string): string {
-  // Sort so the channel address is the same regardless of which party creates it
-  const sorted = [partyA, partyB].sort();
-  const seed = new TextEncoder().encode(`a2a:${sorted[0]}:${sorted[1]}`);
-  const programKey = PROGRAM_IDS.a2a;
-  // Simple deterministic derivation: sha256 of seed + program
-  const combined = new Uint8Array(seed.length + 32);
-  combined.set(seed);
-  combined.set(programKey, seed.length);
-  // Use a fixed 32-byte hash based on the input (without importing sha256 again)
-  // We construct a pseudo-address from the bytes of the seed for channel ID generation
-  const hash = new Uint8Array(32);
-  for (let i = 0; i < 32; i++) {
-    hash[i] = combined[i % combined.length] ^ combined[(i + 7) % combined.length];
-  }
-  return bs58.encode(hash);
+// Derive the AgentCard PDA owned by the A2A program. Uses the canonical
+// findPda helper so the address matches what the on-chain program / other
+// clients would compute. Seeds: "card" || authority || agent_account.
+function deriveCardAddress(authority: string, agentAccount: string): string {
+  return findPda(
+    [
+      new TextEncoder().encode("card"),
+      bs58.decode(authority),
+      bs58.decode(agentAccount),
+    ],
+    bs58.encode(PROGRAM_IDS.a2a),
+  ).address;
 }
 
 export function registerA2ATools(server: McpServer): void {
@@ -116,7 +112,7 @@ export function registerA2ATools(server: McpServer): void {
         const factory = getSignerFactory();
         const signer = await factory.getSigner(walletId);
         const payerSvm = signer.getPublicKey();
-        const cardId = deriveChannelAddress(payerSvm, agent_account);
+        const cardId = deriveCardAddress(payerSvm, agent_account);
         const { blockhash } = await blockhashCache.getBlockhash();
 
         const txBytes = buildCreateA2AChannelTx(
@@ -127,7 +123,16 @@ export function registerA2ATools(server: McpServer): void {
         const signedBytes = await signer.sign(txBytes);
         const signedBase64 = Buffer.from(signedBytes).toString("base64");
 
-        const result = await submitter.submitAndConfirm({ signedTxBase64: signedBase64, vm: "svm" });
+        // idempotencyKey deduplicates retries at the submitter. Deriving it
+        // from (payer, agent_account, blockhash) means the same in-flight
+        // registration short-circuits to the first attempt's result rather
+        // than double-submitting the tx.
+        const idempotencyKey = `a2a-register-card:${payerSvm}:${agent_account}:${blockhash}`;
+        const result = await submitter.submitAndConfirm({
+          signedTxBase64: signedBase64,
+          vm: "svm",
+          idempotencyKey,
+        });
 
         if (result.status === "confirmed" || result.status === "finalized") {
           return { content: [{ type: "text" as const, text: [

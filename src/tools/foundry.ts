@@ -114,22 +114,23 @@ export function registerFoundryTools(server: McpServer): void {
 
   server.tool(
     "forge_create",
-    `Compile and deploy a Solidity contract in one step. Compiles with Foundry's forge, then deploys to ETO using your active wallet. Returns contract address and tx signature.`,
+    `Compile and deploy a Solidity contract in one step. Compiles with Foundry's forge, then deploys to ETO using the specified wallet (or active wallet if omitted). Returns contract address and tx signature.`,
     {
       source: z.string().describe("Solidity source code"),
       contract_name: z.string().optional().describe("Contract name to deploy (default: first contract found)"),
       constructor_args: z.array(z.string()).optional().describe("Constructor arguments as strings"),
       value: z.string().default("0").optional().describe("Wei value to send with deployment (default 0)"),
+      from_wallet: z.string().optional().describe("Wallet ID to deploy from (defaults to the active wallet)"),
     },
-    async ({ source, contract_name, constructor_args, value }) => {
+    async ({ source, contract_name, constructor_args, value, from_wallet }) => {
       try {
         if (contract_name && !SAFE_NAME.test(contract_name)) {
           return { content: [{ type: "text" as const, text: `Invalid contract_name: must match ${SAFE_NAME}` }], isError: true };
         }
 
-        const walletId = getActiveWalletId();
+        const walletId = from_wallet ?? getActiveWalletId();
         if (!walletId) {
-          return { content: [{ type: "text" as const, text: "Error: no active wallet. Call set_active_wallet first." }], isError: true };
+          return { content: [{ type: "text" as const, text: "Error: no wallet specified. Pass from_wallet or call set_active_wallet first." }], isError: true };
         }
 
         // Step 1: Compile
@@ -174,7 +175,7 @@ export function registerFoundryTools(server: McpServer): void {
         const signer = await factory.getSigner(walletId);
         const { blockhash } = await blockhashCache.getBlockhash();
         const valueBig = BigInt(value ?? "0");
-        const chainId = 17743n;
+        const chainId = BigInt(config.chain.id);
         const gasPrice = 1_000_000_000n;
         const gasLimit = 1_000_000n;
         const nonce = 0n;

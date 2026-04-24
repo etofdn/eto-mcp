@@ -41,7 +41,7 @@ export function registerSessionTools(server: McpServer): void {
           if (session.exp) {
             const now = Math.floor(Date.now() / 1000);
             tokenExpiresAt = new Date(session.exp * 1000).toISOString();
-            tokenExpiresInSeconds = session.exp - now;
+            tokenExpiresInSeconds = Math.max(0, session.exp - now);
           }
         } catch {
           // No session (unauth or error) — leave undefined

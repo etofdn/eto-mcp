@@ -1408,81 +1408,29 @@ export function buildCreateA2AChannelTx(
   return unsignedTransaction(msg);
 }
 
-/**
- * CreateTask (variant 4) — send a task request to another agent with escrow.
- * Accounts: sender(0,signer,writable), taskPDA(1,writable), escrowPDA(2,writable), senderCard(3), receiverCard(4), A2A program(5)
- */
-export function buildSendA2AMessageTx(
-  sender: string,
-  taskAccount: string,
-  message: Uint8Array,
-  recentBlockhash: string,
-  escrowLamports: bigint = 1000n,
-  deadlineSlot: bigint = 999999999n,
-  receiverCard: string = sender,
-  senderCard: string = sender,
-): Uint8Array {
-  const senderKey = pubkeyBytes(sender);
-  const taskKey = pubkeyBytes(taskAccount);
-  const escrowKey = sha256(new TextEncoder().encode(`escrow:${taskAccount}`));
-  const senderCardKey = pubkeyBytes(senderCard);
-  const receiverCardKey = pubkeyBytes(receiverCard);
-  const blockhash = blockhashBytes(recentBlockhash);
-
-  const metadataUri = new TextDecoder().decode(message).slice(0, 200);
-  const taskId = sha256(message.slice(0, 32));
-
-  const accountKeys = [senderKey, taskKey, escrowKey, senderCardKey, receiverCardKey, A2A_PROGRAM_ID];
-
-  const data: number[] = [];
-  writeU8(data, 4); // CreateTask variant
-  writeBytes(data, taskId); // task_id: [u8; 32]
-  writeU64LE(data, escrowLamports); // escrow_lamports: u64
-  writeU64LE(data, deadlineSlot); // deadline_slot: u64
-  writeString(data, metadataUri); // metadata_uri: String
-
-  const instruction: CompiledInstruction = {
-    programIdIndex: 5, // A2A program
-    accounts: new Uint8Array([0, 1, 2, 3, 4]), // sender, taskPDA, escrowPDA, senderCard, receiverCard
-    data: new Uint8Array(data),
-  };
-
-  const msg = buildMessage(accountKeys, blockhash, [instruction], 1, 0, 3);
-  return unsignedTransaction(msg);
-}
-
-/**
- * CancelTask (variant 10) — cancel a task and reclaim escrow.
- * Accounts: taskPDA(0,writable), escrowPDA(1,writable), senderWallet(2,writable), senderCard(3), authority(4,signer)
- */
-export function buildCloseA2AChannelTx(
-  owner: string,
-  taskAccount: string,
-  rentDestination: string,
-  recentBlockhash: string,
-): Uint8Array {
-  const ownerKey = pubkeyBytes(owner);
-  const taskKey = pubkeyBytes(taskAccount);
-  const destKey = pubkeyBytes(rentDestination);
-  const escrowKey = sha256(new TextEncoder().encode(`escrow:${taskAccount}`));
-  const blockhash = blockhashBytes(recentBlockhash);
-
-  const accountKeys = [taskKey, escrowKey, destKey, ownerKey, A2A_PROGRAM_ID];
-
-  const currentSlot = BigInt(Date.now() / 400 | 0); // rough slot estimate
-  const data: number[] = [];
-  writeU8(data, 10); // CancelTask variant
-  writeU64LE(data, currentSlot);
-
-  const instruction: CompiledInstruction = {
-    programIdIndex: 4, // A2A program
-    accounts: new Uint8Array([0, 1, 2, 3, 3]), // taskPDA, escrowPDA, senderWallet, senderCard, authority
-    data: new Uint8Array(data),
-  };
-
-  const msg = buildMessage(accountKeys, blockhash, [instruction], 1, 0, 3);
-  return unsignedTransaction(msg);
-}
+// Removed: buildSendA2AMessageTx and buildCloseA2AChannelTx.
+//
+// Both were unused (no callers anywhere in src/) and wrong by construction:
+//
+// buildSendA2AMessageTx — derived escrowKey via sha256("escrow:" + taskAccount)
+// and used the input message bytes as the task_id. The on-chain A2A program
+// doesn't enforce a specific PDA derivation, but clients need to agree on
+// the address they create; sha256 isn't a PDA and doesn't interop with a
+// findPda-based client.
+//
+// buildCloseA2AChannelTx — on top of the same escrow derivation bug, its
+// account ordering put a non-signer at index 0 while advertising
+// numRequiredSignatures=1, its instruction.accounts array duplicated index 3
+// (the sender_card slot collided with the authority slot), and it fabricated
+// current_slot from Date.now()/400 instead of fetching from RPC.
+//
+// When these builders are needed, rebuild against the real on-chain contract:
+// CancelTask (variant 10) expects accounts
+// [task_pda(W), escrow_pda(W), sender_wallet(W), sender_card, authority(S)]
+// and the caller must pass in a real slot from eth_blockNumber / getSlot.
+// See src/runtime/src/programs/a2a.rs:cancel_task and :create_task.
+//
+// Addresses CodeRabbit PR #5: wasm/index.ts:1452 (Major), :1485 (Critical).
 
 // ---------------------------------------------------------------------------
 // MCP Program Instructions

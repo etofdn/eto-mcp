@@ -59,7 +59,7 @@ async function setActiveWalletId(id: string): Promise<void> {
 export function registerWalletTools(server: McpServer): void {
   server.tool(
     "create_wallet",
-    "Creates a new wallet keypair on the ETO network. Generates a fresh Ed25519 keypair and returns both the SVM (base58) and EVM (0x-prefixed) addresses derived from the same key. The wallet is stored in memory for this session and can be used immediately for signing transactions. Optionally accepts a network parameter to tag the wallet with the intended network context.",
+    "Creates a new wallet keypair on the ETO network. Generates a fresh Ed25519 keypair for SVM signing and derives an HKDF-SHA256 secp256k1 sub-key for EVM signing. Returns the SVM address (base58 Ed25519 public key) and the EVM address (0x-prefixed, keccak256 of the secp256k1 public key — the address ecrecover will resolve signed EVM txs to). The wallet is stored in memory for this session and can be used immediately for signing transactions. Optionally accepts a network parameter to tag the wallet with the intended network context.",
     {
       label: z.string().describe("Human-readable label for the wallet e.g. 'Treasury'"),
       network: z.enum(["mainnet", "testnet", "devnet"]).default("testnet").optional(),
@@ -85,7 +85,7 @@ export function registerWalletTools(server: McpServer): void {
 
   server.tool(
     "import_wallet",
-    "Imports an existing wallet into the ETO MCP server using a raw Ed25519 private key (hex-encoded). Provide the 32-byte private key as a 64-character hex string (with or without 0x prefix). Returns both SVM and EVM addresses on success.",
+    "Imports an existing wallet into the ETO MCP server using a raw Ed25519 private key (hex-encoded). Provide the 32-byte private key as a 64-character hex string (with or without 0x prefix). Returns the SVM address (base58 Ed25519 public key) and the EVM address (derived from an HKDF-SHA256 secp256k1 sub-key of the seed — the address ecrecover will resolve signed EVM txs to).",
     {
       key_type: z.enum(["ed25519_secret"]),
       key_material: z.string().describe("Private key as 64-char hex string"),
