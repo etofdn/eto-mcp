@@ -1,0 +1,92 @@
+name: Update Changelog
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  changelog:
+    name: changelog
+    runs-on: ubuntu-latest
+    if: github.actor != 'github-actions[bot]'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - name: Install git-cliff
+        uses: kenji-miyake/setup-git-cliff@v2
+
+      - name: Generate changelog
+        run: git-cliff --output CHANGELOG.md
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet CHANGELOG.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push changelog
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}"
+          git add CHANGELOG.md
+          git commit -m 'chore(changelog): auto-update CHANGELOG.md [skip ci]'
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git push origin HEAD:${{ github.head_ref }} --force-with-lease
+          else
+            git push --force-with-lease
+          fi
+
+      - name: Summary
+        run: |
+          commit_count=$(git log --oneline | wc -l)
+          echo "### Changelog Update" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commits parsed:** ${commit_count}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **CHANGELOG.md changed:** ${{ steps.diff.outputs.changed }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Telegram
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          BRANCH="${{ github.head_ref || github.ref_name }}"
+          ACTOR="${{ github.actor }}"
+          REPO="${{ github.repository }}"
+          EVENT="${{ github.event_name }}"
+          SHORT_SHA="${{ github.sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
+          COMPARE_URL="https://github.com/${REPO}/blob/${BRANCH}/CHANGELOG.md"
+
+          if [ "$EVENT" = "pull_request" ]; then
+            PR_NUM="${{ github.event.pull_request.number }}"
+            PR_TITLE="${{ github.event.pull_request.title }}"
+            MESSAGE="📋 *Changelog Updated*%0A%0A*Repo:* \`${REPO}\`%0A*PR:* [#${PR_NUM} ${PR_TITLE}](https://github.com/${REPO}/pull/${PR_NUM})%0A*Branch:* \`${BRANCH}\`%0A*By:* \`${ACTOR}\`%0A%0A[View CHANGELOG.md](${COMPARE_URL})"
+          else
+            MESSAGE="📋 *Changelog Updated*%0A%0A*Repo:* \`${REPO}\`%0A*Branch:* \`${BRANCH}\`%0A*Commit:* \`${SHORT_SHA}\`%0A*By:* \`${ACTOR}\`%0A%0A[View CHANGELOG.md](${COMPARE_URL})"
+          fi
+
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=-1003750230285" \
+            -d "message_thread_id=459" \
+            -d "parse_mode=Markdown" \
+            -d "disable_web_page_preview=true" \
+            -d "text=${MESSAGE}"
