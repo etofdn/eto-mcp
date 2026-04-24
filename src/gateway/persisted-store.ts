@@ -1,8 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { dirname } from "path";
 
-// Atomic JSON write: write to tmp, fsync-free rename into place. Same
-// filesystem required (rename(2) is only atomic within a single mount).
+// Atomic JSON write: write to tmp, then rename into place on the same mount.
 // A half-written tmp file after a crash is ignored on the next load.
 export function atomicWriteJson(path: string, data: unknown): void {
   mkdirSync(dirname(path), { recursive: true });

@@ -5,6 +5,8 @@ import {
   hasCapability,
   createDevSession,
   CAPABILITY_SCOPES,
+  signOauthState,
+  verifyOauthState,
   type Capability,
 } from "../../src/gateway/session.js";
 import { requireCapability } from "../../src/gateway/auth.js";
@@ -115,6 +117,44 @@ describe("tampered signature rejection", () => {
     expect(verifySession("not.a.valid.token")).toBeNull();
     expect(verifySession("")).toBeNull();
     expect(verifySession("justonepart")).toBeNull();
+  });
+});
+
+describe("signed oauth_state", () => {
+  test("round-trips authorize parameters", () => {
+    const token = signOauthState({
+      client_id: "client-1",
+      redirect_uri: "http://127.0.0.1:3000/callback",
+      code_challenge: "challenge",
+      state: "cursor-state",
+    });
+
+    const payload = verifyOauthState<{
+      client_id: string;
+      redirect_uri: string;
+      code_challenge: string;
+      state: string;
+    }>(token);
+
+    expect(payload).not.toBeNull();
+    expect(payload!.client_id).toBe("client-1");
+    expect(payload!.redirect_uri).toBe("http://127.0.0.1:3000/callback");
+    expect(payload!.code_challenge).toBe("challenge");
+    expect(payload!.state).toBe("cursor-state");
+  });
+
+  test("rejects tampered authorize parameters", () => {
+    const token = signOauthState({
+      client_id: "client-1",
+      redirect_uri: "http://127.0.0.1:3000/callback",
+      code_challenge: "challenge",
+    });
+    const [payloadB64, sig] = token.split(".");
+    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
+    payload.redirect_uri = "cursor://attacker";
+    const tampered = `${Buffer.from(JSON.stringify(payload)).toString("base64url")}.${sig}`;
+
+    expect(verifyOauthState(tampered)).toBeNull();
   });
 });
 

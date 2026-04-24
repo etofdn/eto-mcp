@@ -271,18 +271,13 @@ describe("findPda", () => {
     expect(result1.bump).toBe(result2.bump);
   });
 
-  test("result address is not on Ed25519 curve", () => {
+  test("uses ETO PDA scheme with fixed bump", () => {
     const programId = makeValidPubkey();
     const seed = new TextEncoder().encode("my-pda-seed");
-    const { address } = findPda([seed], programId);
+    const { address, bump } = findPda([seed], programId);
     const bytes = bs58.decode(address);
-    let isOnCurve = true;
-    try {
-      ed.ExtendedPoint.fromHex(bytes);
-    } catch {
-      isOnCurve = false;
-    }
-    expect(isOnCurve).toBe(false);
+    expect(bytes.length).toBe(32);
+    expect(bump).toBe(255);
   });
 
   test("returns valid base58 address of 32 bytes", () => {

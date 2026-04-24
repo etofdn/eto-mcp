@@ -10,6 +10,8 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "build": "bun build ./src/index.ts --outdir ./dist --target bun && bun build ./src/login.tsx --outdir ./public --target browser --minify",
+    "build:sse": "bun build ./src/sse-server.ts --outdir ./dist --target bun",
+    "qa:remote": "bash scripts/qa-remote.sh",
     "start:sse": "bun run src/sse-server.ts"
   },
   "dependencies": {

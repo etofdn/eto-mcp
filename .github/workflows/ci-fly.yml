@@ -1,0 +1,124 @@
+name: CI and Fly Deploy
+
+on:
+  pull_request:
+    branches:
+      - master
+      - main
+  push:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+    inputs:
+      deploy_production:
+        description: "Deploy production after staging QA"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  deployments: write
+
+env:
+  FLY_STAGING_APP: eto-mcp-staging
+  FLY_PROD_APP: eto-mcp
+  STAGING_URL: https://eto-mcp-staging.fly.dev
+  PROD_URL: ${{ vars.ETO_MCP_PROD_URL || 'https://eto-mcp.fly.dev' }}
+
+jobs:
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Unit tests
+        run: bun test
+
+      - name: Build app assets
+        run: bun run build
+
+      - name: Bundle SSE server
+        run: bun build ./src/sse-server.ts --outdir /tmp/eto-mcp-sse-build --target bun
+
+  deploy-staging:
+    name: Deploy staging and QA
+    runs-on: ubuntu-latest
+    needs: ci
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    concurrency:
+      group: fly-staging
+      cancel-in-progress: true
+    environment:
+      name: staging
+      url: ${{ env.STAGING_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy staging
+        run: >
+          flyctl deploy
+          --config fly.staging.toml
+          --app "$FLY_STAGING_APP"
+          --remote-only
+          --strategy rolling
+          --wait-timeout 5m
+          --env ISSUER_URL="$STAGING_URL"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: QA staging
+        run: bash scripts/qa-remote.sh "$STAGING_URL"
+
+  deploy-production:
+    name: Deploy production and QA
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: >
+      (github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.deploy_production)
+    concurrency:
+      group: fly-production
+      cancel-in-progress: false
+    environment:
+      name: production
+      url: ${{ env.PROD_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy production
+        run: >
+          flyctl deploy
+          --config fly.toml
+          --app "$FLY_PROD_APP"
+          --remote-only
+          --strategy rolling
+          --wait-timeout 5m
+          --env ISSUER_URL="$PROD_URL"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: QA production
+        run: bash scripts/qa-remote.sh "$PROD_URL"
