@@ -24,6 +24,14 @@ export class PrivySigner implements Signer {
   getEvmAddress(): string {
     throw new Error(PRIVY_SETUP_INSTRUCTIONS);
   }
+
+  async signEvm(_msgHash: Uint8Array): Promise<{ r: Uint8Array; s: Uint8Array; recoveryBit: number }> {
+    throw new Error(PRIVY_SETUP_INSTRUCTIONS);
+  }
+
+  getEvmSigningAddress(): string {
+    throw new Error(PRIVY_SETUP_INSTRUCTIONS);
+  }
 }
 
 export class PrivySignerFactory implements SignerFactory {

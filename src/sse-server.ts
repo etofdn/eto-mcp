@@ -23,6 +23,10 @@ const RESOURCE_METADATA_URL = `${ISSUER_URL}/.well-known/oauth-protected-resourc
 
 const app = express();
 
+// Trust Fly.io / Cloudflare proxy so express-rate-limit can read X-Forwarded-For correctly.
+// Without this, the MCP SDK's rate limiter throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR and crashes.
+app.set("trust proxy", 1);
+
 // CORS — must be first so OPTIONS preflight works for all routes including oauth endpoints
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");

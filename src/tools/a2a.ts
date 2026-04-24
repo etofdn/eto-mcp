@@ -6,6 +6,7 @@ import { getActiveWalletId } from "./wallet.js";
 import { PROGRAM_IDS } from "../config.js";
 import { blockhashCache } from "../write/blockhash-cache.js";
 import { submitter } from "../write/submitter.js";
+import { buildCreateA2AChannelTx } from "../wasm/index.js";
 import bs58 from "bs58";
 
 // ---------------------------------------------------------------------------
@@ -97,68 +98,49 @@ function deriveChannelAddress(partyA: string, partyB: string): string {
 export function registerA2ATools(server: McpServer): void {
   server.tool(
     "create_a2a_channel",
-    "Creates a bidirectional or unidirectional Agent-to-Agent (A2A) communication channel on the ETO network. A2A channels provide authenticated, ordered message delivery between two agent accounts. The channel capacity controls the maximum number of unread messages that can be buffered. Returns the channel account address for use in subsequent send/read operations.",
+    "Register an AgentCard on-chain linking your agent to the A2A task network. Requires an existing agent account (from create_agent). The card makes your agent discoverable and hirable for tasks. Returns the card address used in A2A task operations.",
     {
-      counterparty: z.string().describe("Address (base58) of the other agent or wallet for this channel"),
-      channel_type: z.enum(["bidirectional", "unidirectional"]).default("bidirectional").optional()
-        .describe("Channel direction: bidirectional allows both sides to send, unidirectional only allows the creator to send"),
-      capacity: z.number().default(100).optional()
-        .describe("Maximum number of messages that can be buffered in the channel (default: 100)"),
+      agent_account: z.string().describe("Your on-chain agent account address (from create_agent)"),
+      name: z.string().default("Agent Card").optional().describe("Agent card name"),
+      description: z.string().default("A2A agent card").optional().describe("Agent description"),
+      endpoint_uri: z.string().default("").optional().describe("Agent endpoint URI"),
+      capabilities_uri: z.string().default("").optional().describe("Capabilities manifest URI"),
     },
-    async ({ counterparty, channel_type, capacity }) => {
+    async ({ agent_account, name, description, endpoint_uri, capabilities_uri }) => {
       try {
         const walletId = getActiveWalletId();
         if (!walletId) {
-          return {
-            content: [{ type: "text" as const, text: "No active wallet set. Use set_active_wallet first." }],
-          };
+          return { content: [{ type: "text" as const, text: "No active wallet set. Use set_active_wallet first." }] };
         }
 
         const factory = getSignerFactory();
         const signer = await factory.getSigner(walletId);
         const payerSvm = signer.getPublicKey();
-
-        const channelId = deriveChannelAddress(payerSvm, counterparty);
-
-        // Instruction data: discriminator 0 = CreateChannel, then type u8, capacity u32
-        const data: number[] = [];
-        writeU8(data, 0); // CreateChannel
-        writeU8(data, channel_type === "unidirectional" ? 1 : 0);
-        writeU32LE(data, capacity ?? 100);
-        // counterparty pubkey
-        writeBytes(data, pubkeyBytes(counterparty));
-
+        const cardId = deriveChannelAddress(payerSvm, agent_account);
         const { blockhash } = await blockhashCache.getBlockhash();
-        const txBytes = buildA2ATx(payerSvm, channelId, new Uint8Array(data), blockhash);
+
+        const txBytes = buildCreateA2AChannelTx(
+          payerSvm, cardId, agent_account, 0, blockhash,
+          name ?? "Agent Card", description ?? "A2A agent card",
+          endpoint_uri ?? "", capabilities_uri ?? "", "1.0"
+        );
         const signedBytes = await signer.sign(txBytes);
         const signedBase64 = Buffer.from(signedBytes).toString("base64");
 
-        const result = await submitter.submitAndConfirm({
-          signedTxBase64: signedBase64,
-          vm: "svm",
-          idempotencyKey: `create-a2a-${payerSvm}-${counterparty}-${blockhash}`,
-        });
+        const result = await submitter.submitAndConfirm({ signedTxBase64: signedBase64, vm: "svm" });
 
         if (result.status === "confirmed" || result.status === "finalized") {
-          const lines = [
-            "A2A channel created successfully.",
-            `Channel ID:   ${channelId}`,
-            `Creator:      ${payerSvm}`,
-            `Counterparty: ${counterparty}`,
-            `Type:         ${channel_type ?? "bidirectional"}`,
-            `Capacity:     ${capacity ?? 100}`,
+          return { content: [{ type: "text" as const, text: [
+            "Agent card registered on A2A network.",
+            `Card address: ${cardId}`,
+            `Agent:        ${agent_account}`,
+            `Name:         ${name ?? "Agent Card"}`,
             `Signature:    ${result.signature}`,
-          ];
-          return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+          ].join("\n") }] };
         } else if (result.status === "timeout") {
-          return {
-            content: [{ type: "text" as const, text: `Channel creation submitted but timed out.\nChannel ID: ${channelId}\nSignature: ${result.signature}` }],
-          };
+          return { content: [{ type: "text" as const, text: `Submitted but timed out.\nCard: ${cardId}\nSignature: ${result.signature}` }] };
         } else {
-          return {
-            content: [{ type: "text" as const, text: `Failed to create channel: ${result.error?.explanation ?? "Unknown error"}` }],
-            isError: true,
-          };
+          return { content: [{ type: "text" as const, text: `Failed: ${result.error?.explanation ?? "Unknown error"}` }], isError: true };
         }
       } catch (err: any) {
         return {
@@ -171,65 +153,25 @@ export function registerA2ATools(server: McpServer): void {
 
   server.tool(
     "send_a2a_message",
-    "Sends a message through an existing A2A channel to the counterparty agent. Messages are JSON-serialized and stored on-chain in the channel's message buffer. High-priority messages are placed at the front of the queue and processed before normal-priority messages. The message payload can be any JSON-serializable value including structured commands, data, or plain text.",
+    "[Not yet available] Send a message to another agent via the A2A SendMessage instruction. ETO's A2A is a task-based protocol: messages live inside a Task (created with CreateTask) between two AgentCards, not in free-standing channels. This tool is pending redesign for the task-based flow. For now, use create_a2a_channel to register your AgentCard and call_contract / cross-VM dispatch for direct agent-to-agent interaction.",
     {
-      channel_id: z.string().describe("Channel account address (base58) returned by create_a2a_channel"),
-      message: z.any().describe("Message payload — any JSON-serializable value"),
-      priority: z.enum(["normal", "high"]).default("normal").optional()
-        .describe("Message priority: high-priority messages are processed before normal ones"),
+      channel_id: z.string().optional().describe("(legacy) ignored"),
+      message: z.any().optional().describe("(legacy) ignored"),
+      priority: z.enum(["normal", "high"]).optional().describe("(legacy) ignored"),
     },
-    async ({ channel_id, message, priority }) => {
-      try {
-        const walletId = getActiveWalletId();
-        if (!walletId) {
-          return {
-            content: [{ type: "text" as const, text: "No active wallet set. Use set_active_wallet first." }],
-          };
-        }
-
-        const factory = getSignerFactory();
-        const signer = await factory.getSigner(walletId);
-        const payerSvm = signer.getPublicKey();
-
-        const msgBytes = new TextEncoder().encode(JSON.stringify(message));
-
-        // Instruction data: discriminator 1 = SendMessage, priority u8, then message vec
-        const data: number[] = [];
-        writeU8(data, 1); // SendMessage
-        writeU8(data, priority === "high" ? 1 : 0);
-        writeVec(data, msgBytes);
-
-        const { blockhash } = await blockhashCache.getBlockhash();
-        const txBytes = buildA2ATx(payerSvm, channel_id, new Uint8Array(data), blockhash);
-        const signedBytes = await signer.sign(txBytes);
-        const signedBase64 = Buffer.from(signedBytes).toString("base64");
-
-        const result = await submitter.submitAndConfirm({
-          signedTxBase64: signedBase64,
-          vm: "svm",
-          idempotencyKey: `send-a2a-${channel_id}-${payerSvm}-${blockhash}`,
-        });
-
-        if (result.status === "confirmed" || result.status === "finalized") {
-          return {
-            content: [{ type: "text" as const, text: `Message sent successfully.\nChannel:   ${channel_id}\nPriority:  ${priority ?? "normal"}\nSignature: ${result.signature}` }],
-          };
-        } else if (result.status === "timeout") {
-          return {
-            content: [{ type: "text" as const, text: `Message submitted but timed out.\nSignature: ${result.signature}` }],
-          };
-        } else {
-          return {
-            content: [{ type: "text" as const, text: `Failed to send message: ${result.error?.explanation ?? "Unknown error"}` }],
-            isError: true,
-          };
-        }
-      } catch (err: any) {
-        return {
-          content: [{ type: "text" as const, text: `Error: ${err?.message ?? String(err)}` }],
-          isError: true,
-        };
-      }
+    async () => {
+      return {
+        content: [{ type: "text" as const, text:
+          "send_a2a_message is pending redesign for ETO's task-based A2A protocol.\n\n" +
+          "Current protocol flow:\n" +
+          "  1. Sender + receiver each register AgentCards via create_a2a_channel\n" +
+          "  2. Sender creates a Task for the receiver (CreateTask variant — not yet exposed)\n" +
+          "  3. SendMessage writes a Message PDA scoped to the Task\n" +
+          "  4. CompleteTask releases escrow to the receiver\n\n" +
+          "Track status: github.com/etofdn/eto-mcp/pull/5"
+        }],
+        isError: true,
+      };
     }
   );
 

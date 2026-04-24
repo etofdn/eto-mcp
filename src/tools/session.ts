@@ -33,9 +33,16 @@ export function registerSessionTools(server: McpServer): void {
         );
 
         let authStrategy: string | undefined;
+        let tokenExpiresAt: string | null = null;
+        let tokenExpiresInSeconds: number | null = null;
         try {
           const { session } = authenticate();
           authStrategy = session.auth_strategy;
+          if (session.exp) {
+            const now = Math.floor(Date.now() / 1000);
+            tokenExpiresAt = new Date(session.exp * 1000).toISOString();
+            tokenExpiresInSeconds = session.exp - now;
+          }
         } catch {
           // No session (unauth or error) — leave undefined
         }
@@ -45,6 +52,8 @@ export function registerSessionTools(server: McpServer): void {
           active_wallet_id: getActiveWalletId(),
           scope,
           auth_strategy: authStrategy ?? null,
+          token_expires_at: tokenExpiresAt,
+          token_expires_in_seconds: tokenExpiresInSeconds,
           last_restart_iso: STARTED_AT,
         };
 

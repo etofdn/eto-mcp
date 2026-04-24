@@ -3,6 +3,11 @@ import { z } from "zod";
 import { execFile } from "child_process";
 import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync } from "fs";
 import { config } from "../config.js";
+import { getSignerFactory } from "../signing/index.js";
+import { getActiveWalletId } from "./wallet.js";
+import { buildEvmDeploySigningHash, buildSignedEvmDeployTx } from "../wasm/index.js";
+import { blockhashCache } from "../write/blockhash-cache.js";
+import { submitter } from "../write/submitter.js";
 
 const WORK_DIR = "/tmp/eto-foundry";
 const SAFE_NAME = /^[a-zA-Z_][a-zA-Z0-9_-]*$/;
@@ -109,57 +114,90 @@ export function registerFoundryTools(server: McpServer): void {
 
   server.tool(
     "forge_create",
-    `Compile and deploy a Solidity contract in one step using Foundry's forge create. Compiles the source, deploys to the ETO chain, and returns the contract address. This is the fastest way to get a Solidity contract on-chain.`,
+    `Compile and deploy a Solidity contract in one step. Compiles with Foundry's forge, then deploys to ETO using your active wallet. Returns contract address and tx signature.`,
     {
       source: z.string().describe("Solidity source code"),
-      contract_name: z.string().optional().describe("Contract name to deploy"),
-      constructor_args: z.array(z.string()).optional().describe("Constructor arguments"),
-      value: z.string().default("0").optional().describe("ETH value to send with deployment"),
+      contract_name: z.string().optional().describe("Contract name to deploy (default: first contract found)"),
+      constructor_args: z.array(z.string()).optional().describe("Constructor arguments as strings"),
+      value: z.string().default("0").optional().describe("Wei value to send with deployment (default 0)"),
     },
-    async ({ source, contract_name, constructor_args }) => {
+    async ({ source, contract_name, constructor_args, value }) => {
       try {
         if (contract_name && !SAFE_NAME.test(contract_name)) {
           return { content: [{ type: "text" as const, text: `Invalid contract_name: must match ${SAFE_NAME}` }], isError: true };
         }
 
+        const walletId = getActiveWalletId();
+        if (!walletId) {
+          return { content: [{ type: "text" as const, text: "Error: no active wallet. Call set_active_wallet first." }], isError: true };
+        }
+
+        // Step 1: Compile
         mkdirSync(`${WORK_DIR}/src`, { recursive: true });
         writeFileSync(`${WORK_DIR}/src/Contract.sol`, source);
         writeFileSync(`${WORK_DIR}/foundry.toml`, `[profile.default]\nsrc = "src"\nout = "out"\n`);
+        const outDir = `${WORK_DIR}/out`;
+        rmSync(outDir, { recursive: true, force: true });
+        await sh("forge", ["build", "--force"]);
 
         const name = contract_name || source.match(/contract\s+(\w+)/)?.[1] || "Contract";
-        const rpcUrl = config.etoRpcUrl;
-
-        const args = [
-          "create",
-          `src/Contract.sol:${name}`,
-          "--rpc-url", rpcUrl,
-          "--unlocked",
-          "--from", "0x0000000000000000000000000000000000000000",
-        ];
-        if (constructor_args && constructor_args.length > 0) {
-          args.push("--constructor-args", ...constructor_args);
+        if (!SAFE_NAME.test(name)) {
+          return { content: [{ type: "text" as const, text: `Invalid derived contract name "${name}"` }], isError: true };
         }
 
-        const { stdout, stderr } = await sh("forge", args);
+        const artifactPath = `${outDir}/Contract.sol/${name}.json`;
+        if (!existsSync(artifactPath)) {
+          return { content: [{ type: "text" as const, text: `Contract "${name}" not found in compiled output.` }], isError: true };
+        }
 
-        // Parse deployed address from forge output
-        const addrMatch = stdout.match(/Deployed to:\s*(0x[0-9a-fA-F]+)/);
-        const txMatch = stdout.match(/Transaction hash:\s*(0x[0-9a-fA-F]+)/);
+        const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
+        let bytecode: string = artifact.bytecode?.object ?? artifact.bytecode ?? "";
+        if (!bytecode) {
+          return { content: [{ type: "text" as const, text: "Compilation produced no bytecode." }], isError: true };
+        }
+        bytecode = bytecode.startsWith("0x") ? bytecode.slice(2) : bytecode;
 
-        const lines = [
-          addrMatch ? `Contract deployed!` : `Deployment submitted`,
-          ``,
-          addrMatch ? `Address: ${addrMatch[1]}` : "",
-          txMatch ? `Tx Hash: ${txMatch[1]}` : "",
-          ``,
-          `Output:`,
-          stdout.slice(0, 500),
-          stderr ? `\nStderr:\n${stderr.slice(0, 200)}` : "",
-        ].filter(Boolean);
+        // Step 2: ABI-encode constructor args if needed
+        if (constructor_args && constructor_args.length > 0) {
+          const ctorAbi = (artifact.abi ?? []).find((e: any) => e.type === "constructor");
+          if (ctorAbi) {
+            const types = (ctorAbi.inputs ?? []).map((i: any) => i.type).join(",");
+            const sig = `constructor(${types})`;
+            const { stdout } = await sh("cast", ["abi-encode", sig, ...constructor_args]);
+            const encoded = stdout.trim().replace(/^0x/, "");
+            bytecode = bytecode + encoded;
+          }
+        }
 
-        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+        // Step 3: Deploy via EIP-155 secp256k1 signed EVM transaction
+        const factory = getSignerFactory();
+        const signer = await factory.getSigner(walletId);
+        const { blockhash } = await blockhashCache.getBlockhash();
+        const valueBig = BigInt(value ?? "0");
+        const chainId = 17743n;
+        const gasPrice = 1_000_000_000n;
+        const gasLimit = 1_000_000n;
+        const nonce = 0n;
+        const signingHash = buildEvmDeploySigningHash(bytecode, chainId, nonce, gasPrice, gasLimit, valueBig);
+        const { r, s, recoveryBit } = await signer.signEvm(signingHash);
+        const v = BigInt(recoveryBit) + chainId * 2n + 35n;
+        const txBytes = buildSignedEvmDeployTx(
+          signer.getPublicKey(), bytecode, r, s, v, chainId, nonce, gasPrice, gasLimit, valueBig, blockhash
+        );
+        const signedBytes = await signer.sign(txBytes);
+        const signedBase64 = Buffer.from(signedBytes).toString("base64");
+
+        const result = await submitter.submitAndConfirm({ signedTxBase64: signedBase64, vm: "svm", timeoutMs: 15000 });
+
+        if (result.status === "confirmed" || result.status === "finalized") {
+          return { content: [{ type: "text" as const, text: `Contract deployed!\nSignature: ${result.signature}\nStatus: ${result.status}${result.latency_ms ? `\nLatency: ${result.latency_ms}ms` : ""}` }] };
+        } else if (result.status === "timeout") {
+          return { content: [{ type: "text" as const, text: `Submitted (confirmation timed out). Signature: ${result.signature}` }] };
+        } else {
+          return { content: [{ type: "text" as const, text: `Deployment failed: ${result.error?.explanation ?? result.error?.raw_message ?? result.status}` }], isError: true };
+        }
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Forge create error: ${err?.message ?? String(err)}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `forge_create error: ${err?.message ?? String(err)}` }], isError: true };
       }
     }
   );

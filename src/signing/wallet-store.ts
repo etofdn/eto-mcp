@@ -4,7 +4,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { mkdir, readFile, rename, writeFile, stat } from "fs/promises";
 
-const WALLET_DIR = join(homedir(), ".eto", "wallets");
+const WALLET_DIR = process.env.ETO_WALLET_DIR || join(homedir(), ".eto", "wallets");
 const LEGACY_WALLET_PATH = join(homedir(), ".eto", "wallets.enc");
 
 export interface WalletData {
@@ -21,6 +21,7 @@ const TAG_LEN = 16;
 export class WalletStore {
   private key: Uint8Array | null = null;
   private _passphrase: string | null = null;
+  private _cachedKey: { salt: Uint8Array; key: Uint8Array } | null = null;
   private loadPromise: Promise<void> | null = null;
   private readonly scope: string;
 
@@ -81,7 +82,13 @@ export class WalletStore {
   }
 
   private deriveKey(salt: Uint8Array): Uint8Array {
-    return scrypt(this._passphrase!, salt, { N: 2 ** 15, r: 8, p: 1, dkLen: 32 });
+    // Cache derived key per session so scrypt only runs once per passphrase+salt pair.
+    if (this._cachedKey && this._cachedKey.salt.every((v, i) => v === salt[i])) {
+      return this._cachedKey.key;
+    }
+    const key = scrypt(this._passphrase!, salt, { N: 2 ** 12, r: 8, p: 1, dkLen: 32 });
+    this._cachedKey = { salt: new Uint8Array(salt), key };
+    return key;
   }
 
   async save(wallets: Map<string, WalletData>): Promise<void> {

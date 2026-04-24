@@ -1,4 +1,7 @@
 import { randomBytes } from "crypto";
+import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 import type { Response } from "express";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
@@ -6,6 +9,9 @@ import type { OAuthClientInformationFull, OAuthTokenRevocationRequest, OAuthToke
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { createSession, verifySession } from "./session.js";
 import { config } from "../config.js";
+
+const WALLET_DIR = process.env.ETO_WALLET_DIR || join(homedir(), ".eto", "wallets");
+const REFRESH_TOKENS_PATH = join(WALLET_DIR, "refresh_tokens.json");
 
 interface PendingCode {
   address: string;
@@ -16,9 +22,33 @@ interface PendingCode {
   exp: number;
 }
 
+type RefreshEntry = { address: string; client_id: string; scope: string[] };
+
 const clientsMap = new Map<string, OAuthClientInformationFull>();
 const pendingCodes = new Map<string, PendingCode>();
-const refreshTokens = new Map<string, { address: string; client_id: string; scope: string[] }>();
+const refreshTokens = new Map<string, RefreshEntry>();
+
+function loadRefreshTokens(): void {
+  try {
+    const raw = readFileSync(REFRESH_TOKENS_PATH, "utf8");
+    const entries = JSON.parse(raw) as [string, RefreshEntry][];
+    for (const [token, entry] of entries) refreshTokens.set(token, entry);
+    console.error(`[eto-mcp] Loaded ${entries.length} persisted refresh tokens`);
+  } catch {
+    // File doesn't exist yet — start empty
+  }
+}
+
+function saveRefreshTokens(): void {
+  try {
+    mkdirSync(WALLET_DIR, { recursive: true });
+    writeFileSync(REFRESH_TOKENS_PATH, JSON.stringify(Array.from(refreshTokens.entries())), { mode: 0o600 });
+  } catch (e) {
+    console.error("[eto-mcp] Failed to persist refresh tokens:", e);
+  }
+}
+
+loadRefreshTokens();
 
 const clientsStore: OAuthRegisteredClientsStore = {
   getClient(clientId: string) {
@@ -105,6 +135,7 @@ export const oauthProvider: OAuthServerProvider = {
       client_id: client.client_id,
       scope: pending.scope,
     });
+    saveRefreshTokens();
 
     return {
       access_token: accessToken,
@@ -156,5 +187,6 @@ export const oauthProvider: OAuthServerProvider = {
 
   async revokeToken(_client: OAuthClientInformationFull, request: OAuthTokenRevocationRequest) {
     refreshTokens.delete(request.token);
+    saveRefreshTokens();
   },
 };

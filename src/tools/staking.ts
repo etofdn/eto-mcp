@@ -32,8 +32,19 @@ export function registerStakingTools(server: McpServer): void {
         const lamports = solToLamports(amount);
         const { blockhash } = await blockhashCache.getBlockhash();
         const txBytes = buildCreateStakeTx(fromSvm, stakeAddress, lamports, blockhash);
-        const signedTx = await signer.sign(txBytes);
-        const txBase64 = Buffer.from(signedTx).toString("base64");
+
+        // Two signers: staker (slot 0) and stake account (slot 1). Without
+        // slot-1's signature, Stake::Initialize fails at account ownership
+        // verification and the account is allocated but never initialized.
+        const ed = await import("@noble/ed25519");
+        const sigCountLE = new DataView(txBytes.buffer, txBytes.byteOffset, 4).getUint32(0, true);
+        const messageBytes = txBytes.slice(4 + sigCountLE * 64);
+        const payerSigned = await signer.sign(txBytes);
+        const stakeSecret = Uint8Array.from(Buffer.from(stakeKeypair.secretKey, "hex"));
+        const stakeSig = await ed.sign(messageBytes, stakeSecret);
+        const fullySigned = new Uint8Array(payerSigned);
+        fullySigned.set(stakeSig, 4 + 64); // slot 1
+        const txBase64 = Buffer.from(fullySigned).toString("base64");
         const result = await submitter.submitAndConfirm({ signedTxBase64: txBase64, vm: "svm", timeoutMs: 15000 });
         const lines: string[] = [];
         if (result.status === "confirmed" || result.status === "finalized") {
