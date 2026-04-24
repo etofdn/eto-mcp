@@ -42,13 +42,12 @@ export class LocalSigner implements Signer {
   }
 
   getEvmAddress(): string {
-    const pubKey = ed.getPublicKey(this.privateKey);
-    // Last 20 bytes of public key, 0x-prefixed hex
-    const last20 = pubKey.slice(12);
-    const hex = Array.from(last20)
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-    return `0x${hex}`;
+    // The EVM address a user sees MUST match the sender recovered by ecrecover
+    // on the signed tx. signEvm uses a secp256k1 key derived via HKDF, so the
+    // address is keccak256(uncompressed_secp_pubkey[1:])[12:]. Returning the
+    // Ed25519-slice here would show one address and sign from another —
+    // deploys and transfers would land under a different account.
+    return this.getEvmSigningAddress();
   }
 
   /** Derive a secp256k1 key from the Ed25519 key via HKDF-SHA256. */
