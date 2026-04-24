@@ -181,6 +181,18 @@ app.post("/message", async (req, res) => {
 
 // Start
 async function startSseServer(): Promise<void> {
+  // Warn loudly if ISSUER_URL wasn't set explicitly in production. The
+  // /.well-known/* metadata advertises this URL to MCP clients; a mismatch
+  // with the public hostname makes /authorize and /token route to the wrong
+  // host and the client looks like it's in a redirect loop.
+  if (process.env.NODE_ENV === "production" && !process.env.ISSUER_URL) {
+    console.error(
+      `[eto-mcp] WARN: ISSUER_URL not set — defaulting to ${ISSUER_URL}. ` +
+      `If you reverse-proxy this server under a different hostname, set ` +
+      `ISSUER_URL explicitly or MCP clients will hit the default host.`,
+    );
+  }
+
   blockhashCache.startRefresh();
 
   wsManager.connect().then(ok => {

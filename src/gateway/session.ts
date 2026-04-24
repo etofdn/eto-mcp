@@ -6,8 +6,15 @@ import { join } from "path";
 import { atomicWriteJson, loadJsonArray } from "./persisted-store.js";
 
 /**
- * Session management using signed tokens.
- * Phase 1: Simple HMAC-signed JSON tokens (PASETO v4 deferred to Phase 2).
+ * Session management using HMAC-SHA256 signed JSON tokens.
+ *
+ * Token format: base64url(json_payload).hex(hmac_sha256(payload))
+ * NOT a standard JWT — no `alg` header, no JWS envelope. If this needs to be
+ * consumed by a third party JWT verifier in the future, migrate to PASETO v4
+ * or JWS and drop this format.
+ *
+ * Signing key is sourced from SESSION_SIGNING_KEY, falling back to the
+ * historical PASETO_SIGNING_KEY env var for backwards compatibility.
  */
 
 export type AuthStrategy = "siwe" | "inapp_email" | "inapp_oauth" | "dev";
@@ -64,12 +71,16 @@ export type Capability = keyof typeof CAPABILITY_SCOPES;
 
 const ALL_CAPS = Object.keys(CAPABILITY_SCOPES) as Capability[];
 
-// Signing key: must be set in production
+// Signing key: must be set in production.
+// Accepts either SESSION_SIGNING_KEY (preferred) or PASETO_SIGNING_KEY
+// (legacy name — the implementation is HMAC-SHA256, not PASETO).
 const signingKey = (() => {
-  const envKey = process.env.PASETO_SIGNING_KEY;
+  const envKey = process.env.SESSION_SIGNING_KEY ?? process.env.PASETO_SIGNING_KEY;
   if (process.env.NODE_ENV === "production") {
     if (!envKey || envKey.length < 32) {
-      console.error("FATAL: PASETO_SIGNING_KEY must be set to at least 32 characters in production");
+      console.error(
+        "FATAL: SESSION_SIGNING_KEY (or legacy PASETO_SIGNING_KEY) must be set to at least 32 characters in production",
+      );
       process.exit(1);
     }
   }
