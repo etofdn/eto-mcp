@@ -1,0 +1,32 @@
+app = "eto-mcp-staging"
+primary_region = "sjc"
+
+[build]
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  path = "/health"
+  timeout = "5s"
+
+[[mounts]]
+  source = "eto_wallets_staging"
+  destination = "/data/wallets"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+  NETWORK = "testnet"
+  LOG_LEVEL = "info"
+  AUTH_DEV_BYPASS = "false"
+  ETO_WALLET_DIR = "/data/wallets"
+  ISSUER_URL = "https://eto-mcp-staging.fly.dev"
+  # ETO_RPC_URL, ETO_WS_URL, thirdweb, wallet, and signing secrets are set in Fly.

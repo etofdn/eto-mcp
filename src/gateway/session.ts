@@ -9,9 +9,8 @@ import { atomicWriteJson, loadJsonArray } from "./persisted-store.js";
  * Session management using HMAC-SHA256 signed JSON tokens.
  *
  * Token format: base64url(json_payload).hex(hmac_sha256(payload))
- * NOT a standard JWT — no `alg` header, no JWS envelope. If this needs to be
- * consumed by a third party JWT verifier in the future, migrate to PASETO v4
- * or JWS and drop this format.
+ * NOT a standard JWT - no `alg` header, no JWS envelope. If this needs to be
+ * consumed by a third-party JWT verifier later, migrate to PASETO v4 or JWS.
  *
  * Signing key is sourced from SESSION_SIGNING_KEY, falling back to the
  * historical PASETO_SIGNING_KEY env var for backwards compatibility.
@@ -73,7 +72,7 @@ const ALL_CAPS = Object.keys(CAPABILITY_SCOPES) as Capability[];
 
 // Signing key: must be set in production.
 // Accepts either SESSION_SIGNING_KEY (preferred) or PASETO_SIGNING_KEY
-// (legacy name — the implementation is HMAC-SHA256, not PASETO).
+// (legacy name - this implementation is HMAC-SHA256, not PASETO).
 const signingKey = (() => {
   const envKey = process.env.SESSION_SIGNING_KEY ?? process.env.PASETO_SIGNING_KEY;
   if (process.env.NODE_ENV === "production") {
@@ -94,9 +93,8 @@ function hmacSign(data: string): string {
   return Buffer.from(mac).toString("hex");
 }
 
-// Access-token denylist. Access tokens are stateless HMAC so we can't revoke
-// them structurally — a revocation list is the only way. Keyed by jti -> exp;
-// entries expire naturally when the underlying token would have.
+// Access tokens are stateless HMAC, so revocation needs a small denylist.
+// Entries are keyed by jti and expire naturally when the token would expire.
 const DENYLIST_PATH = join(
   process.env.ETO_WALLET_DIR || join(homedir(), ".eto", "wallets"),
   "revoked_jtis.json",
@@ -114,10 +112,9 @@ export function revokeJti(jti: string, exp: number): void {
   atomicWriteJson(DENYLIST_PATH, [...denyList.entries()]);
 }
 
-// Signed oauth_state used to carry /authorize params through /login to
-// /oauth-callback. Same HMAC key as session tokens — clients (or a
-// compromised /login page) can't tamper with redirect_uri, code_challenge,
-// client_id, scope, or state without the signature breaking.
+// Signed oauth_state carries /authorize params through /login to
+// /oauth-callback. This prevents client-side tampering of redirect_uri,
+// code_challenge, client_id, scope, and state.
 export function signOauthState(payload: object): string {
   const json = JSON.stringify(payload);
   const sig = hmacSign(json);
@@ -184,7 +181,7 @@ export function verifySession(token: string): SessionPayload | null {
     // Check expiry
     if (payload.exp < Math.floor(Date.now() / 1000)) return null;
 
-    // Check revocation list (access-token denylist)
+    // Check access-token denylist.
     if (denyList.has(payload.jti)) return null;
 
     return payload;

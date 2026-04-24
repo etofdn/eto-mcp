@@ -179,7 +179,7 @@ curl -s https://eto-mcp.fly.dev/.well-known/oauth-authorization-server
 # → {"issuer":"...","authorization_endpoint":".../authorize","token_endpoint":".../token","registration_endpoint":".../register",...}
 
 # 401 with WWW-Authenticate (triggers OAuth flow in MCP clients)
-curl -sI -X POST https://eto-mcp.fly.dev/message -d '{}'
+curl -sI https://eto-mcp.fly.dev/sse
 # → 401, WWW-Authenticate: Bearer realm="mcp", resource_metadata="..."
 
 # Dynamic Client Registration

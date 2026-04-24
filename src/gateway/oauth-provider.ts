@@ -1,5 +1,4 @@
 import { randomBytes } from "crypto";
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import type { Response } from "express";
@@ -7,7 +6,8 @@ import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprot
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { OAuthClientInformationFull, OAuthTokenRevocationRequest, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { createSession, verifySession, revokeJti, signOauthState } from "./session.js";
+import { InvalidGrantError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { createSession, revokeJti, signOauthState, verifySession } from "./session.js";
 import { config } from "../config.js";
 import { atomicWriteJson, loadJsonArray } from "./persisted-store.js";
 
@@ -16,9 +16,6 @@ const CLIENTS_PATH = join(STORE_DIR, "oauth_clients.json");
 const PENDING_CODES_PATH = join(STORE_DIR, "oauth_pending_codes.json");
 const REFRESH_TOKENS_PATH = join(STORE_DIR, "refresh_tokens.json");
 const RETIRED_REFRESH_PATH = join(STORE_DIR, "retired_refresh_tokens.json");
-
-const WALLET_DIR = process.env.ETO_WALLET_DIR || join(homedir(), ".eto", "wallets");
-const REFRESH_TOKENS_PATH = join(WALLET_DIR, "refresh_tokens.json");
 
 interface PendingCode {
   address: string;
@@ -29,33 +26,59 @@ interface PendingCode {
   exp: number;
 }
 
-type RefreshEntry = { address: string; client_id: string; scope: string[] };
+type RefreshEntry = { address: string; client_id: string; scope: string[]; family_id: string };
+type RetiredEntry = { family_id: string; retired_at: number };
 
 const clientsMap = new Map<string, OAuthClientInformationFull>();
 const pendingCodes = new Map<string, PendingCode>();
 const refreshTokens = new Map<string, RefreshEntry>();
+const retiredRefresh = new Map<string, RetiredEntry>();
 
-function loadRefreshTokens(): void {
-  try {
-    const raw = readFileSync(REFRESH_TOKENS_PATH, "utf8");
-    const entries = JSON.parse(raw) as [string, RefreshEntry][];
-    for (const [token, entry] of entries) refreshTokens.set(token, entry);
-    console.error(`[eto-mcp] Loaded ${entries.length} persisted refresh tokens`);
-  } catch {
-    // File doesn't exist yet — start empty
+// Load persisted state on module init. Fly.io machines can restart on deploy
+// or idle wake; without this, Cursor keeps a now-unknown client_id.
+(function loadAll() {
+  const now = Math.floor(Date.now() / 1000);
+  for (const [k, v] of loadJsonArray<[string, OAuthClientInformationFull]>(CLIENTS_PATH)) {
+    clientsMap.set(k, v);
   }
-}
-
-function saveRefreshTokens(): void {
-  try {
-    mkdirSync(WALLET_DIR, { recursive: true });
-    writeFileSync(REFRESH_TOKENS_PATH, JSON.stringify(Array.from(refreshTokens.entries())), { mode: 0o600 });
-  } catch (e) {
-    console.error("[eto-mcp] Failed to persist refresh tokens:", e);
+  for (const [k, v] of loadJsonArray<[string, PendingCode]>(PENDING_CODES_PATH)) {
+    if (v.exp > now) pendingCodes.set(k, v);
   }
-}
+  for (const [k, v] of loadJsonArray<[string, RefreshEntry]>(REFRESH_TOKENS_PATH)) {
+    refreshTokens.set(k, { ...v, family_id: v.family_id ?? randomBytes(16).toString("hex") });
+  }
+  const retirementCutoff = now - config.auth.refreshTtlSeconds;
+  for (const [k, v] of loadJsonArray<[string, RetiredEntry]>(RETIRED_REFRESH_PATH)) {
+    if (v.retired_at > retirementCutoff) retiredRefresh.set(k, v);
+  }
+  const loaded = clientsMap.size + pendingCodes.size + refreshTokens.size + retiredRefresh.size;
+  if (loaded > 0) {
+    console.error(
+      `[eto-mcp] Loaded OAuth state: ${clientsMap.size} clients, ${pendingCodes.size} pending codes, ${refreshTokens.size} refresh tokens, ${retiredRefresh.size} retired`,
+    );
+  }
+})();
 
-loadRefreshTokens();
+function persistClients() { atomicWriteJson(CLIENTS_PATH, [...clientsMap.entries()]); }
+function persistPendingCodes() { atomicWriteJson(PENDING_CODES_PATH, [...pendingCodes.entries()]); }
+function persistRefreshTokens() { atomicWriteJson(REFRESH_TOKENS_PATH, [...refreshTokens.entries()]); }
+function persistRetiredRefresh() { atomicWriteJson(RETIRED_REFRESH_PATH, [...retiredRefresh.entries()]); }
+
+function revokeFamily(family_id: string): number {
+  let n = 0;
+  for (const [tok, entry] of refreshTokens) {
+    if (entry.family_id === family_id) {
+      refreshTokens.delete(tok);
+      retiredRefresh.set(tok, { family_id, retired_at: Math.floor(Date.now() / 1000) });
+      n++;
+    }
+  }
+  if (n > 0) {
+    persistRefreshTokens();
+    persistRetiredRefresh();
+  }
+  return n;
+}
 
 const clientsStore: OAuthRegisteredClientsStore = {
   getClient(clientId: string) {
@@ -102,8 +125,8 @@ export const oauthProvider: OAuthServerProvider = {
       code_challenge: params.codeChallenge,
       scope: params.scopes,
       state: params.state,
-      // Bind the state to roughly the authorize->callback window so a stale
-      // state can't be replayed after the login session it belonged to.
+      // Bind state to the authorize/callback window so stale login state
+      // cannot be replayed after the original flow expires.
       iat: Math.floor(Date.now() / 1000),
     });
     res.redirect(`/login?oauth_state=${encodeURIComponent(oauthState)}`);
@@ -111,7 +134,7 @@ export const oauthProvider: OAuthServerProvider = {
 
   async challengeForAuthorizationCode(_client: OAuthClientInformationFull, code: string) {
     const pending = pendingCodes.get(code);
-    if (!pending) throw new Error("Unknown authorization code");
+    if (!pending) throw new InvalidGrantError("Unknown authorization code");
     return pending.code_challenge;
   },
 
@@ -123,20 +146,21 @@ export const oauthProvider: OAuthServerProvider = {
     _resource?: URL
   ): Promise<OAuthTokens> {
     const pending = pendingCodes.get(code);
-    if (!pending) throw new Error("Unknown or expired authorization code");
+    if (!pending) throw new InvalidGrantError("Unknown or expired authorization code");
     if (pending.exp < Math.floor(Date.now() / 1000)) {
       pendingCodes.delete(code);
       persistPendingCodes();
-      throw new Error("Authorization code expired");
+      throw new InvalidGrantError("Authorization code expired");
     }
-    // OAuth 2.1 §5.2: if redirect_uri was used at /authorize, the same value
-    // MUST be sent at /token. The SDK forwards whatever the client sent here;
-    // if it's missing the client already violated its own flow, but we still
-    // enforce match when present.
+    if (pending.client_id !== client.client_id) {
+      pendingCodes.delete(code);
+      persistPendingCodes();
+      throw new InvalidGrantError("authorization code was not issued to this client");
+    }
     if (redirectUri !== undefined && redirectUri !== pending.redirect_uri) {
       pendingCodes.delete(code);
       persistPendingCodes();
-      throw new Error("redirect_uri mismatch");
+      throw new InvalidGrantError("redirect_uri mismatch");
     }
     // Codes are single-use: burn on any exit (success or failure past this point).
     pendingCodes.delete(code);
@@ -158,7 +182,7 @@ export const oauthProvider: OAuthServerProvider = {
       scope: pending.scope,
       family_id: randomBytes(16).toString("hex"),
     });
-    saveRefreshTokens();
+    persistRefreshTokens();
 
     return {
       access_token: accessToken,
@@ -175,22 +199,20 @@ export const oauthProvider: OAuthServerProvider = {
     _scopes?: string[],
     _resource?: URL
   ): Promise<OAuthTokens> {
-    // Reuse detection (OAuth 2.0 BCP §4.13.2): a retired token showing up
-    // again means the token leaked — revoke the whole family rather than
-    // silently accepting it.
+    // Refresh-token reuse means the token leaked; revoke the whole family.
     const retired = retiredRefresh.get(refreshToken);
     if (retired) {
       const revoked = revokeFamily(retired.family_id);
       console.error(`[eto-mcp] refresh reuse detected, family=${retired.family_id} revoked=${revoked}`);
-      throw new Error("Refresh token reuse detected; token family revoked");
+      throw new InvalidGrantError("Refresh token reuse detected; token family revoked");
     }
 
     const stored = refreshTokens.get(refreshToken);
     if (!stored || stored.client_id !== client.client_id) {
-      throw new Error("Invalid refresh token");
+      throw new InvalidGrantError("Invalid refresh token");
     }
 
-    // Rotate: retire the old token, mint a new one in the same family.
+    // Rotate: retire the old token and mint a new one in the same family.
     refreshTokens.delete(refreshToken);
     retiredRefresh.set(refreshToken, {
       family_id: stored.family_id,
@@ -221,7 +243,7 @@ export const oauthProvider: OAuthServerProvider = {
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
     const session = verifySession(token);
-    if (!session) throw new Error("Invalid or expired token");
+    if (!session) throw new InvalidTokenError("Invalid or expired token");
     return {
       token,
       clientId: session.client_id ?? session.sub,
@@ -231,7 +253,18 @@ export const oauthProvider: OAuthServerProvider = {
   },
 
   async revokeToken(_client: OAuthClientInformationFull, request: OAuthTokenRevocationRequest) {
-    refreshTokens.delete(request.token);
-    saveRefreshTokens();
+    const entry = refreshTokens.get(request.token);
+    if (entry) {
+      refreshTokens.delete(request.token);
+      retiredRefresh.set(request.token, {
+        family_id: entry.family_id,
+        retired_at: Math.floor(Date.now() / 1000),
+      });
+      persistRefreshTokens();
+      persistRetiredRefresh();
+      return;
+    }
+    const session = verifySession(request.token);
+    if (session) revokeJti(session.jti, session.exp);
   },
 };

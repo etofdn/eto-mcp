@@ -49,6 +49,61 @@ app.use(mcpAuthRouter({
   resourceName: "Singularity MCP Server",
 }));
 
+function bearerFrom(req: express.Request): string | undefined {
+  const authHeader = req.header("authorization") ?? "";
+  const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+  return bearerMatch?.[1]?.trim();
+}
+
+function challengeHeader(error: string, description: string): string {
+  const safeDescription = description.replaceAll('"', "'");
+  return `Bearer realm="mcp", error="${error}", error_description="${safeDescription}", resource_metadata="${RESOURCE_METADATA_URL}"`;
+}
+
+function sendAuthChallenge(
+  res: express.Response,
+  message: string,
+  explanation: string,
+  error = "invalid_token",
+): void {
+  res.set("WWW-Authenticate", challengeHeader(error, message));
+  res.status(401).json({
+    code: "AUTH_001",
+    category: "auth",
+    message,
+    explanation,
+  });
+}
+
+async function authenticateTransportRequest(
+  req: express.Request,
+  res: express.Response,
+): Promise<string | undefined | null> {
+  if (config.auth.devBypass) return undefined;
+
+  const bearer = bearerFrom(req);
+  if (!bearer) {
+    sendAuthChallenge(
+      res,
+      "Authentication required",
+      "No Bearer token. Complete the OAuth flow advertised in the WWW-Authenticate header.",
+    );
+    return null;
+  }
+
+  try {
+    await oauthProvider.verifyAccessToken(bearer);
+    return bearer;
+  } catch {
+    sendAuthChallenge(
+      res,
+      "Session expired or invalid",
+      "Your Bearer token is expired or invalid. Re-authenticate to continue.",
+    );
+    return null;
+  }
+}
+
 // Static assets (login.js bundle, etc.)
 app.use(express.static(join(__dirname, "../public")));
 
@@ -57,8 +112,8 @@ app.get("/login", (_req, res) => {
   res.sendFile(join(__dirname, "../public/login.html"));
 });
 
-// OAuth callback — login.tsx POSTs here after SIWE sign-in in OAuth mode
-// Body: { payload: LoginPayload, signature: string, oauth_state: string (base64url JSON) }
+// OAuth callback — login.tsx POSTs here after SIWE sign-in in OAuth mode.
+// Body: { payload: LoginPayload, signature: string, oauth_state: string (signed state) }
 app.post("/oauth-callback", express.json(), async (req, res) => {
   const { payload, signature, oauth_state } = req.body ?? {};
   if (!payload || !signature || !oauth_state) {
@@ -78,8 +133,7 @@ app.post("/oauth-callback", express.json(), async (req, res) => {
     res.status(400).json({ error: "Invalid or tampered oauth_state" });
     return;
   }
-  // Bound authorize->callback round-trip at 30 min — defends against stale
-  // state replay after the login session expired.
+  // Bound authorize/callback round-trip to 30 minutes to reject stale state.
   const MAX_STATE_AGE_SEC = 30 * 60;
   if (typeof params.iat === "number" && Date.now() / 1000 - params.iat > MAX_STATE_AGE_SEC) {
     res.status(400).json({ error: "oauth_state expired; restart login" });
@@ -91,9 +145,7 @@ app.post("/oauth-callback", express.json(), async (req, res) => {
     const redirectErr = new URL(params.redirect_uri);
     redirectErr.searchParams.set("error", "access_denied");
     if (params.state) redirectErr.searchParams.set("state", params.state);
-    // Return JSON instead of 302 so the browser can navigate even when
-    // redirect_uri is a custom scheme (cursor://, vscode://, cloud://...).
-    // fetch() can't follow cross-scheme redirects; the client JS does it.
+    // Return JSON because fetch() cannot follow native callback schemes.
     res.json({ location: redirectErr.toString(), error: "access_denied" });
     return;
   }
@@ -135,6 +187,9 @@ const transports = new Map<string, SSEServerTransport>();
 
 // SSE endpoint — client connects here to establish SSE stream
 app.get("/sse", async (req, res) => {
+  const authResult = await authenticateTransportRequest(req, res);
+  if (authResult === null) return;
+
   log("info", "sse", "New SSE connection", { ip: req.ip });
 
   const transport = new SSEServerTransport("/message", res);
@@ -156,19 +211,8 @@ app.get("/sse", async (req, res) => {
 app.post("/message", async (req, res) => {
   const sessionId = req.query.sessionId as string;
 
-  const authHeader = req.header("authorization") ?? "";
-  const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
-  const bearer = bearerMatch?.[1]?.trim();
-  if (!bearer && !config.auth.devBypass) {
-    res.set("WWW-Authenticate", `Bearer realm="mcp", resource_metadata="${RESOURCE_METADATA_URL}"`);
-    res.status(401).json({
-      code: "AUTH_001",
-      category: "auth",
-      message: "Authentication required",
-      explanation: "No Bearer token. Add this MCP server to your client and complete the OAuth flow.",
-    });
-    return;
-  }
+  const bearer = await authenticateTransportRequest(req, res);
+  if (bearer === null) return;
 
   const transport = transports.get(sessionId);
   if (!transport) {
@@ -185,15 +229,12 @@ app.post("/message", async (req, res) => {
 
 // Start
 async function startSseServer(): Promise<void> {
-  // Warn loudly if ISSUER_URL wasn't set explicitly in production. The
-  // /.well-known/* metadata advertises this URL to MCP clients; a mismatch
-  // with the public hostname makes /authorize and /token route to the wrong
-  // host and the client looks like it's in a redirect loop.
+  // Metadata advertises ISSUER_URL to MCP clients. A stale default makes
+  // /authorize and /token resolve to the wrong host behind custom domains.
   if (process.env.NODE_ENV === "production" && !process.env.ISSUER_URL) {
     console.error(
-      `[eto-mcp] WARN: ISSUER_URL not set — defaulting to ${ISSUER_URL}. ` +
-      `If you reverse-proxy this server under a different hostname, set ` +
-      `ISSUER_URL explicitly or MCP clients will hit the default host.`,
+      `[eto-mcp] WARN: ISSUER_URL not set; defaulting to ${ISSUER_URL}. ` +
+      "Set ISSUER_URL explicitly when serving behind a custom hostname.",
     );
   }
 

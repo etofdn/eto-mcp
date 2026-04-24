@@ -52,9 +52,8 @@ function Inner() {
     doAuth(account)
       .then(async ({ payload, signature }) => {
         if (isOAuthMode) {
-          // OAuth mode: POST to /oauth-callback. The server returns
-          // { location: "..." } (JSON, not 302) so we can navigate to any
-          // scheme — fetch() can't follow redirects to cursor:// or vscode://.
+          // OAuth mode: server returns JSON so top-level navigation can handle
+          // native callback schemes such as cursor:// and vscode://.
           setStatus("Redirecting back to your MCP client…");
           const res = await fetch(`${BASE}/oauth-callback`, {
             method: "POST",
