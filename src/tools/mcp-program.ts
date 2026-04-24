@@ -364,12 +364,18 @@ export function registerMcpProgramTools(server: McpServer): void {
       try {
         const mcpProgramId = bs58.encode(PROGRAM_IDS.mcp);
 
-        let accounts: any[] = [];
+        let accounts: Array<{ acct: any; parsed: ReturnType<typeof parseToolState> }> = [];
         try {
-          const filters = service_type && service_type !== "all"
-            ? [{ memcmp: { offset: 1, bytes: bs58.encode(new Uint8Array([SERVICE_TYPE_MAP[service_type] ?? 5])) } }]
-            : [];
-          accounts = await rpc.getProgramAccounts(mcpProgramId);
+          const allAccounts = await rpc.getProgramAccounts(mcpProgramId);
+          accounts = (allAccounts ?? [])
+            .map((acct) => ({
+              acct,
+              parsed: parseToolState(acct.account?.data ?? acct.data),
+            }))
+            .filter(({ parsed }) => {
+              if (!service_type || service_type === "all") return true;
+              return !!parsed?.tags.includes(service_type);
+            });
         } catch {
           accounts = [];
         }
@@ -383,10 +389,8 @@ export function registerMcpProgramTools(server: McpServer): void {
         const accessNames: Record<number, string> = { 0: "Public", 1: "Allowlist", 2: "OwnerOnly", 3: "AgentOnly" };
         const lines = [`MCP services (filter: ${service_type ?? "all"}) — ${accounts.length} found:\n`];
 
-        for (const acct of accounts) {
+        for (const { acct, parsed } of accounts) {
           const addr = acct.pubkey ?? acct.address ?? "N/A";
-          const rawData = acct.account?.data ?? acct.data;
-          const parsed = parseToolState(rawData);
           lines.push(`  Account:    ${addr}`);
           if (parsed) {
             lines.push(`  Name:       ${parsed.name || "(unnamed)"}`);

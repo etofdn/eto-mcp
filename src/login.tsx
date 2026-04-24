@@ -52,19 +52,20 @@ function Inner() {
     doAuth(account)
       .then(async ({ payload, signature }) => {
         if (isOAuthMode) {
-          // OAuth mode: POST to /oauth-callback, server issues code and redirects
+          // OAuth mode: server returns JSON so top-level navigation can handle
+          // native callback schemes such as cursor:// and vscode://.
           setStatus("Redirecting back to your MCP client…");
           const res = await fetch(`${BASE}/oauth-callback`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ payload, signature, oauth_state: oauthState }),
           });
-          if (res.redirected) {
-            window.location.href = res.url;
-          } else {
-            const text = await res.text();
-            setStatus(`Redirect failed: ${text}`);
+          const body = await res.json().catch(() => null);
+          if (!res.ok || !body?.location) {
+            setStatus(`Redirect failed: ${body?.error ?? res.statusText}`);
+            return;
           }
+          window.location.href = body.location;
         } else {
           // Standalone mode: verify and show bearer token
           const r = await fetch(`${BASE}/auth/verify`, {
