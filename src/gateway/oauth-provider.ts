@@ -6,7 +6,7 @@ import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprot
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { OAuthClientInformationFull, OAuthTokenRevocationRequest, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { createSession, verifySession, revokeJti } from "./session.js";
+import { createSession, verifySession, revokeJti, signOauthState } from "./session.js";
 import { config } from "../config.js";
 import { atomicWriteJson, loadJsonArray } from "./persisted-store.js";
 
@@ -127,16 +127,17 @@ export const oauthProvider: OAuthServerProvider = {
   clientsStore,
 
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response) {
-    const oauthState = Buffer.from(
-      JSON.stringify({
-        client_id: client.client_id,
-        redirect_uri: params.redirectUri,
-        code_challenge: params.codeChallenge,
-        scope: params.scopes,
-        state: params.state,
-      })
-    ).toString("base64url");
-    res.redirect(`/login?oauth_state=${oauthState}`);
+    const oauthState = signOauthState({
+      client_id: client.client_id,
+      redirect_uri: params.redirectUri,
+      code_challenge: params.codeChallenge,
+      scope: params.scopes,
+      state: params.state,
+      // Bind the state to roughly the authorize->callback window so a stale
+      // state can't be replayed after the login session it belonged to.
+      iat: Math.floor(Date.now() / 1000),
+    });
+    res.redirect(`/login?oauth_state=${encodeURIComponent(oauthState)}`);
   },
 
   async challengeForAuthorizationCode(_client: OAuthClientInformationFull, code: string) {

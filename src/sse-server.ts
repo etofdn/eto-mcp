@@ -14,6 +14,7 @@ import { runWithAuth } from "./gateway/auth.js";
 import { sessionStore } from "./signing/session-context.js";
 import { oauthProvider, issueAuthCode } from "./gateway/oauth-provider.js";
 import { verifyPayload } from "./gateway/thirdweb.js";
+import { verifyOauthState } from "./gateway/session.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LLMS_TXT = readFileSync(join(__dirname, "../public/llms.txt"), "utf8");
@@ -61,17 +62,23 @@ app.post("/oauth-callback", express.json(), async (req, res) => {
     return;
   }
 
-  let params: {
+  const params = verifyOauthState<{
     client_id: string;
     redirect_uri: string;
     code_challenge: string;
     scope?: string[];
     state?: string;
-  };
-  try {
-    params = JSON.parse(Buffer.from(oauth_state, "base64url").toString());
-  } catch {
-    res.status(400).json({ error: "Invalid oauth_state" });
+    iat?: number;
+  }>(oauth_state);
+  if (!params) {
+    res.status(400).json({ error: "Invalid or tampered oauth_state" });
+    return;
+  }
+  // Bound authorize->callback round-trip at 30 min — defends against stale
+  // state replay after the login session expired.
+  const MAX_STATE_AGE_SEC = 30 * 60;
+  if (typeof params.iat === "number" && Date.now() / 1000 - params.iat > MAX_STATE_AGE_SEC) {
+    res.status(400).json({ error: "oauth_state expired; restart login" });
     return;
   }
 

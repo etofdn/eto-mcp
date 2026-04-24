@@ -103,6 +103,30 @@ export function revokeJti(jti: string, exp: number): void {
   atomicWriteJson(DENYLIST_PATH, [...denyList.entries()]);
 }
 
+// Signed oauth_state used to carry /authorize params through /login to
+// /oauth-callback. Same HMAC key as session tokens — clients (or a
+// compromised /login page) can't tamper with redirect_uri, code_challenge,
+// client_id, scope, or state without the signature breaking.
+export function signOauthState(payload: object): string {
+  const json = JSON.stringify(payload);
+  const sig = hmacSign(json);
+  return `${Buffer.from(json).toString("base64url")}.${sig}`;
+}
+
+export function verifyOauthState<T = unknown>(token: string): T | null {
+  try {
+    const [b64, sig] = token.split(".");
+    if (!b64 || !sig) return null;
+    const json = Buffer.from(b64, "base64url").toString();
+    const expected = Buffer.from(hmacSign(json), "hex");
+    const actual = Buffer.from(sig, "hex");
+    if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
+    return JSON.parse(json) as T;
+  } catch {
+    return null;
+  }
+}
+
 export function createSession(opts: {
   userId: string;
   walletId: string;
