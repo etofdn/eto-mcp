@@ -21,7 +21,7 @@ const TAG_LEN = 16;
 export class WalletStore {
   private key: Uint8Array | null = null;
   private _passphrase: string | null = null;
-  private _cachedKey: { salt: Uint8Array; key: Uint8Array } | null = null;
+  private _cachedKey: { salt: Uint8Array; key: Uint8Array; N: number } | null = null;
   private loadPromise: Promise<void> | null = null;
   private readonly scope: string;
 
@@ -81,13 +81,28 @@ export class WalletStore {
     }
   }
 
-  private deriveKey(salt: Uint8Array): Uint8Array {
-    // Cache derived key per session so scrypt only runs once per passphrase+salt pair.
-    if (this._cachedKey && this._cachedKey.salt.every((v, i) => v === salt[i])) {
+  // OWASP Password Storage Cheat Sheet (2025) minimum for scrypt: N=2^17, r=8, p=1.
+  // Legacy files produced before 2026-04 used N=2^12 — we try the current
+  // parameters first and fall back to the legacy params on decrypt failure so
+  // existing deployments transparently migrate (re-saved on the next save()).
+  private static readonly SCRYPT_N_CURRENT = 2 ** 17;
+  private static readonly SCRYPT_N_LEGACY = 2 ** 12;
+
+  private deriveKey(salt: Uint8Array, N: number = WalletStore.SCRYPT_N_CURRENT): Uint8Array {
+    // Cache derived key per session so scrypt only runs once per passphrase+salt+N.
+    // Length check is required — without it a cached salt that's a prefix of
+    // `salt` (or vice-versa) compares equal under .every and silently returns
+    // the wrong cached key.
+    if (
+      this._cachedKey
+      && this._cachedKey.N === N
+      && this._cachedKey.salt.length === salt.length
+      && this._cachedKey.salt.every((v, i) => v === salt[i])
+    ) {
       return this._cachedKey.key;
     }
-    const key = scrypt(this._passphrase!, salt, { N: 2 ** 12, r: 8, p: 1, dkLen: 32 });
-    this._cachedKey = { salt: new Uint8Array(salt), key };
+    const key = scrypt(this._passphrase!, salt, { N, r: 8, p: 1, dkLen: 32 });
+    this._cachedKey = { salt: new Uint8Array(salt), key, N };
     return key;
   }
 
@@ -152,35 +167,44 @@ export class WalletStore {
   }
 
   private decryptPayload(payload: Buffer): Map<string, WalletData> | null {
-    const wallets = new Map<string, WalletData>();
     const salt = payload.subarray(0, SALT_LEN);
     const nonce = payload.subarray(SALT_LEN, SALT_LEN + NONCE_LEN);
     const tag = payload.subarray(SALT_LEN + NONCE_LEN, SALT_LEN + NONCE_LEN + TAG_LEN);
     const ciphertext = payload.subarray(SALT_LEN + NONCE_LEN + TAG_LEN);
 
-    const key = this.deriveKey(salt);
-
-    try {
-      const decipher = createDecipheriv("aes-256-gcm", key, nonce);
-      decipher.setAuthTag(tag);
-      const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-      const plain = JSON.parse(plaintext.toString("utf8")) as Record<
-        string,
-        { label: string; privateKey: string; publicKey: string }
-      >;
-
-      for (const [id, w] of Object.entries(plain)) {
-        wallets.set(id, {
-          label: w.label,
-          privateKey: Uint8Array.from(Buffer.from(w.privateKey, "hex")),
-          publicKey: Uint8Array.from(Buffer.from(w.publicKey, "hex")),
-        });
+    // Try current params first, then legacy (N=2^12) for files produced by
+    // older versions. On legacy success we log once so the operator knows the
+    // next save() will upgrade the file in place.
+    for (const N of [WalletStore.SCRYPT_N_CURRENT, WalletStore.SCRYPT_N_LEGACY]) {
+      const key = this.deriveKey(salt, N);
+      try {
+        const decipher = createDecipheriv("aes-256-gcm", key, nonce);
+        decipher.setAuthTag(tag);
+        const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+        const plain = JSON.parse(plaintext.toString("utf8")) as Record<
+          string,
+          { label: string; privateKey: string; publicKey: string }
+        >;
+        const wallets = new Map<string, WalletData>();
+        for (const [id, w] of Object.entries(plain)) {
+          wallets.set(id, {
+            label: w.label,
+            privateKey: Uint8Array.from(Buffer.from(w.privateKey, "hex")),
+            publicKey: Uint8Array.from(Buffer.from(w.publicKey, "hex")),
+          });
+        }
+        if (N === WalletStore.SCRYPT_N_LEGACY) {
+          console.error(
+            `[eto-mcp] Loaded wallets from legacy (N=2^12) scrypt params; next save() will re-encrypt under N=2^17`,
+          );
+        }
+        return wallets;
+      } catch {
+        // try next N
       }
-      return wallets;
-    } catch {
-      console.error("[eto-mcp] Failed to decrypt wallet file — wrong passphrase or corrupted data");
-      return null;
     }
+    console.error("[eto-mcp] Failed to decrypt wallet file — wrong passphrase or corrupted data");
+    return null;
   }
 
   private async migrateLegacyIfNeeded(): Promise<void> {
