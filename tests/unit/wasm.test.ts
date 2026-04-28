@@ -140,6 +140,72 @@ describe("buildTransferTx", () => {
     // Third key is system program (all zeros)
     expect(parsed.accountKeys[2].every(b => b === 0)).toBe(true);
   });
+
+  test("without memo, has exactly 1 instruction (no Memo Program key)", () => {
+    const from = makeValidPubkey();
+    const to = makeValidPubkey();
+    const tx = buildTransferTx(from, to, 1_000n, BLOCKHASH);
+    const parsed = parseTransaction(tx);
+    expect(parsed.instructions.length).toBe(1);
+    expect(parsed.accountKeys.length).toBe(3);
+  });
+
+  test("with memo, prepends a Memo Program instruction containing the UTF-8 memo bytes", () => {
+    const from = makeValidPubkey();
+    const to = makeValidPubkey();
+    const memo = JSON.stringify({ type: "service", job_id: "abc-123" });
+    const tx = buildTransferTx(from, to, 1_000n, BLOCKHASH, memo);
+    const parsed = parseTransaction(tx);
+
+    // 4 account keys: from, to, system program, memo program
+    expect(parsed.accountKeys.length).toBe(4);
+
+    // Memo Program v2 ID: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
+    const MEMO_PROGRAM_ID_BYTES = bs58.decode("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+    expect(parsed.accountKeys[3]).toEqual(MEMO_PROGRAM_ID_BYTES);
+
+    // 2 instructions: memoIx first, then transferIx
+    expect(parsed.instructions.length).toBe(2);
+
+    // Memo ix: programIdIndex = 3, no accounts, data = utf8(memo)
+    const memoIx = parsed.instructions[0];
+    expect(memoIx.programIdIndex).toBe(3);
+    expect(memoIx.accounts.length).toBe(0);
+    expect(new TextDecoder().decode(memoIx.data)).toBe(memo);
+
+    // Transfer ix: programIdIndex = 2, accounts = [0, 1], data = SystemProgram::Transfer payload
+    const transferIx = parsed.instructions[1];
+    expect(transferIx.programIdIndex).toBe(2);
+    expect(Array.from(transferIx.accounts)).toEqual([0, 1]);
+    const discriminator = transferIx.data[0] | (transferIx.data[1] << 8) | (transferIx.data[2] << 16) | (transferIx.data[3] << 24);
+    expect(discriminator).toBe(2);
+  });
+
+  test("with memo, two transfers with the same from/to/amount/blockhash but different memos differ in tx bytes", () => {
+    const from = makeValidPubkey();
+    const to = makeValidPubkey();
+    const txA = buildTransferTx(from, to, 1_000n, BLOCKHASH, "audit-1");
+    const txB = buildTransferTx(from, to, 1_000n, BLOCKHASH, "audit-2");
+    expect(Buffer.from(txA).equals(Buffer.from(txB))).toBe(false);
+  });
+
+  test("memo header has numReadonlyUnsigned=2 (system program + memo program)", () => {
+    const from = makeValidPubkey();
+    const to = makeValidPubkey();
+    const tx = buildTransferTx(from, to, 1n, BLOCKHASH, "x");
+    const parsed = parseTransaction(tx);
+    expect(parsed.numReadonlyUnsigned).toBe(2);
+    expect(parsed.numRequiredSignatures).toBe(1);
+  });
+
+  test("empty-string memo behaves like no memo", () => {
+    const from = makeValidPubkey();
+    const to = makeValidPubkey();
+    const tx = buildTransferTx(from, to, 1n, BLOCKHASH, "");
+    const parsed = parseTransaction(tx);
+    expect(parsed.instructions.length).toBe(1);
+    expect(parsed.accountKeys.length).toBe(3);
+  });
 });
 
 describe("buildCreateAccountTx", () => {
