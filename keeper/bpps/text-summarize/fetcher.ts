@@ -181,14 +181,14 @@ export function stripHtml(html: string): string {
   // Decode a minimal set of named/numeric entities.
   s = s
     .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/g, "'")
     .replace(/&#(\d+);/g, (_m, code: string) =>
       String.fromCodePoint(Number(code)),
-    );
+    )
+    .replace(/&amp;/gi, "&");
   // Collapse whitespace.
   s = s.replace(/[ \t\f\v]+/g, " ");
   s = s.replace(/\s*\n\s*/g, "\n");
