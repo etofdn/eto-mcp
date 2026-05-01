@@ -1,0 +1,34 @@
+# fly.toml.bridge — Fly.io config for the Beckn HTTP bridge (FN-093)
+#
+# Deploy:
+#   flyctl deploy -c fly.toml.bridge
+#
+# After first deploy, attach the custom hostname:
+#   flyctl certs add bridge.eto.network -c fly.toml.bridge
+#
+# Secrets (set via flyctl secrets set -a eto-beckn-bridge):
+#   ETO_RPC_URL, ETO_WS_URL, and any future auth secrets
+app = "eto-beckn-bridge"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile.bridge"
+
+[http_service]
+  internal_port = 9000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  path = "/health"
+  timeout = "5s"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "9000"
+  LOG_LEVEL = "info"
