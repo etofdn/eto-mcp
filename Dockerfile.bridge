@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+# Dockerfile.bridge — Beckn HTTP bridge (FN-093)
+#
+# Multi-stage build:
+#   deps    — install production dependencies with frozen lockfile
+#   runtime — slim image with only what the bridge needs
+#
+# No Foundry stage (unlike the MCP Dockerfile): the bridge is pure HTTP
+# envelope routing with no on-chain calls.
+#
+# Usage:
+#   docker build -f Dockerfile.bridge -t eto/beckn-bridge .
+#   docker run -p 9000:9000 eto/beckn-bridge
+# ---------------------------------------------------------------------------
+
+# ---- deps stage ----
+FROM oven/bun:1.3 AS deps
+WORKDIR /app
+
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
+
+# ---- runtime stage ----
+FROM oven/bun:1.3-slim AS runtime
+WORKDIR /app
+
+# Use the non-root bun user that ships with the official image
+USER bun
+
+COPY --from=deps --chown=bun:bun /app/node_modules ./node_modules
+COPY --chown=bun:bun package.json ./
+COPY --chown=bun:bun src/bridge-server.ts ./src/bridge-server.ts
+COPY --chown=bun:bun src/gateway/beckn.ts ./src/gateway/beckn.ts
+COPY --chown=bun:bun src/gateway/index.ts ./src/gateway/index.ts
+COPY --chown=bun:bun tsconfig.json ./
+
+EXPOSE 9000
+
+ENV NODE_ENV=production
+ENV PORT=9000
+
+CMD ["bun", "run", "bridge"]

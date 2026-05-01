@@ -42,18 +42,21 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "bridge": "bun run src/bridge-server.ts"
   },
   "engines": {
     "node": ">=20",
     "bun": ">=1.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.0",
     "@types/node": "^20.12.0",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"
   },
   "dependencies": {
+    "express": "^5.2.1",
     "zod": "^3.25.76"
   }
 }
