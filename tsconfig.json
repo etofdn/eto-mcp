@@ -1,18 +1,24 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "ES2022",
-    "moduleResolution": "bundler",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
     "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": true,
     "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "outDir": "./dist",
-    "rootDir": "./src",
-    "declaration": true,
     "resolveJsonModule": true,
-    "types": ["bun"],
-    "jsx": "react-jsx"
+    "isolatedModules": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "types": ["node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*", "test/**/*", "tests/**/*", "keeper/**/*"],
+  "exclude": ["dist", "node_modules"]
 }
