@@ -171,8 +171,8 @@ async function fetchUrl(
  */
 export function stripHtml(html: string): string {
   let s = html;
-  s = s.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ");
-  s = s.replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ");
+  s = s.replace(/<script\b[^>]*>[\s\S]*?<\/script(?:\s+[^>]*)?>/gi, " ");
+  s = s.replace(/<style\b[^>]*>[\s\S]*?<\/style(?:\s+[^>]*)?>/gi, " ");
   s = s.replace(/<!--[\s\S]*?-->/g, " ");
   // Convert block-level closers to newlines so paragraphs survive.
   s = s.replace(/<\/(p|div|section|article|li|h[1-6]|br|tr)\s*>/gi, "\n");
