@@ -25,7 +25,7 @@ import { zBppConfig } from "../../keeper/templates/bpp/types.js";
 import {
   BANK_NETWORK_LABEL,
   computeBankNetworkId,
-} from "../../../apps/issuer-admin/src/bank/init-network.js";
+} from "../../keeper/bpps/bank/network-id.js";
 
 /* -------------------------------------------------------------------------- */
 /* Fixtures                                                                   */
