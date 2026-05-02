@@ -205,7 +205,7 @@ export function registerFoundryTools(server: McpServer): void {
 
   server.tool(
     "cast_call",
-    `Call a smart contract function using Foundry's cast. Supports both read (call) and write (send) operations with human-readable function signatures. Much easier than manual ABI encoding.`,
+    `Call a smart contract function using Foundry's cast, returning ABI-decoded, human-readable output (decimal integers, checksum addresses, boolean text). Supports both read (call) and write (send) operations with human-readable function signatures. Prefer cast_call over read_contract when you need decoded output without manual ABI decoding — read_contract returns raw hex from eth_call with no ABI awareness, while cast_call leverages Foundry to decode the response automatically. EVM-only; requires Foundry (~/.foundry/bin/cast) to be installed.`,
     {
       to: z.string().describe("Contract address (0x...)"),
       sig: z.string().describe("Function signature e.g. 'balanceOf(address)' or 'transfer(address,uint256)'"),
