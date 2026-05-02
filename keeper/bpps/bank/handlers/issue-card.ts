@@ -150,6 +150,23 @@ export interface IssueCardDeps {
    * instruction lands.
    */
   recordCard(pda: string, card: CardDebitCredentialBody): Promise<void>;
+
+  /**
+   * FN-191: orphan-ledger reconciliation hook. Called from the
+   * `issue_failed` path AFTER `recordCard` succeeded but the on-chain
+   * `issueCardCredential` threw. Mirrors the `flagReconciliation` hook
+   * in `offramp.ts` so ops can take corrective action and the eventual
+   * GC sweeper can find the orphan via this signal instead of
+   * scanning the entire ledger.
+   *
+   * Implementations MUST be idempotent — the runtime may invoke this
+   * more than once for the same `card_pda` (retry storms, replays).
+   */
+  flagReconciliation(
+    card_pda: string,
+    holder: string,
+    body: CardDebitCredentialBody,
+  ): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +299,16 @@ export async function issueCard(
   try {
     await deps.issueCardCredential(credential);
   } catch {
+    // FN-191: ledger entry from recordCard is now orphaned. Flag for
+    // reconciliation BEFORE rethrowing so ops gets a deterministic
+    // signal and the eventual GC sweeper has a stable handle.
+    // flagReconciliation must not throw — if it does, swallow it: the
+    // primary error (issue_failed) is what callers care about.
+    try {
+      await deps.flagReconciliation(card_pda, body.holder, body);
+    } catch {
+      // intentionally swallowed
+    }
     throw new IssueCardRejected("issue_failed");
   }
 
@@ -325,6 +352,12 @@ export const stubs: IssueCardDeps = {
   recordCard: async (pda, card) => {
     console.log(
       `[STUB] recordCard pda=${pda.slice(0, 8)} holder=${card.holder.slice(0, 8)}`,
+    );
+  },
+  flagReconciliation: async (card_pda, holder, _body) => {
+    // FN-191 stub — mirrors offramp's flagReconciliation logger.
+    console.warn(
+      `[STUB] RECONCILE NEEDED issue-card card_pda=${card_pda.slice(0, 12)} holder=${holder.slice(0, 8)} (issue_failed post-recordCard)`,
     );
   },
 };
