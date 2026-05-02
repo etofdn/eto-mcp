@@ -12,3 +12,9 @@ target/
 mesh/contracts/cache/
 mesh/contracts/out/
 .eto/
+
+# Fusion runtime + agent worktrees
+.worktrees/
+.fusion/
+.tbd/
+coverage/
