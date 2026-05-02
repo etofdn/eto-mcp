@@ -135,3 +135,88 @@ export type {
 } from "./issuers/skill-cert.js";
 export { SkillCertIssuerError } from "./issuers/skill-cert.js";
 
+// audit-trail indexer (T-3.13.1.1, FN-130) — read-only off-chain feed builder
+// that ingests `KytTrace` and `RevocationRootUpdated` events for an AgentCard
+// authority and emits a deterministic JSON-LD `VerifiableCredential`. v0 is
+// unsigned; FN-132 (1099 issuer) and FN-133 (travel-rule generator) consume it.
+export {
+  AUDIT_TRAIL_CONTEXT_ETO,
+  AUDIT_TRAIL_CONTEXT_VC,
+  AUDIT_TRAIL_ISSUER_DID,
+  AUDIT_TRAIL_VC_TYPE,
+  AuditTrailIndexer,
+  AuditTrailIndexerError,
+  InMemoryKytEventSource,
+  buildAuditFeed,
+  counterpartyWireSchema,
+  kytStageWireSchema,
+  kytTraceEventSchema,
+  partyTraceWireSchema,
+  revocationRootUpdatedEventSchema,
+} from "./services/indexer/index.js";
+export type {
+  AuditFeedEvent,
+  AuditFeedJsonLd,
+  AuditFeedKytEvent,
+  AuditFeedRevocationEvent,
+  AuditFeedSummary,
+  AuditLogger,
+  AuditTrailIndexerDeps,
+  AuditTrailIndexerErrorCode,
+  BuildAuditFeedOpts,
+  CounterpartyWire,
+  InMemoryKytEventSourceInit,
+  KytEventSource,
+  KytEventSourceQueryOpts,
+  KytStageWire,
+  KytTraceEvent,
+  PartyTraceWire,
+  RevocationRootUpdatedEvent,
+} from "./services/indexer/index.js";
+
+// travel-rule report generator (T-3.13.1.4, FN-133) — derived FATF-style
+// JSON-LD report. Consumes FN-130's audit feed; v0 is unsigned.
+export {
+  TRAVEL_RULE_CONTEXT_ETO,
+  TRAVEL_RULE_CONTEXT_FATF,
+  TRAVEL_RULE_DEFAULT_THRESHOLD_USD,
+  TRAVEL_RULE_ISSUER_DID,
+  TRAVEL_RULE_REPORT_TYPE,
+  TravelRuleError,
+  TravelRuleReportGenerator,
+  InMemoryPartyDirectory,
+  InMemoryAmountResolver,
+  buildTravelRuleReport,
+  isCrossJurisdiction,
+  meetsThreshold,
+  shouldReport,
+  amountResolverEntrySchema,
+  ivms101GeographicAddressSchema,
+  ivms101LegalNameSchema,
+  ivms101NationalIdentificationSchema,
+  ivms101NaturalNameSchema,
+  ivms101PartyNameSchema,
+  ivms101PartySchema,
+  jurisdictionCodeSchema,
+  partyDirectoryEntrySchema,
+} from "./services/indexer/travel-rule.js";
+export type {
+  AmountResolver,
+  AmountResolverEntry,
+  BuildReportOpts,
+  Ivms101GeographicAddress,
+  Ivms101LegalName,
+  Ivms101NationalIdentification,
+  Ivms101NaturalName,
+  Ivms101Party,
+  Ivms101PartyName,
+  JurisdictionCode,
+  PartyDirectory,
+  PartyDirectoryLookupOpts,
+  ShouldReportResult,
+  TravelRuleEntry,
+  TravelRuleErrorCode,
+  TravelRuleReportGeneratorDeps,
+  TravelRuleReportJsonLd,
+} from "./services/indexer/travel-rule.js";
+

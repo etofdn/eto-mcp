@@ -1,0 +1,48 @@
+{
+  "_source": "Beckn v2.0 LTS reference: https://developers.becknprotocol.io/docs/protocol-specifications/",
+  "_note": "BAP confirms the order with payment details. Targets a specific BPP.",
+  "context": {
+    "domain": "retail",
+    "action": "confirm",
+    "version": "2.0.0",
+    "bap_id": "bap.example.com",
+    "bap_uri": "https://bap.example.com/beckn",
+    "bpp_id": "bpp.example.com",
+    "bpp_uri": "https://bpp.example.com/beckn",
+    "transaction_id": "f6a7b8c9-d0e1-2345-fabc-456789012345",
+    "message_id": "a7b8c9d0-e1f2-3456-abcd-567890123456",
+    "timestamp": "2026-01-01T00:03:00.000Z",
+    "ttl": "PT30S"
+  },
+  "message": {
+    "order": {
+      "provider": { "id": "prov-001" },
+      "items": [
+        { "id": "item-001", "quantity": { "count": 1 } }
+      ],
+      "billing": {
+        "name": "Alice Example",
+        "email": "alice@example.com",
+        "phone": "+15550001234"
+      },
+      "fulfillments": [
+        {
+          "id": "ff-001",
+          "type": "Delivery",
+          "end": {
+            "location": {
+              "address": { "street": "123 Main St", "city": "Springfield" }
+            }
+          }
+        }
+      ],
+      "payments": [
+        {
+          "type": "ON-ORDER",
+          "params": { "currency": "USD", "amount": "3.50", "transaction_id": "pay-001" },
+          "status": "PAID"
+        }
+      ]
+    }
+  }
+}

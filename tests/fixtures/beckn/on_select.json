@@ -1,0 +1,38 @@
+{
+  "_source": "Beckn v2.0 LTS reference: https://developers.becknprotocol.io/docs/protocol-specifications/",
+  "_note": "BPP on_select callback to BAP with a quote for the selected item. Mirrors transaction_id/message_id per §5.2.3.",
+  "context": {
+    "domain": "retail",
+    "action": "on_select",
+    "version": "2.0.0",
+    "bap_id": "bap.example.com",
+    "bap_uri": "https://bap.example.com/beckn",
+    "bpp_id": "bpp.example.com",
+    "bpp_uri": "https://bpp.example.com/beckn",
+    "transaction_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+    "message_id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+    "timestamp": "2026-01-01T00:01:05.000Z",
+    "ttl": "PT30S"
+  },
+  "message": {
+    "order": {
+      "provider": {
+        "id": "prov-001",
+        "descriptor": { "name": "Blue Bottle Coffee" }
+      },
+      "items": [
+        {
+          "id": "item-001",
+          "descriptor": { "name": "Espresso" },
+          "price": { "currency": "USD", "value": "3.50" }
+        }
+      ],
+      "quote": {
+        "price": { "currency": "USD", "value": "3.50" },
+        "breakup": [
+          { "title": "Item price", "price": { "currency": "USD", "value": "3.50" } }
+        ]
+      }
+    }
+  }
+}

@@ -1,6 +1,4 @@
-import { sha256 } from "@noble/hashes/sha256";
-import { hmac } from "@noble/hashes/hmac";
-import { timingSafeEqual } from "crypto";
+import { createHash, createHmac, timingSafeEqual } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
 import { atomicWriteJson, loadJsonArray } from "./persisted-store.js";
@@ -83,14 +81,13 @@ const signingKey = (() => {
       process.exit(1);
     }
   }
-  if (envKey) return new TextEncoder().encode(envKey);
+  if (envKey) return Buffer.from(envKey, "utf8");
   // Dev mode: deterministic key
-  return sha256(new TextEncoder().encode("eto-mcp-dev-signing-key-DO-NOT-USE-IN-PROD"));
+  return createHash("sha256").update("eto-mcp-dev-signing-key-DO-NOT-USE-IN-PROD").digest();
 })();
 
 function hmacSign(data: string): string {
-  const mac = hmac(sha256, signingKey, new TextEncoder().encode(data));
-  return Buffer.from(mac).toString("hex");
+  return createHmac("sha256", signingKey).update(data).digest("hex");
 }
 
 // Access tokens are stateless HMAC, so revocation needs a small denylist.
@@ -151,14 +148,15 @@ export function createSession(opts: {
     iss: "eto-mcp",
     aud: "eto-agent",
     iat: now,
-    exp: now + (opts.ttlSeconds || 300),
+    exp: now + (opts.ttlSeconds ?? 300),
     jti: crypto.randomUUID(),
-    caps: opts.capabilities || ALL_CAPS,
+    caps: opts.capabilities ?? ALL_CAPS,
     wallet_id: opts.walletId,
-    network: opts.network || "testnet",
-    agent_id: opts.agentId,
-    auth_strategy: opts.authStrategy,
-    client_id: opts.clientId,
+    network: opts.network ?? "testnet",
+    // Conditionally spread optional fields to satisfy exactOptionalPropertyTypes
+    ...(opts.agentId !== undefined ? { agent_id: opts.agentId } : {}),
+    ...(opts.authStrategy !== undefined ? { auth_strategy: opts.authStrategy } : {}),
+    ...(opts.clientId !== undefined ? { client_id: opts.clientId } : {}),
   };
   const json = JSON.stringify(payload);
   const sig = hmacSign(json);

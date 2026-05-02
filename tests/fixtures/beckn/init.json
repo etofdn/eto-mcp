@@ -1,0 +1,41 @@
+{
+  "_source": "Beckn v2.0 LTS reference: https://developers.becknprotocol.io/docs/protocol-specifications/",
+  "_note": "BAP initiates an order with billing and fulfillment details. Targets a specific BPP.",
+  "context": {
+    "domain": "retail",
+    "action": "init",
+    "version": "2.0.0",
+    "bap_id": "bap.example.com",
+    "bap_uri": "https://bap.example.com/beckn",
+    "bpp_id": "bpp.example.com",
+    "bpp_uri": "https://bpp.example.com/beckn",
+    "transaction_id": "d4e5f6a7-b8c9-0123-defa-234567890123",
+    "message_id": "e5f6a7b8-c9d0-1234-efab-345678901234",
+    "timestamp": "2026-01-01T00:02:00.000Z",
+    "ttl": "PT30S"
+  },
+  "message": {
+    "order": {
+      "provider": { "id": "prov-001" },
+      "items": [
+        { "id": "item-001", "quantity": { "count": 1 } }
+      ],
+      "billing": {
+        "name": "Alice Example",
+        "email": "alice@example.com",
+        "phone": "+15550001234"
+      },
+      "fulfillments": [
+        {
+          "id": "ff-001",
+          "type": "Delivery",
+          "end": {
+            "location": {
+              "address": { "street": "123 Main St", "city": "Springfield" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
