@@ -30,6 +30,13 @@
 
 import { createHash } from "node:crypto";
 
+import {
+  issueCardCredential as issueCardCredentialReal,
+  type BankIssuerDeps,
+  type IssueCardInput,
+  BankIssuerError,
+} from "../../../../src/issuers/bank.js";
+
 // ---------------------------------------------------------------------------
 // Schema gate
 // ---------------------------------------------------------------------------
@@ -307,3 +314,77 @@ export const stubs: IssueCardDeps = {
     );
   },
 };
+
+// ---------------------------------------------------------------------------
+// Production issuer adapter (FN-090)
+// ---------------------------------------------------------------------------
+
+/**
+ * Adapter that wraps `BankIssuerDeps` into the handler's
+ * `IssueCardDeps["issueCardCredential"]` port shape.
+ *
+ * Mirrors `makeProdIssueCheckingCredential` (FN-072) one-for-one:
+ *
+ *   - Asserts `cred.issuer === bankIssuer.issuerAuthorityPubkey`. A mismatch
+ *     throws a plain `Error("issuer authority mismatch")` so callers can
+ *     distinguish configuration errors from issuance errors.
+ *
+ *   - Maps the handler's snake_case `IssueCardCredential.body` fields onto
+ *     the camelCase `IssueCardInput` accepted by `src/issuers/bank.ts`.
+ *     v0 invariant: `subject IS holder` for single-owner accounts; we
+ *     pass `cred.subject` for both `subjectAgentCardPubkey` and `holder`
+ *     to match the open-checking adapter's behavior.
+ *
+ *   - `expires_slot === 0` is the handler's "no expiry" sentinel; we omit
+ *     `expiresSlot` from the input rather than passing the zero, so the
+ *     downstream issuer's `expiresSlot?: number` semantics aren't
+ *     surprised by a literal-zero value.
+ *
+ *   - `BankIssuerError` propagates unchanged — `runIssueCard`'s `catch`
+ *     translates it to `IssueCardRejected("issue_failed")`. Do NOT
+ *     swallow, log-and-rethrow, or repackage.
+ *
+ * @param bankIssuer - Fully-wired `BankIssuerDeps` instance (store, chain,
+ *   revoker, pinner, clock, issuerAuthorityPubkey).
+ */
+export function makeProdIssueCardCredential(
+  bankIssuer: BankIssuerDeps,
+): IssueCardDeps["issueCardCredential"] {
+  return async (cred: IssueCardCredential) => {
+    if (cred.issuer !== bankIssuer.issuerAuthorityPubkey) {
+      throw new Error("issuer authority mismatch");
+    }
+
+    // Map handler's snake_case body → IssueCardInput camelCase.
+    // handler invariant: subject IS holder for v0 (single-owner accounts).
+    const req: IssueCardInput = {
+      subjectAgentCardPubkey: cred.subject,             // cred.subject → subjectAgentCardPubkey
+      cardIdHash: cred.body.card_id_hash,               // cred.body.card_id_hash → cardIdHash
+      holder: cred.subject,                             // cred.subject → holder (invariant)
+      linkedAccountPda: cred.body.linked_account_pda,   // cred.body.linked_account_pda → linkedAccountPda
+      jurisdiction: cred.body.jurisdiction,             // cred.body.jurisdiction → jurisdiction
+      issuedSlot: cred.body.issued_slot,                // cred.body.issued_slot → issuedSlot
+      spendingLimitPerDay: cred.body.spending_limit_per_day,
+      spendingLimitPerTx: cred.body.spending_limit_per_tx,
+      ...(cred.body.expires_slot !== 0
+        ? { expiresSlot: cred.body.expires_slot }
+        : {}),
+      networkBrand: cred.body.network_brand,            // "internal" in v0
+      tier: cred.body.tier,                             // "standard" in v0
+    };
+
+    // Call the real issuer. BankIssuerError propagates unchanged — the
+    // handler's catch block translates it to IssueCardRejected("issue_failed").
+    const response = await issueCardCredentialReal(bankIssuer, req);
+
+    // Unwrap the response regardless of "issued" or "idempotent" status.
+    return {
+      tx_signature: response.txSignature,
+      credential_pda: response.credentialPda,
+    };
+  };
+}
+
+// Suppress unused-import warning for re-exported error class — callers may
+// need to `instanceof BankIssuerError` while wiring the adapter.
+export { BankIssuerError };
