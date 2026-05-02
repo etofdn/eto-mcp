@@ -100,7 +100,7 @@ export const becknContextSchema = {
     transaction_id: { type: "string", format: "uuid" },
     message_id: { type: "string", format: "uuid" },
     timestamp: { type: "string", format: "date-time" },
-    ttl: { type: "string" },
+    ttl: { type: "string", format: "duration" },
     location: { type: "object" },
   },
   additionalProperties: true,
