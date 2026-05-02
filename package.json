@@ -57,6 +57,8 @@
     "vitest": "^1.6.0"
   },
   "dependencies": {
+    "@noble/ed25519": "^2.0.0",
+    "@noble/hashes": "^1.4.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "express": "^5.2.1",
