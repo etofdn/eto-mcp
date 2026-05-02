@@ -1,0 +1,10 @@
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 38
+Access-Control-Allow-Origin: *
+Connection: keep-alive
+
+{"id":1,"jsonrpc":"2.0","result":null}
+
+--- HTTP_CODE: 200 ---
+--- TIME_TOTAL: 0.001228s ---

@@ -1,0 +1,64 @@
+{
+  "timestamp": "2026-05-02T22:09:59.294Z",
+  "endpoint": "http://127.0.0.1:8899",
+  "address": "AzghrNHxdksNQbzMFt4oZ4R7seiCwP2v3XkdqD4hbBic",
+  "burstResults": [
+    {
+      "call": 1,
+      "rawResultType": "object{amount,recipient,signature}",
+      "isStringSig": false,
+      "isJsonStringified": false,
+      "sig": "yZY2ZNfX47fg1d6c1iksp9wxZGp3AG1iEVgm9AZe46aNkb3dYJw58RPq2Q6cvMrg9PXM3bUfqXxvimKyQb2XgHk",
+      "durationMs": 4.760864999999999
+    },
+    {
+      "call": 2,
+      "rawResultType": "object{amount,recipient,signature}",
+      "isStringSig": false,
+      "isJsonStringified": false,
+      "sig": "yZY2ZNfX47fg1d6c1iksp9wxZGp3AG1iEVgm9AZe46aNkb3dYJw58RPq2Q6cvMrg9PXM3bUfqXxvimKyQb2XgHk",
+      "durationMs": 0.32742999999999967
+    },
+    {
+      "call": 3,
+      "rawResultType": "object{amount,recipient,signature}",
+      "isStringSig": false,
+      "isJsonStringified": false,
+      "sig": "yZY2ZNfX47fg1d6c1iksp9wxZGp3AG1iEVgm9AZe46aNkb3dYJw58RPq2Q6cvMrg9PXM3bUfqXxvimKyQb2XgHk",
+      "durationMs": 0.33529499999999857
+    },
+    {
+      "call": 4,
+      "rawResultType": "object{amount,recipient,signature}",
+      "isStringSig": false,
+      "isJsonStringified": false,
+      "sig": "yZY2ZNfX47fg1d6c1iksp9wxZGp3AG1iEVgm9AZe46aNkb3dYJw58RPq2Q6cvMrg9PXM3bUfqXxvimKyQb2XgHk",
+      "durationMs": 0.3913909999999987
+    },
+    {
+      "call": 5,
+      "rawResultType": "object{amount,recipient,signature}",
+      "isStringSig": false,
+      "isJsonStringified": false,
+      "sig": "yZY2ZNfX47fg1d6c1iksp9wxZGp3AG1iEVgm9AZe46aNkb3dYJw58RPq2Q6cvMrg9PXM3bUfqXxvimKyQb2XgHk",
+      "durationMs": 0.30449700000000135
+    }
+  ],
+  "gettxResults": [
+    {
+      "sig": "yZY2ZNfX47fg1d6c1iksp9wxZGp3AG1iEVgm9AZe46aNkb3dYJw58RPq2Q6cvMrg9PXM3bUfqXxvimKyQb2XgHk",
+      "delayS": 1,
+      "result": null
+    },
+    {
+      "sig": "yZY2ZNfX47fg1d6c1iksp9wxZGp3AG1iEVgm9AZe46aNkb3dYJw58RPq2Q6cvMrg9PXM3bUfqXxvimKyQb2XgHk",
+      "delayS": 5,
+      "result": null
+    }
+  ],
+  "silentErrorPathTriggered": false,
+  "uniqueSigsFromBurst": 1,
+  "sameSigForDiffAddresses": false,
+  "addr1Sig": "yZY2ZNfX47fg1d6c1iksp9wxZGp3AG1iEVgm9AZe46aNkb3dYJw58RPq2Q6cvMrg9PXM3bUfqXxvimKyQb2XgHk",
+  "addr2Sig": "4V7jSCcyuzEERnzWhAiZSxsH4Jr4yJQ6o1433kBnQoKrtVjJDELjpeLZmCY8j1WtXBYQUpN8QvRxuTHfPcB69o5T"
+}
