@@ -4,6 +4,17 @@ Operational gateway services for ETO — bridges between external identity
 systems and the on-chain `IssueCredential` flow defined in
 [`spec/SINGULARITY-LAYER-1.md`](../spec/SINGULARITY-LAYER-1.md).
 
+## Beckn HTTP bridge
+
+The `src/gateway/beckn.ts` module exports an Express router and a
+`createBecknApp()` factory exposing Beckn v2.0 LTS endpoints — `/search`,
+`/select`, `/init`, `/confirm`, plus a `/health` liveness probe. Each
+action endpoint validates the envelope shape and returns a synchronous
+`ACK`. Per-action `message` schema validation lands in **FN-087** and
+BAP/BPP role logic in **FN-088..FN-091**. See
+[`docs/beckn-bridge.md`](./docs/beckn-bridge.md) for the full envelope,
+error table, and public-surface reference.
+
 This package is a self-contained TypeScript module that runs under either
 Bun (production) or Node ≥ 20 (CI). It contains pure business logic with
 no HTTP transport — the gateway server wires routes onto `WorldcoinIssuer`
@@ -219,3 +230,82 @@ T-1.4.2.3 / FN-042.
 when the mock bank BPP reports a checking-account opening, dedupes on
 `checkingAccountId`, and exposes a `revoke` entry point that flips the
 on-chain `Credential.revoked` bit via `RevokeCredential`.
+
+## Bank real issuer (`@eto/mcp/issuers/bank`)
+
+T-3.9.1.3 / FN-097.
+
+Production issuer service for the bank-as-BPP catalogue's account and
+card flows. Runs under the bank's issuer authority key and exposes
+async entry points for the three credential families:
+
+| Entry point | Credential schema | Binding key |
+| --- | --- | --- |
+| `issueCheckingCredential` | `account.checking.v1` | `checkingAccountPda` |
+| `issueSavingsCredential` | `account.savings.v1` | `savingsAccountPda` |
+| `issueCardCredential` | `card.debit.v1` | `cardIdHash` |
+| `revokeBankCredential` | any of the above | `(kind, bindingKey)` |
+
+All side-effects are dependency-injected (`BankIssuerDeps`). The only
+bundled store is `InMemoryBankIssuerStore`; a durable adapter is a
+follow-up. Idempotent on natural binding key; emits `BankIssuerError`
+for binding conflicts, chain failures, and validation errors. See
+`src/issuers/bank.ts` and `src/issuers/bank.types.ts`.
+
+## Services
+
+### Audit-trail event indexer (`@eto/mcp` → `src/services/indexer/audit-trail.ts`)
+
+T-3.13.1.1 / FN-130. Off-chain read-only service that, given any
+`AgentCard` authority, ingests the chain's `KytTrace` (Beckn `init` /
+`confirm` / `rate`) and `RevocationRootUpdated` events through an
+injectable `KytEventSource` and emits a deterministic JSON-LD audit
+feed shaped as a `VerifiableCredential` of type
+`["VerifiableCredential", "AuditTrailFeed"]`. Events are sorted by
+`(slot, txSignature)` for byte-stable output, and the
+`credentialSubject.summary` carries per-stage counters. v0 is
+**unsigned** (issuer DID `did:eto:indexer:audit-trail:v0` is a
+placeholder); the production source will subscribe to
+`singularity:kyt:*` and `singularity:revocation:root_updated` log
+lines via Solana JSON-RPC `logsSubscribe`. Consumed downstream by the
+1099 issuer (FN-132) and travel-rule generator (FN-133). Tests use the
+shipped `InMemoryKytEventSource` reference implementation.
+
+### 1099 issuance flow sketch (`@eto/mcp` → `keeper/bpps/bank/handlers/tax-1099-sketch.ts`)
+
+T-3.13.1.3 / FN-132. Manually-triggered bank-as-BPP flow that, given a
+`(agentCardAuthority, taxYear, jurisdiction)` triple, aggregates the year's
+audit trail via FN-130's `AuditTrailIndexer`, reduces the feed into
+per-year totals (`Tax1099Totals`), builds a `Tax1099Credential` JSON-LD
+envelope conforming to `spec/banking/credentials/tax-1099.json`, pins the
+JCS-canonical claim via an injectable `VcPinner`, and submits an
+`IssueCredential` instruction under the schema id
+`sha256("eto.beckn.schema.tax.1099.<jurisdiction>.<year>.v1")`. Entry point:
+`runTax1099Sketch(deps, request)`. v0 is unsigned (`proof.proofValue` is
+the placeholder `"<unsigned-v0>"`) and monetary fields (`totalIncome` etc.)
+are always `"0.00"` until FN-117 / FN-118 wire eUSD ledger amounts. Uses
+the same injectable `IssueCredentialClient`, `VcPinner`, and `SlotClock`
+interfaces as the existing `bank-mock` issuer.
+
+### Travel-rule report generator (`@eto/mcp` → `src/services/indexer/travel-rule.ts`)
+
+T-3.13.1.4 / FN-133. Off-chain FATF-style report generator that, given
+any `AgentCard` authority, consumes FN-130's `AuditTrailIndexer` audit
+feed and emits a deterministic JSON-LD document of type
+`["VerifiableCredential", "TravelRuleReport"]`. Only `confirm`-stage
+KYT events are considered (settlement, not catalog browse / rating); an
+event is included iff the originator and beneficiary resolve to two
+distinct ISO-3166-1 α-2 jurisdictions **and** the USD-equivalent amount
+strictly exceeds the configurable threshold (default **$3,000**).
+
+Party records (name, account, jurisdiction, optional address and
+national ID) are supplied via the injected `PartyDirectory`; USD amounts
+are resolved via the injected `AmountResolver`. v0 ships the in-memory
+reference implementations (`InMemoryPartyDirectory`,
+`InMemoryAmountResolver`); production wiring (backed by the issuer
+registry and `EtoRpcClient` transaction lookups) is a follow-up task.
+v0 reports are **unsigned** (issuer DID `did:eto:indexer:travel-rule:v0`
+is a placeholder). Per spec §9.3: `parties[0]` (BAP) is the originator;
+`parties[1]` (BPP) is the beneficiary. Entries are sorted by
+`(slot, txSignature)` for byte-stable output; the injectable `clock`
+allows tests to pin `issuanceDate` for deterministic assertions.

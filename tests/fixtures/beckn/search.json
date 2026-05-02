@@ -1,0 +1,24 @@
+{
+  "_source": "Beckn v2.0 LTS reference: https://developers.becknprotocol.io/docs/protocol-specifications/",
+  "_note": "Minimal valid search envelope. BAP broadcasts a service search without targeting a specific BPP.",
+  "context": {
+    "domain": "retail",
+    "action": "search",
+    "version": "2.0.0",
+    "bap_id": "bap.example.com",
+    "bap_uri": "https://bap.example.com/beckn",
+    "transaction_id": "f7c3bc1d-b5af-4e7c-8d5f-6e0f4b9d2a1c",
+    "message_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "timestamp": "2026-01-01T00:00:00.000Z",
+    "ttl": "PT30S"
+  },
+  "message": {
+    "intent": {
+      "item": {
+        "descriptor": {
+          "name": "coffee"
+        }
+      }
+    }
+  }
+}
