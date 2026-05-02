@@ -193,7 +193,7 @@ export function registerContractTools(server: McpServer): void {
 
   server.tool(
     "read_contract",
-    "Read data from a smart contract without submitting a transaction (eth_call). Convenience wrapper around call_contract with read_only=true. For EVM contracts, computes the 4-byte keccak256 selector from the method signature and ABI-encodes arguments. Returns the raw hex result from the contract.",
+    "Read data from a smart contract without submitting a transaction (eth_call). Convenience wrapper around call_contract with read_only=true. For EVM contracts, computes the 4-byte keccak256 selector from the method signature and ABI-encodes arguments. Returns raw hex ABI-encoded data exactly as returned by the RPC node — no decoding is performed. If you need human-readable or decoded output (e.g. decimal numbers, checksum addresses, bool text), use cast_call instead.",
     {
       contract: z
         .string()
