@@ -1,0 +1,66 @@
+FN-097 TypeScript Faucet Probe
+Endpoint: http://127.0.0.1:8899
+Address:  BWV3uExXU1xjUeJYX2QgNmRXPM35G4c3B5u5je2844EX
+Calls:    20
+
+=== Test 1: Burst calls against configured RPC ===
+  [01] 6.0ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [02] 0.4ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [03] 0.3ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [04] 0.3ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [05] 0.3ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [06] 0.3ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [07] 0.3ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [08] 0.3ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [09] 0.3ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [10] 0.3ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [11] 0.2ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [12] 0.2ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [13] 0.2ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [14] 0.2ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [15] 0.2ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [16] 0.2ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [17] 0.3ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [18] 0.3ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [19] 0.3ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+  [20] 0.3ms | type=object.signature | sig=2Jz9G51BaivJ3koRtn7E...
+
+Unique signatures returned: 1 (expected: 20)
+  ⚠️  ALL calls returned the SAME signature — faucet is not submitting real txs
+
+=== Test 2: Error-masking simulation ===
+Demonstrating what EtoRpcClient.faucet() does with non-signature payloads:
+
+  null result               → sig='null' ← MASKED ERROR (caller receives non-sig as 'signature')
+  undefined result          → sig='undefined' ← MASKED ERROR (caller receives non-sig as 'signature')
+  error object              → sig='{"code":-32600,"message":"rate limit exc' ← MASKED ERROR (caller receives non-sig as 'signature')
+  empty object              → sig='{}' ← MASKED ERROR (caller receives non-sig as 'signature')
+  numeric result            → sig='42' ← MASKED ERROR (caller receives non-sig as 'signature')
+  boolean result            → sig='true' ← MASKED ERROR (caller receives non-sig as 'signature')
+  string result             → sig='3bSomeActualSignatureHere111111111111111' ← MASKED ERROR (caller receives non-sig as 'signature')
+  txhash field              → sig='abc123txhash' ← MASKED ERROR (caller receives non-sig as 'signature')
+  tx_hash field             → sig='abc123tx_hash' ← MASKED ERROR (caller receives non-sig as 'signature')
+  signature+txhash          → sig='realSig' ← MASKED ERROR (caller receives non-sig as 'signature')
+
+=== Test 3: getTransaction probes ===
+  getTransaction(2Jz9G51BaivJ3koRtn7E...) → null (not on-chain)
+
+=== Test 4: Connection pooling observation ===
+Running 5 rapid sequential calls to observe TCP connection reuse:
+  Timings (ms): 0.13, 0.18, 0.12, 0.09, 0.07
+  Average: 0.12ms
+  Note: fetch() in Node/Bun uses HTTP keep-alive by default (Connection: keep-alive
+        is observed in the server response headers).
+  No explicit Agent is configured in EtoRpcClient, so runtime defaults apply.
+
+=== Summary ===
+All 20 burst calls: 1 unique sig(s)
+Result type: object.signature
+Avg response: 0.6ms
+getTransaction: null (no transaction found on-chain)
+
+CONCLUSION: faucet endpoint returns a static/hardcoded signature per address.
+This is a mock implementation — it does not submit real transactions on-chain.
+EtoRpcClient.faucet() correctly extracts .signature from the response, so no
+silent error-masking occurs for this specific response shape — but the returned
+signature itself is bogus (not a real on-chain transaction).

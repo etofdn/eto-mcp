@@ -1,0 +1,10 @@
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 218
+Access-Control-Allow-Origin: *
+Connection: keep-alive
+
+{"id":1,"jsonrpc":"2.0","result":{"amount":10000000000,"recipient":"94bSVuA4Xu6gxciDmz3td87nDuiFknVFzGQJhXgWtzeq","signature":"4V7jSCcyuzEERnzWhAiZSxsH4Jr4yJQ6o1433kBnQoKrtVjJDELjpeLZmCY8j1WtXBYQUpN8QvRxuTHfPcB69o5T"}}
+
+--- HTTP_CODE: 200 ---
+--- TIME_TOTAL: 0.000390s ---

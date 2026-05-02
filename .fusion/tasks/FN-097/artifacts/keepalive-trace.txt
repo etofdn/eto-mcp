@@ -1,0 +1,44 @@
+HTTP 575209: createConnection 127.0.0.1:8899:
+HTTP 575209: http createConnection should use proxy for 127.0.0.1:8899: false
+HTTP 575209: sockets 127.0.0.1:8899: 1 1
+HTTP 575209: write ret = true
+HTTP 575209: outgoing message end.
+(node:575209) Warning: Setting the NODE_DEBUG environment variable to 'http' can expose sensitive data (such as passwords, tokens and authentication headers) in the resulting log.
+(Use `node --trace-warnings ...` to show where the warning was created)
+HTTP 575209: AGENT incoming response!
+HTTP 575209: AGENT socket keep-alive
+HTTP 575209: CLIENT socket onFree
+HTTP 575209: agent.on(free) 127.0.0.1:8899:
+HTTP 575209: removeSocket 127.0.0.1:8899: writable: true
+HTTP 575209: have free socket
+HTTP 575209: write ret = true
+HTTP 575209: outgoing message end.
+HTTP 575209: AGENT incoming response!
+HTTP 575209: AGENT socket keep-alive
+HTTP 575209: CLIENT socket onFree
+HTTP 575209: agent.on(free) 127.0.0.1:8899:
+HTTP 575209: removeSocket 127.0.0.1:8899: writable: true
+HTTP 575209: have free socket
+HTTP 575209: write ret = true
+HTTP 575209: outgoing message end.
+HTTP 575209: AGENT incoming response!
+HTTP 575209: AGENT socket keep-alive
+HTTP 575209: CLIENT socket onFree
+HTTP 575209: agent.on(free) 127.0.0.1:8899:
+HTTP 575209: removeSocket 127.0.0.1:8899: writable: true
+HTTP 575209: have free socket
+HTTP 575209: write ret = true
+HTTP 575209: outgoing message end.
+HTTP 575209: AGENT incoming response!
+HTTP 575209: AGENT socket keep-alive
+HTTP 575209: CLIENT socket onFree
+HTTP 575209: agent.on(free) 127.0.0.1:8899:
+HTTP 575209: removeSocket 127.0.0.1:8899: writable: true
+HTTP 575209: have free socket
+HTTP 575209: write ret = true
+HTTP 575209: outgoing message end.
+HTTP 575209: AGENT incoming response!
+HTTP 575209: AGENT socket keep-alive
+HTTP 575209: CLIENT socket onFree
+HTTP 575209: agent.on(free) 127.0.0.1:8899:
+HTTP 575209: removeSocket 127.0.0.1:8899: writable: true
