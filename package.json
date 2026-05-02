@@ -42,7 +42,7 @@
     "typecheck": "tsc -p tsconfig.issuers.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc -p tsconfig.issuers.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
     "bridge": "bun run src/bridge-server.ts"
   },
   "engines": {
@@ -50,9 +50,6 @@
     "bun": ">=1.0"
   },
   "devDependencies": {
-    "@noble/curves": "^1.8.1",
-    "@noble/ed25519": "^2.2.3",
-    "@noble/hashes": "^1.8.0",
     "@types/express": "^5.0.0",
     "@types/node": "^20.12.0",
     "bs58": "^6.0.0",
