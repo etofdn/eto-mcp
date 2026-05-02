@@ -96,6 +96,60 @@ describe("makeProdIssueCardCredential", () => {
     }
   });
 
+  it("threads merchant_category_blocklist when set (FN-103)", async () => {
+    const captured: { req?: any } = {};
+    const originalModule = await import("../../../../src/issuers/bank");
+    const spy = vi
+      .spyOn(originalModule, "issueCardCredential")
+      .mockImplementation(async (_deps, req) => {
+        captured.req = req;
+        return {
+          status: "issued" as const,
+          credentialPda: "pda-3",
+          txSignature: "tx-3",
+          claimUri: "claim",
+          bindingKey: req.cardIdHash,
+        };
+      });
+    try {
+      const adapter = makeProdIssueCardCredential(makeBankIssuer());
+      const cred = makeCredential();
+      cred.body.merchant_category_blocklist = ["7995", "5912"];
+      await adapter(cred);
+      expect(captured.req.merchantCategoryBlocklist).toEqual(["7995", "5912"]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("omits merchantCategoryBlocklist when blocklist is empty or absent (FN-103)", async () => {
+    const captured: { req?: any } = {};
+    const originalModule = await import("../../../../src/issuers/bank");
+    const spy = vi
+      .spyOn(originalModule, "issueCardCredential")
+      .mockImplementation(async (_deps, req) => {
+        captured.req = req;
+        return {
+          status: "issued" as const,
+          credentialPda: "pda-4",
+          txSignature: "tx-4",
+          claimUri: "claim",
+          bindingKey: req.cardIdHash,
+        };
+      });
+    try {
+      const adapter = makeProdIssueCardCredential(makeBankIssuer());
+      await adapter(makeCredential());
+      expect(Object.prototype.hasOwnProperty.call(captured.req, "merchantCategoryBlocklist")).toBe(false);
+      const empty = makeCredential();
+      empty.body.merchant_category_blocklist = [];
+      await adapter(empty);
+      expect(Object.prototype.hasOwnProperty.call(captured.req, "merchantCategoryBlocklist")).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("omits expiresSlot when expires_slot === 0 (no-expiry sentinel)", async () => {
     const captured: { req?: any } = {};
     const originalModule = await import("../../../../src/issuers/bank");

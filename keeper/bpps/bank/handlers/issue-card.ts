@@ -72,6 +72,11 @@ export interface IssueCardRequest {
   spending_limit_per_tx_atomic?: number;
   /** Slot at which the credential expires. 0 = no expiry. Default: 0. */
   expires_slot?: number;
+  /**
+   * MCC codes blocked for this card (4-digit strings). Optional —
+   * absent = no merchant category restrictions. Added in FN-103.
+   */
+  merchant_category_blocklist?: string[];
 }
 
 /** Credential body that satisfies `card-debit.json` (jurisdiction = "us"). */
@@ -86,6 +91,11 @@ export interface CardDebitCredentialBody {
   spending_limit_per_tx: number;
   network_brand: "internal";
   tier: "standard";
+  /**
+   * MCC codes blocked for this card (4-digit strings). Optional;
+   * absent = no merchant category restrictions. Added in FN-103.
+   */
+  merchant_category_blocklist?: string[];
 }
 
 export interface IssueCardCredential {
@@ -247,6 +257,10 @@ export async function issueCard(
     spending_limit_per_tx,
     network_brand: "internal",
     tier: "standard",
+    ...(req.merchant_category_blocklist !== undefined &&
+    req.merchant_category_blocklist.length > 0
+      ? { merchant_category_blocklist: req.merchant_category_blocklist }
+      : {}),
   };
 
   const credential: IssueCardCredential = {
@@ -368,6 +382,11 @@ export function makeProdIssueCardCredential(
       spendingLimitPerTx: cred.body.spending_limit_per_tx,
       ...(cred.body.expires_slot !== 0
         ? { expiresSlot: cred.body.expires_slot }
+        : {}),
+      // FN-103: thread the MCC blocklist when set on the body.
+      ...(cred.body.merchant_category_blocklist !== undefined &&
+      cred.body.merchant_category_blocklist.length > 0
+        ? { merchantCategoryBlocklist: cred.body.merchant_category_blocklist }
         : {}),
       networkBrand: cred.body.network_brand,            // "internal" in v0
       tier: cred.body.tier,                             // "standard" in v0
