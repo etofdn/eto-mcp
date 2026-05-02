@@ -114,7 +114,13 @@ export function registerFoundryTools(server: McpServer): void {
 
   server.tool(
     "forge_create",
-    `Compile and deploy a Solidity contract in one step. Compiles with Foundry's forge, then deploys to ETO using the specified wallet (or active wallet if omitted). Returns contract address and tx signature.`,
+    `Low-level raw deploy path using Foundry's forge. Accepts raw Solidity source, compiles it on the fly, ABI-encodes constructor arguments directly from Solidity types via cast, then deploys via a raw signed EVM transaction. Returns contract address and tx signature. Requires Foundry (forge + cast) installed in the environment.
+
+For most agents, prefer deploy_evm_contract instead — it is the recommended high-level deploy tool: accepts pre-compiled bytecode, needs no Foundry installation, runs a pre-flight simulation to catch reverts, and works out of the box.
+
+Use forge_create when deploy_evm_contract is not sufficient:
+- You have Solidity source but no pre-compiled bytecode and need forge to compile it
+- Constructor arguments are complex or typed (forge_create ABI-encodes them automatically from Solidity types; deploy_evm_contract requires manually ABI-encoded hex)`,
     {
       source: z.string().describe("Solidity source code"),
       contract_name: z.string().optional().describe("Contract name to deploy (default: first contract found)"),
