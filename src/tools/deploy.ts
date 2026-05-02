@@ -11,7 +11,7 @@ import bs58 from "bs58";
 export function registerDeployTools(server: McpServer): void {
   server.tool(
     "deploy_evm_contract",
-    "Deploy a Solidity/EVM smart contract to the ETO chain. Returns contract address, tx hash, and gas used. Simulation runs first to catch reverts before submission. Provide hex-encoded compiled bytecode (with or without 0x prefix). Optional constructor_args should be ABI-encoded hex. value is in wei.",
+    "Preferred high-level tool for deploying Solidity/EVM smart contracts to the ETO chain. Use this for most deployments — it handles wallet resolution, EIP-155 signing, SVM-envelope wrapping, simulation, and submission in a single call. Returns contract address, tx hash, and gas used. Simulation runs first to catch reverts before submission. Provide hex-encoded compiled bytecode (with or without 0x prefix). Optional constructor_args should be ABI-encoded hex. value is in wei. For raw/low-level deployments where you need direct control over forge flags, ABIs, or artifact paths, use forge_create instead.",
     {
       bytecode: z.string().describe("Hex-encoded compiled bytecode (output of solc/hardhat)"),
       constructor_args: z
