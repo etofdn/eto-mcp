@@ -31,7 +31,10 @@
  */
 
 import { createHash } from "node:crypto";
-import { BANK_NETWORK_LABEL, computeBankNetworkId } from "./network-id.js";
+import {
+  BANK_NETWORK_LABEL,
+  computeBankNetworkId,
+} from "../../../src/bank-network/init-network.js";
 import type {
   BankCapability,
   BankCapabilityKey,

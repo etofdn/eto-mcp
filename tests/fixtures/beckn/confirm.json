@@ -16,6 +16,8 @@
   },
   "message": {
     "order": {
+      "id": "order-001",
+      "state": "Created",
       "provider": { "id": "prov-001" },
       "items": [
         { "id": "item-001", "quantity": { "count": 1 } }

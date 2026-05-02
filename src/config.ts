@@ -98,6 +98,10 @@ export interface GatewayConfig {
     readonly sessionSecret: string;
     readonly oauthClientId: string;
     readonly oauthClientSecret: string;
+    /** Session token TTL in seconds (default: 86400). */
+    readonly sessionTtlSeconds: number;
+    /** Session refresh window in seconds (default: 3600). */
+    readonly refreshTtlSeconds: number;
   };
   readonly rateLimits: {
     readonly readPerMinute: number;
@@ -147,6 +151,8 @@ function loadGatewayConfig(): GatewayConfig {
       sessionSecret: process.env["ETO_SESSION_SECRET"] ?? "dev-secret-change-in-production",
       oauthClientId: process.env["ETO_OAUTH_CLIENT_ID"] ?? "",
       oauthClientSecret: process.env["ETO_OAUTH_CLIENT_SECRET"] ?? "",
+      sessionTtlSeconds: readEnvInt("ETO_SESSION_TTL_SECONDS", 86400),
+      refreshTtlSeconds: readEnvInt("ETO_REFRESH_TTL_SECONDS", 3600),
     },
     rateLimits: {
       readPerMinute: readEnvInt("ETO_RATE_READ_PER_MIN", 100),
@@ -237,50 +243,6 @@ export function loadAppConfig(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Runtime config singleton
-// ---------------------------------------------------------------------------
-//
-// Used by auth.ts, auth-routes.ts, and rate-limiter.ts. Sourced from env vars
-// with sensible defaults so the MCP server boots without a config file.
-//
-// NOTE: This object deliberately uses required-with-defaults rather than
-// optional fields so that consumers get a concrete value for every field
-// (avoids exactOptionalPropertyTypes false positives at call-sites).
-
-export interface RuntimeConfig {
-  readonly auth: {
-    /** Bypass auth checks in dev/testnet mode (ETO_DEV_BYPASS=1). */
-    readonly devBypass: boolean;
-    /** Session token TTL in seconds (default: 86400). */
-    readonly sessionTtlSeconds: number;
-    /** Session refresh window in seconds (default: 3600). */
-    readonly refreshTtlSeconds: number;
-  };
-  readonly network: "mainnet" | "testnet" | "devnet";
-  readonly rateLimits: {
-    readonly readPerMinute: number;
-    readonly writePerMinute: number;
-    readonly deployPerMinute: number;
-  };
-}
-
-function validateNetwork(v: string | undefined): "mainnet" | "testnet" | "devnet" {
-  if (v === "mainnet" || v === "testnet" || v === "devnet") return v;
-  return "testnet";
-}
-
-/** Lazily-loaded runtime config singleton. */
-export const config: RuntimeConfig = {
-  auth: {
-    devBypass: process.env["ETO_DEV_BYPASS"] === "1",
-    sessionTtlSeconds: Number(process.env["ETO_SESSION_TTL_SECONDS"] ?? 86400),
-    refreshTtlSeconds: Number(process.env["ETO_REFRESH_TTL_SECONDS"] ?? 3600),
-  },
-  network: validateNetwork(process.env["ETO_NETWORK"]),
-  rateLimits: {
-    readPerMinute: Number(process.env["ETO_RATE_READ_PER_MIN"] ?? 120),
-    writePerMinute: Number(process.env["ETO_RATE_WRITE_PER_MIN"] ?? 30),
-    deployPerMinute: Number(process.env["ETO_RATE_DEPLOY_PER_MIN"] ?? 5),
-  },
-};
+// RuntimeConfig is an alias for the runtime-relevant slice of GatewayConfig.
+// Kept for backward compatibility with code that imports it by name.
+export type RuntimeConfig = Pick<GatewayConfig, "auth" | "network" | "rateLimits">;

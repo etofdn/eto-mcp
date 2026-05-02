@@ -27,9 +27,14 @@
 
 import { createHash } from "crypto";
 
-import type { Express, Request, Response } from "express";
+import express, { type Express, type Request, type Response, type Router } from "express";
 import { validateBecknRequest } from "./beckn-schemas.js";
 import type { BecknAction } from "./beckn-schemas.js";
+import { becknError } from "./beckn.js";
+import type { BecknOnSearchEnvelope } from "./inbound-bap-callback.js";
+
+/** Injectable async function that POSTs an on_search callback to the BAP. */
+export type PostOnSearchFn = (opts: { bap_uri: string; envelope: BecknOnSearchEnvelope }) => Promise<{ status: number; ok: boolean; attempts: number }>;
 
 // ---------- Envelope pre-check types ----------
 
@@ -188,6 +193,170 @@ export function validateBecknEnvelope(
 }
 
 export type { BecknAction };
+
+// ---------------------------------------------------------------------------
+// On-chain search client interface
+// ---------------------------------------------------------------------------
+
+export interface OnChainSearchInput {
+  networkId: Uint8Array;
+  bapAuthority: Uint8Array;
+  intentHash: string;
+  tagFilter: string[];
+  maxResponses: number;
+  deadlineSlot: number;
+}
+
+export interface OnChainSearchOutput {
+  tx_signature: string;
+  intent_hash: string;
+}
+
+export interface OnChainSearchClient {
+  search(input: OnChainSearchInput): Promise<OnChainSearchOutput>;
+}
+
+// ---------------------------------------------------------------------------
+// Catalog response aggregator interface
+// ---------------------------------------------------------------------------
+
+export interface CatalogResponseView {
+  bpp_id: string;
+  bpp_uri: string;
+  catalog: unknown;
+}
+
+export interface CatalogResponseAggregator {
+  getResponses(intentHash: string, maxWaitMs: number): Promise<CatalogResponseView[]>;
+}
+
+// ---------------------------------------------------------------------------
+// InboundBapRouterDeps — dependency injection surface for the BAP router
+// ---------------------------------------------------------------------------
+
+export interface InboundBapRouterDeps {
+  onChainClient: OnChainSearchClient;
+  aggregator: CatalogResponseAggregator;
+  networkId: Uint8Array;
+  bapAuthority: Uint8Array;
+  bppId: string;
+  bppUri: string;
+  defaultDeadlineMs: number;
+  postOnSearch?: PostOnSearchFn;
+}
+
+// ---------------------------------------------------------------------------
+// Stub implementations for tests
+// ---------------------------------------------------------------------------
+
+export class StubOnChainSearchClient implements OnChainSearchClient {
+  async search(input: OnChainSearchInput): Promise<OnChainSearchOutput> {
+    return {
+      tx_signature: sha256_hex(JSON.stringify(input)).slice(0, 64),
+      intent_hash: input.intentHash,
+    };
+  }
+}
+
+export class FixtureCatalogResponseAggregator implements CatalogResponseAggregator {
+  private responses: CatalogResponseView[];
+
+  constructor(responses: CatalogResponseView[] = []) {
+    this.responses = responses;
+  }
+
+  async getResponses(_intentHash: string, _maxWaitMs: number): Promise<CatalogResponseView[]> {
+    return this.responses;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline functions
+// ---------------------------------------------------------------------------
+
+export function computeIntentHash(intent: unknown): string {
+  return sha256_hex(canonicalJson(intent));
+}
+
+export async function runInboundBapPipeline(
+  body: unknown,
+  deps: InboundBapRouterDeps,
+): Promise<void> {
+  const b = body as Record<string, unknown>;
+  const ctx = (b.context ?? {}) as Record<string, unknown>;
+  const msg = (b.message ?? {}) as Record<string, unknown>;
+  const intent = (msg.intent ?? {}) as Record<string, unknown>;
+
+  const intentHash = computeIntentHash(intent);
+  const tagFilter = extractTags(intent);
+
+  await deps.onChainClient.search({
+    networkId: deps.networkId,
+    bapAuthority: deps.bapAuthority,
+    intentHash,
+    tagFilter,
+    maxResponses: 10,
+    deadlineSlot: 0,
+  });
+
+  const responses = await deps.aggregator.getResponses(intentHash, deps.defaultDeadlineMs);
+
+  if (deps.postOnSearch) {
+    const bapUri = typeof ctx.bap_uri === "string" ? ctx.bap_uri : "";
+    const envelope: BecknOnSearchEnvelope = {
+      context: {
+        ...(ctx as object),
+        action: "on_search" as const,
+        bpp_id: deps.bppId,
+        bpp_uri: deps.bppUri,
+        timestamp: new Date().toISOString(),
+      } as BecknOnSearchEnvelope["context"],
+      message: { catalog: { providers: responses } },
+    };
+    // Fire-and-forget — don't block the ACK response
+    void deps.postOnSearch({ bap_uri: bapUri, envelope }).catch(() => undefined);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Router factory
+// ---------------------------------------------------------------------------
+
+const bodyParser = express.json({ limit: "1mb" });
+
+export function createInboundBapRouter(deps: InboundBapRouterDeps): Router {
+  const router = express.Router();
+
+  router.post("/search", bodyParser, async (req: Request, res: Response): Promise<void> => {
+    const ct = req.header("content-type") ?? "";
+    if (!ct.toLowerCase().includes("application/json")) {
+      const { status, body } = becknError("BECKN_415", `Expected Content-Type application/json, got '${ct || "none"}'`, 415);
+      res.status(status).json(body);
+      return;
+    }
+
+    const v = validateBecknRequest("search", req.body);
+    if (!v.ok) {
+      const { status, body } = becknError("BECKN_400", `Invalid Beckn envelope: ${(v as { ok: false; errors: unknown[] }).errors.map((e: unknown) => String(e)).join("; ")}`, 400);
+      res.status(status).json(body);
+      return;
+    }
+
+    // ACK synchronously per Beckn spec
+    res.status(200).json({ message: { ack: { status: "ACK" } } });
+
+    // Pipeline runs asynchronously (fire-and-forget)
+    void runInboundBapPipeline(req.body, deps).catch((err: unknown) => {
+      console.error("[inbound-bap] pipeline error", err);
+    });
+  });
+
+  return router;
+}
+
+// ---------------------------------------------------------------------------
+// Legacy deps interface (kept for backward compat)
+// ---------------------------------------------------------------------------
 
 export interface InboundBapDeps {
   /** Submit an on-chain Beckn instruction. STUBBED today. */

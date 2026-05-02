@@ -9,8 +9,10 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { Express, Request, Response } from 'express';
+import type { Express, Request, RequestHandler, Response } from 'express';
 import { validateBecknRequest } from './beckn-schemas.js';
+import { becknError } from './beckn.js';
+import type { BecknBridgeConfig } from '../config.js';
 
 export interface ConfirmTrigger {
   kind: 'Confirm';
@@ -100,3 +102,158 @@ export const stubSubmit: InboundBppDeps['submitOnChain'] = async (action, args) 
   console.log(`[STUB] would submit ${action} on-chain — tx=${sig}`);
   return { tx_signature: sig };
 };
+
+// ---------------------------------------------------------------------------
+// createInboundBppConfirmHandler — Express RequestHandler factory (FN-090)
+// ---------------------------------------------------------------------------
+
+/**
+ * The Beckn on_confirm envelope: the response the external BPP sends back
+ * after processing /confirm.
+ */
+export type OnConfirmEnvelope = {
+  context: {
+    domain: string;
+    action: "on_confirm";
+    version: string;
+    bap_id: string;
+    bap_uri: string;
+    transaction_id: string;
+    message_id: string;
+    timestamp: string;
+    bpp_id?: string;
+    bpp_uri?: string;
+    [key: string]: unknown;
+  };
+  message: { order: Record<string, unknown> };
+};
+
+/**
+ * Injectable function that forwards the /confirm request to the external BPP
+ * and returns the on_confirm envelope.
+ */
+export type ForwardConfirmFn = (
+  req: { context: Record<string, unknown>; message: unknown }
+) => Promise<{ ok: boolean; onConfirm: OnConfirmEnvelope }>;
+
+/**
+ * Injectable function that POSTs the on_confirm envelope back to the BAP.
+ */
+export type PostBapCallbackFn = (
+  url: string,
+  body: OnConfirmEnvelope,
+  ctx: Record<string, unknown>
+) => Promise<void>;
+
+/**
+ * Check whether the BAP URI's hostname is allowed by the config's allowlist.
+ * Returns true if:
+ *  - `allowedHosts` contains "*" (wildcard)
+ *  - `allowedHosts` contains the hostname of `bapUri`
+ * Returns false if `allowedHosts` is empty or the hostname is not listed.
+ */
+export function isBapUriAllowed(bapUri: string, allowedHosts: string[]): boolean {
+  if (allowedHosts.length === 0) return false;
+  if (allowedHosts.includes('*')) return true;
+  try {
+    const { hostname } = new URL(bapUri);
+    return allowedHosts.includes(hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Default forward implementation: POSTs the confirm body to the
+ * `config.bppBackendUrl` and expects a JSON on_confirm envelope.
+ */
+export const defaultForwardConfirm: ForwardConfirmFn = async (req) => {
+  // No-op default that echoes back a synthetic on_confirm context
+  const onConfirm: OnConfirmEnvelope = {
+    context: {
+      ...(req.context as object),
+      action: 'on_confirm' as const,
+      timestamp: new Date().toISOString(),
+    } as OnConfirmEnvelope['context'],
+    message: { order: {} },
+  };
+  return { ok: true, onConfirm };
+};
+
+/**
+ * Default postCallback implementation: POSTs the on_confirm envelope to the
+ * BAP URI using the global fetch.
+ */
+export const defaultPostBapCallback: PostBapCallbackFn = async (url, body) => {
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    console.warn('[inbound-bpp] callback failed', err);
+  }
+};
+
+/**
+ * Build an Express RequestHandler that implements the inbound BPP role:
+ *  1. Validates Content-Type (415 on non-JSON)
+ *  2. Checks `config.enabled` (503 on disabled)
+ *  3. Validates Beckn envelope (400 on invalid)
+ *  4. Returns 200 ACK synchronously
+ *  5. Fire-and-forgets: forward to external BPP, then POST on_confirm to BAP
+ */
+export function createInboundBppConfirmHandler(opts: {
+  config: BecknBridgeConfig;
+  forward?: ForwardConfirmFn;
+  postCallback?: PostBapCallbackFn;
+}): RequestHandler {
+  const forward = opts.forward ?? defaultForwardConfirm;
+  const postCallback = opts.postCallback ?? defaultPostBapCallback;
+
+  return (req: Request, res: Response): void => {
+    const ct = req.header('content-type') ?? '';
+    if (!ct.toLowerCase().includes('application/json')) {
+      const { status, body } = becknError('BECKN_415', `Expected Content-Type application/json, got '${ct || 'none'}'`, 415);
+      res.status(status).json(body);
+      return;
+    }
+
+    if (!opts.config.enabled) {
+      const { status, body } = becknError('BECKN_503', 'BPP role is not enabled on this bridge instance', 503);
+      res.status(status).json(body);
+      return;
+    }
+
+    const v = validateBecknRequest('confirm', req.body ?? {});
+    if (!v.ok) {
+      const { status, body } = becknError(
+        'BECKN_400',
+        `Invalid Beckn envelope: ${(v as { ok: false; errors: unknown[] }).errors.map((e: unknown) => String(e)).join('; ')}`,
+        400,
+      );
+      res.status(status).json(body);
+      return;
+    }
+
+    // Respond with ACK synchronously
+    res.status(200).json({ message: { ack: { status: 'ACK' } } });
+
+    // Fire-and-forget: forward → callback
+    const reqBody = req.body as { context: Record<string, unknown>; message: unknown };
+    const bapUri = typeof reqBody.context?.bap_uri === 'string' ? reqBody.context.bap_uri : '';
+
+    void (async () => {
+      try {
+        const { onConfirm } = await forward(reqBody);
+
+        if (bapUri && isBapUriAllowed(bapUri, opts.config.bapCallbackAllowedHosts)) {
+          await postCallback(bapUri, onConfirm, reqBody.context);
+        }
+      } catch (err) {
+        console.warn('[inbound-bpp] forward/callback error', err);
+      }
+    })();
+  };
+}
