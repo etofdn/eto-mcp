@@ -60,6 +60,20 @@ export interface OpenCheckingDeps {
   issueCheckingCredential: (cred: OpenCheckingResult['credential']) => Promise<{ tx_signature: string; credential_pda: string }>;
   /** Record CheckingAccount in the local mock ledger. STUBBED. */
   recordCheckingAccount: (pda: string, account: { holder: string; opened_slot: number; opening_balance: number }) => Promise<void>;
+  /**
+   * FN-191: orphan-ledger reconciliation hook. Called from the
+   * `issue_failed` path after `recordCheckingAccount` succeeded but the
+   * on-chain `issueCheckingCredential` threw. Mirrors the
+   * `flagReconciliation` hook in `offramp.ts` so ops gets a deterministic
+   * signal and the eventual GC sweeper can find the orphan.
+   *
+   * Implementations MUST be idempotent.
+   */
+  flagReconciliation: (
+    account_pda: string,
+    holder: string,
+    body: { opened_slot: number; opening_balance: number },
+  ) => Promise<void>;
 }
 
 export class OpenCheckingRejected extends Error {
@@ -117,8 +131,19 @@ export async function openChecking(req: OpenCheckingRequest, deps: OpenCheckingD
   try {
     await deps.issueCheckingCredential(credential);
   } catch {
-    // Best-effort: ledger entry is now orphaned. v1 will use a sweeper to GC
-    // ledger entries with no corresponding on-chain credential_pda.
+    // FN-191: ledger entry from recordCheckingAccount is now orphaned.
+    // Flag for reconciliation BEFORE rethrowing so the eventual GC
+    // sweeper has a deterministic handle. flagReconciliation must not
+    // throw — if it does, swallow: the primary issue_failed error is
+    // what callers act on.
+    try {
+      await deps.flagReconciliation(checking_account_pda, req.subject, {
+        opened_slot: req.opened_slot,
+        opening_balance: opening,
+      });
+    } catch {
+      // intentionally swallowed
+    }
     throw new OpenCheckingRejected('issue_failed');
   }
 
@@ -140,6 +165,12 @@ export const stubs: OpenCheckingDeps = {
     const credential_pda = createHash('sha256').update('cred:' + sig).digest('hex');
     console.log(`[STUB] issueCheckingCredential subject=${cred.subject.slice(0, 8)} → tx=${sig.slice(0, 16)}`);
     return { tx_signature: sig, credential_pda };
+  },
+  flagReconciliation: async (account_pda, holder, _body) => {
+    // FN-191 stub — mirrors offramp's flagReconciliation logger.
+    console.warn(
+      `[STUB] RECONCILE NEEDED open-checking account_pda=${account_pda.slice(0, 12)} holder=${holder.slice(0, 8)} (issue_failed post-recordCheckingAccount)`,
+    );
   },
   recordCheckingAccount: async (pda, acc) => {
     console.log(`[STUB] recordCheckingAccount pda=${pda.slice(0, 8)} holder=${acc.holder.slice(0, 8)} opening=${acc.opening_balance}`);
