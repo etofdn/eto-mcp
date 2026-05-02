@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect } from "vitest";
 import bs58 from "bs58";
 import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
