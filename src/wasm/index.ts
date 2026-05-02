@@ -24,6 +24,11 @@ const EVM_PROGRAM_ID = new Uint8Array([
   0xee,
 ]);
 
+// SPL Memo Program v2: makes the memo part of the transaction's account keys
+// and instruction data so two transfers with different memos produce distinct
+// on-chain records (and signatures). Standard Solana program ID.
+const MEMO_PROGRAM_ID = bs58.decode("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+
 // ---------------------------------------------------------------------------
 // Low-level serialization helpers
 // ---------------------------------------------------------------------------
@@ -243,24 +248,55 @@ export function buildTransferTx(
   from: string,
   to: string,
   lamports: bigint,
-  recentBlockhash: string
+  recentBlockhash: string,
+  memo?: string,
 ): Uint8Array {
   const fromKey = pubkeyBytes(from);
   const toKey = pubkeyBytes(to);
   const blockhash = blockhashBytes(recentBlockhash);
 
-  // Account keys: from (index 0), to (index 1), system program (index 2)
-  const accountKeys = [fromKey, toKey, SYSTEM_PROGRAM_ID];
+  // SystemProgram::Transfer instruction data: [2, 0, 0, 0] + lamports u64 LE
+  const transferData: number[] = [];
+  writeU32LE(transferData, 2);
+  writeU64LE(transferData, lamports);
 
-  // Instruction data: [2, 0, 0, 0] (u32 LE = 2) + lamports u64 LE
-  const data: number[] = [];
-  writeU32LE(data, 2);
-  writeU64LE(data, lamports);
+  if (memo && memo.length > 0) {
+    // With memo: 4 keys [from, to, system, memoProgram], 2 instructions
+    // [memoIx, transferIx]. The memo ix has no accounts and its data is the
+    // raw UTF-8 memo bytes — the SPL Memo program treats this as the record.
+    // Memo first so its program log appears before the transfer log.
+    const accountKeys = [fromKey, toKey, SYSTEM_PROGRAM_ID, MEMO_PROGRAM_ID];
+
+    const memoIx: CompiledInstruction = {
+      programIdIndex: 3, // memo program
+      accounts: new Uint8Array([]),
+      data: new TextEncoder().encode(memo),
+    };
+    const transferIx: CompiledInstruction = {
+      programIdIndex: 2, // system program
+      accounts: new Uint8Array([0, 1]),
+      data: new Uint8Array(transferData),
+    };
+
+    const msg = buildMessage(
+      accountKeys,
+      blockhash,
+      [memoIx, transferIx],
+      1, // numRequiredSignatures
+      0, // numReadonlySigned
+      2, // numReadonlyUnsigned (system program + memo program)
+    );
+    return unsignedTransaction(msg);
+  }
+
+  // No memo: original 3-key, 1-instruction layout (kept identical for
+  // backwards compatibility with callers that don't supply a memo).
+  const accountKeys = [fromKey, toKey, SYSTEM_PROGRAM_ID];
 
   const instruction: CompiledInstruction = {
     programIdIndex: 2, // system program
     accounts: new Uint8Array([0, 1]), // from, to
-    data: new Uint8Array(data),
+    data: new Uint8Array(transferData),
   };
 
   const msg = buildMessage(
@@ -269,7 +305,7 @@ export function buildTransferTx(
     [instruction],
     1, // numRequiredSignatures
     0, // numReadonlySigned
-    1  // numReadonlyUnsigned (system program)
+    1, // numReadonlyUnsigned (system program)
   );
 
   return unsignedTransaction(msg);

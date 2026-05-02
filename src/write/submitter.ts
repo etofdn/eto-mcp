@@ -30,10 +30,14 @@ export class TransactionSubmitter {
   async submitAndConfirm(params: SubmitParams): Promise<TransactionResult> {
     const timeout = params.timeoutMs || config.tx.defaultTimeoutMs;
 
-    // Idempotency check
+    // Idempotency check. When two callers race with the same key, both await
+    // the same underlying submission, but only the second-and-later callers
+    // get a result tagged `coalesced: true` so they can detect the share.
+    // The original caller's result remains untouched (no mutation of the
+    // shared promise's resolved value).
     if (params.idempotencyKey) {
       const existing = inFlight.get(params.idempotencyKey);
-      if (existing) return existing;
+      if (existing) return existing.then((r) => ({ ...r, coalesced: true }));
     }
 
     const promise = this._submit(params, timeout);

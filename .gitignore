@@ -1,14 +1,5 @@
 node_modules/
 dist/
-.omc/
-/tmp/
 *.log
-target/
-.gstack/
-.env
-.env.local
-
-# Foundry build artifacts
-mesh/contracts/cache/
-mesh/contracts/out/
-.eto/
+*.tsbuildinfo
+.omc/

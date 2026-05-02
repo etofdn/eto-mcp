@@ -1,0 +1,104 @@
+{
+  "$schema": "../../catalog.schema.json",
+  "bpp": "bank",
+  "version": 1,
+  "network": "eto.bank.v1",
+  "currency": "eUSD",
+  "services": [
+    {
+      "id": "open-checking-account",
+      "title": "Open Checking Account",
+      "description": "Opens a new eUSD checking account on the ETO network. Requires tier-1 KYC and verified-human proof.",
+      "price_eusd": 0.50,
+      "required_credentials": [
+        { "schema": "eto.beckn.schema.verified-human.v1", "issuer_filter": [] },
+        { "schema": "eto.beckn.schema.kyc.us-test.v1", "issuer_filter": [] }
+      ],
+      "expected_duration_ms": 30000,
+      "tags": ["bank.account", "bank.checking"]
+    },
+    {
+      "id": "open-savings-account",
+      "title": "Open Savings Account",
+      "description": "Opens a new eUSD savings account on the ETO network. Requires tier-1 KYC and verified-human proof.",
+      "price_eusd": 0.50,
+      "required_credentials": [
+        { "schema": "eto.beckn.schema.verified-human.v1", "issuer_filter": [] },
+        { "schema": "eto.beckn.schema.kyc.us-test.v1", "issuer_filter": [] }
+      ],
+      "expected_duration_ms": 30000,
+      "tags": ["bank.account", "bank.savings"]
+    },
+    {
+      "id": "transfer-eusd",
+      "title": "Transfer eUSD",
+      "description": "Transfer eUSD between accounts on the ETO network. Base fee plus 0.1% (10 bps) of transfer amount.",
+      "price_eusd": 0.05,
+      "fee_basis_points": 10,
+      "required_credentials": [],
+      "expected_duration_ms": 5000,
+      "tags": ["bank.transfer", "bank.eusd"]
+    },
+    {
+      "id": "wire-transfer-domestic",
+      "title": "Domestic Wire Transfer",
+      "description": "Domestic wire transfer with sanctions screening. Requires tier-1 KYC and sanctions.global clearance credential.",
+      "price_eusd": 5.00,
+      "required_credentials": [
+        { "schema": "eto.beckn.schema.kyc.us-test.v1", "issuer_filter": [] },
+        { "schema": "eto.beckn.schema.sanctions.global.v1", "issuer_filter": [] }
+      ],
+      "expected_duration_ms": 60000,
+      "tags": ["bank.wire", "bank.domestic"]
+    },
+    {
+      "id": "wire-transfer-international",
+      "title": "International Wire Transfer",
+      "description": "International wire transfer with travel-rule compliance. Requires tier-2 KYC and travel-rule credential.",
+      "price_eusd": 25.00,
+      "required_credentials": [
+        { "schema": "eto.beckn.schema.kyc.us-tier-2.v1", "issuer_filter": [] },
+        { "schema": "eto.beckn.schema.travel-rule.v1", "issuer_filter": [] }
+      ],
+      "expected_duration_ms": 120000,
+      "tags": ["bank.wire", "bank.international"]
+    },
+    {
+      "id": "balance-query",
+      "title": "Balance Query",
+      "description": "Query the current eUSD balance of an account. Requires account-holder credential.",
+      "price_eusd": 0.001,
+      "required_credentials": [
+        { "schema": "eto.beckn.schema.account-holder.v1", "issuer_filter": [] }
+      ],
+      "expected_duration_ms": 1000,
+      "tags": ["bank.query", "bank.balance"]
+    },
+    {
+      "id": "kyc-verify",
+      "title": "KYC Verification",
+      "description": "Identity verification service. This BPP acts as a KYC issuer and mints a kyc.us-test credential upon successful verification. No prior credentials required.",
+      "price_eusd": 2.00,
+      "required_credentials": [],
+      "expected_duration_ms": 60000,
+      "tags": ["bank.kyc", "bank.identity"]
+    },
+    {
+      "id": "tax-1099-issuance",
+      "title": "1099 Tax Form Issuance",
+      "description": "Annual IRS 1099 form issuance for interest income and reportable transactions. Requires account-holder credential.",
+      "price_eusd": 0.50,
+      "required_credentials": [
+        { "schema": "eto.beckn.schema.account-holder.v1", "issuer_filter": [] }
+      ],
+      "expected_duration_ms": 5000,
+      "tags": ["bank.tax", "bank.1099", "bank.annual"]
+    }
+  ],
+  "metadata": {
+    "operator": "ETO Reference Bank BPP",
+    "support_email": "bank-bpp@eto.network",
+    "schema_version": "1.0.0",
+    "published_at_iso": "2026-04-30T00:00:00Z"
+  }
+}
