@@ -206,4 +206,8 @@ export interface TransactionResult {
   error?: TransactionError;
   retries: number;
   latency_ms: number;
+  // True when this result was returned to a caller whose idempotency key
+  // matched an already-in-flight submission. Lets callers detect parallel
+  // coalescing instead of silently sharing a signature with another caller.
+  coalesced?: boolean;
 }

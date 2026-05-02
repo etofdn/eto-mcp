@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll } from "bun:test";
+import { describe, test, expect, beforeAll } from "vitest";
 import { attemptRecovery, formatRecovery } from "../../src/write/error-recovery.js";
 import { blockhashCache } from "../../src/write/blockhash-cache.js";
 import {

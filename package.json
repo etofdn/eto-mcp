@@ -1,37 +1,65 @@
 {
-  "name": "eto-mcp",
-  "version": "1.0.0",
-  "description": "ETO Chain MCP Server — AI agent interface for the ETO Universal Virtual Machine",
+  "name": "@eto/mcp",
+  "version": "0.1.0",
+  "description": "ETO MCP gateway — operational issuer services that bridge external identity systems (Worldcoin, Civic, etc.) and skill attestations into ETO's IssueCredential flow.",
+  "license": "Apache-2.0",
+  "private": true,
   "type": "module",
-  "main": "src/index.ts",
-  "scripts": {
-    "dev": "bun run --watch src/index.ts",
-    "start": "bun run src/index.ts",
-    "test": "bun test",
-    "typecheck": "tsc --noEmit",
-    "build": "bun build ./src/index.ts --outdir ./dist --target bun && bun build ./src/login.tsx --outdir ./public --target browser --minify",
-    "build:sse": "bun build ./src/sse-server.ts --outdir ./dist --target bun",
-    "qa:remote": "bash scripts/qa-remote.sh",
-    "start:sse": "bun run src/sse-server.ts"
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./issuers/worldcoin": {
+      "types": "./dist/issuers/worldcoin.d.ts",
+      "import": "./dist/issuers/worldcoin.js"
+    },
+    "./issuers/civic": {
+      "types": "./dist/issuers/civic.d.ts",
+      "import": "./dist/issuers/civic.js"
+    },
+    "./issuers/kyc-test": {
+      "types": "./dist/issuers/kyc-test.d.ts",
+      "import": "./dist/issuers/kyc-test.js"
+    },
+    "./issuers/skill-cert": {
+      "types": "./dist/issuers/skill-cert.d.ts",
+      "import": "./dist/issuers/skill-cert.js"
+    },
+    "./issuers/bank-mock": {
+      "types": "./dist/issuers/bank-mock.d.ts",
+      "import": "./dist/issuers/bank-mock.js"
+    }
   },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.86.0",
-    "@modelcontextprotocol/sdk": "^1.12.1",
-    "@noble/ed25519": "^2.2.3",
-    "@noble/hashes": "^1.7.2",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "borsh": "^2.0.0",
-    "bs58": "^6.0.0",
-    "express": "^5.2.1",
-    "react": "^19.2.5",
-    "react-dom": "^19.2.5",
-    "thirdweb": "^5",
-    "zod": "^3.24.4"
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.issuers.json",
+    "typecheck": "tsc -p tsconfig.issuers.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "bridge": "bun run src/bridge-server.ts"
+  },
+  "engines": {
+    "node": ">=20",
+    "bun": ">=1.0"
   },
   "devDependencies": {
-    "@types/bun": "^1.2.13",
-    "@types/express": "^5.0.6",
-    "typescript": "^5.8.3"
+    "@types/express": "^5.0.0",
+    "@types/node": "^20.12.0",
+    "bs58": "^6.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "express": "^5.2.1",
+    "zod": "^3.25.76"
   }
 }

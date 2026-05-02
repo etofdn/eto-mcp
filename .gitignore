@@ -1,8 +1,8 @@
 node_modules/
 dist/
-.omc/
-/tmp/
 *.log
+*.tsbuildinfo
+.omc/
 target/
 .gstack/
 .env

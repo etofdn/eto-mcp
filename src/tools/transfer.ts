@@ -12,18 +12,19 @@ import bs58 from "bs58";
 export function registerTransferTools(server: McpServer): void {
   server.tool(
     "transfer_native",
-    "Transfers native SOL between accounts on the ETO network with full cross-VM address support. Accepts both SVM (base58) and EVM (0x-prefixed) addresses for the recipient — addresses are automatically normalized to SVM format for the on-chain instruction. Amount can be specified in SOL (e.g. '1.5') or raw lamports. Uses the active wallet as the sender unless from_wallet is provided. An optional memo string can be included for record-keeping. Set skip_simulation to true to bypass pre-flight checks and submit directly.",
+    "Transfers native SOL between accounts on the ETO network with full cross-VM address support. Accepts both SVM (base58) and EVM (0x-prefixed) addresses for the recipient — addresses are automatically normalized to SVM format for the on-chain instruction. Amount can be specified in SOL (e.g. '1.5') or raw lamports. Uses the active wallet as the sender unless from_wallet is provided. An optional `memo` string is anchored on-chain via the SPL Memo Program v2 — it becomes part of the signed transaction so two transfers with different memos always produce distinct signatures, and the memo is recoverable from chain history via `query_memos` / `get_account_transactions`. Use `idempotency_key` when launching parallel transfers that would otherwise share an in-flight signature; results returned via coalescing are tagged `(coalesced)`. If a confirmation times out, call `get_transaction(hash)` to verify on-chain status — a non-null result means the transfer succeeded; null means it has not yet landed.",
     {
       to: z.string().describe("Recipient address in base58 (SVM) or 0x (EVM) format"),
       amount: z.string().describe("Amount to transfer, e.g. '1.5' for SOL or '1500000000' for lamports"),
       unit: z.enum(["sol", "lamports"]).default("sol").optional(),
       from_wallet: z.string().optional().describe("Wallet ID to send from; defaults to the active wallet"),
-      memo: z.string().optional().describe("Optional memo string attached to the transfer"),
+      memo: z.string().optional().describe("Optional memo string anchored on-chain via SPL Memo Program v2; becomes part of the transaction signature so distinct memos never coalesce"),
+      idempotency_key: z.string().optional().describe("Optional caller-supplied uniqueness suffix. Use when sending parallel transfers that share from/to/amount/memo to guarantee distinct submissions."),
       skip_simulation: z.boolean().default(false).optional(),
     },
     async (args) => {
       try {
-        const { to, amount, unit = "sol", from_wallet, memo, skip_simulation = false } = args;
+        const { to, amount, unit = "sol", from_wallet, memo, idempotency_key, skip_simulation = false } = args;
 
         // Resolve sender wallet
         const walletId = from_wallet ?? getActiveWalletId();
@@ -47,8 +48,11 @@ export function registerTransferTools(server: McpServer): void {
         // Get recent blockhash
         const { blockhash } = await blockhashCache.getBlockhash();
 
-        // Build unsigned transaction
-        const txBytes = buildTransferTx(fromSvm, toSvm, lamports, blockhash);
+        // Build unsigned transaction. memo is wired straight into the tx
+        // bytes via the Memo Program — without this, the memo never lands
+        // on-chain and parallel calls with different memos produce identical
+        // signatures.
+        const txBytes = buildTransferTx(fromSvm, toSvm, lamports, blockhash, memo);
 
         // Sign
         const signedBytes = await signer.sign(txBytes);
@@ -56,11 +60,18 @@ export function registerTransferTools(server: McpServer): void {
         // Encode as base64 for submission
         const signedBase64 = Buffer.from(signedBytes).toString("base64");
 
+        // Idempotency key includes memo + caller-supplied suffix so distinct
+        // memos never collide in the in-flight map and callers launching
+        // parallel transfers can guarantee uniqueness.
+        const memoSuffix = memo ? `-m:${memo}` : "";
+        const userSuffix = idempotency_key ? `-i:${idempotency_key}` : "";
+        const idemKey = `transfer-${fromSvm}-${toSvm}-${lamports}-${blockhash}${memoSuffix}${userSuffix}`;
+
         // Submit
         const result = await submitter.submitAndConfirm({
           signedTxBase64: signedBase64,
           vm: "svm",
-          idempotencyKey: `transfer-${fromSvm}-${toSvm}-${lamports}-${blockhash}`,
+          idempotencyKey: idemKey,
           ...(skip_simulation ? {} : {}),
         });
 
@@ -68,7 +79,7 @@ export function registerTransferTools(server: McpServer): void {
         const lines: string[] = [];
 
         if (result.status === "confirmed" || result.status === "finalized") {
-          lines.push("Transfer successful.");
+          lines.push(`Transfer successful${result.coalesced ? " (coalesced)" : ""}.`);
           lines.push(`Signature:   ${result.signature}`);
           lines.push(`Status:      ${result.status}`);
           lines.push(`From:        ${fromSvm}`);
@@ -84,10 +95,15 @@ export function registerTransferTools(server: McpServer): void {
           if (memo) {
             lines.push(`Memo:        ${memo}`);
           }
+          if (result.coalesced) {
+            lines.push("Coalesced:   true (this signature was returned to another in-flight caller with the same idempotency key — pass a unique `idempotency_key` to guarantee a distinct submission).");
+          }
         } else if (result.status === "timeout") {
-          lines.push("Transfer submitted but confirmation timed out.");
+          lines.push("Transfer submitted but confirmation timed out (30s).");
           lines.push(`Signature: ${result.signature}`);
-          lines.push("The transaction may still confirm — check the signature on-chain.");
+          lines.push("The transaction may still confirm. To verify:");
+          lines.push(`  call get_transaction(hash="${result.signature}")`);
+          lines.push("A non-null result means the transfer succeeded. A null result means it has not yet landed.");
         } else {
           lines.push("Transfer failed.");
           lines.push(`Error: ${result.error?.explanation ?? result.error?.raw_message ?? "Unknown error"}`);
@@ -168,14 +184,15 @@ export function registerTransferTools(server: McpServer): void {
             }
             lastBlockhash = blockhash;
 
-            const txBytes = buildTransferTx(fromSvm, toSvm, lamports, blockhash);
+            const txBytes = buildTransferTx(fromSvm, toSvm, lamports, blockhash, memo);
             const signedBytes = await signer.sign(txBytes);
             const signedBase64 = Buffer.from(signedBytes).toString("base64");
 
+            const memoSuffix = memo ? `-m:${memo}` : "";
             const result = await submitter.submitAndConfirm({
               signedTxBase64: signedBase64,
               vm: "svm",
-              idempotencyKey: `batch-${i}-${fromSvm}-${toSvm}-${lamports}-${blockhash}`,
+              idempotencyKey: `batch-${i}-${fromSvm}-${toSvm}-${lamports}-${blockhash}${memoSuffix}`,
             });
 
             if (result.status === "confirmed" || result.status === "finalized") {

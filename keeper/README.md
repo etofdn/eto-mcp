@@ -1,47 +1,49 @@
-# ETO Agent Keeper — Agentic Finance Runtime
+# ETO Agent Keeper
 
-AI agents that autonomously trade, stake, and manage treasuries on ETO.
+> **Status:** scaffolding. The full Keeper SDK (`start.ts`, `agents.json`, the agent loop wired to Anthropic + RPC) lands in a parallel task. This directory currently hosts the **BPP template** (FN-073) so downstream BPP tasks can build against a stable handler interface ahead of the broader runtime.
 
-## Architecture
+## Layout
 
 ```
-┌──────────────────────────────────────────────┐
-│           KEEPER RUNTIME (Node/Bun)          │
-│                                              │
-│  ┌────────┐  ┌────────┐  ┌────────┐         │
-│  │Agent 1 │  │Agent 2 │  │Agent N │         │
-│  │Arb Bot │  │Staker  │  │Treasury│         │
-│  └───┬────┘  └───┬────┘  └───┬────┘         │
-│      │           │           │               │
-│      └───────────┴───────────┘               │
-│                  │                           │
-│         Claude Agent SDK                     │
-│         (reasoning engine)                   │
-│                  │                           │
-│         ETO MCP Client                       │
-│         (chain interaction)                  │
-└──────────┬───────────────────────────────────┘
-           │
-    ┌──────▼──────┐
-    │  ETO Chain  │
-    │  (testnet)  │
-    └─────────────┘
+keeper/
+├── templates/
+│   └── bpp/        ← FN-073 — Keeper-based BPP template
+│       ├── README.md
+│       ├── index.ts
+│       ├── types.ts
+│       ├── register.ts
+│       ├── credential-gate.ts
+│       ├── runtime.ts
+│       └── example/echo-bpp.ts
+└── bpps/           ← reference BPPs composed against the template
+    └── text-summarize/  ← FN-075 — text:summarize v1.0.0
 ```
 
-## How It Works
+## BPP Template
 
-1. Each agent has a **strategy prompt** (natural language)
-2. The keeper polls the chain every N seconds via MCP
-3. Claude evaluates the chain state against the strategy
-4. If action needed → Claude calls MCP tools to execute
-5. Results logged on-chain + locally
+A reusable TypeScript library for authoring **Beckn Provider Platforms** on top of the ETO Agent Keeper. Provides:
 
-## Usage
+- `BppHandler` — single-callback abstraction over the Beckn `select → init → confirm → status` lifecycle.
+- `registerBppAgentCard` — idempotent on-chain `RegisterAgent` submission with capability tags pinned into `metadata_uri`.
+- `defaultCredentialGate` — asserts the BAP carries every `RequiredCredential` before the handler runs.
+- `runBpp` — keeper-style loop with pluggable event source and chain adapter; testable end-to-end without RPC.
 
-```bash
-# Start the keeper with a config
-bun run keeper/start.ts --config keeper/agents.json
+See [`templates/bpp/README.md`](./templates/bpp/README.md) for the author's guide and [`templates/bpp/example/echo-bpp.ts`](./templates/bpp/example/echo-bpp.ts) for a runnable end-to-end demo.
 
-# Or run a single agent
-bun run keeper/start.ts --agent "arb-bot" --strategy "Arbitrage ETO/EUSD when price deviates >3%"
-```
+## Reference BPPs
+
+Concrete BPPs that compose the template; each is dev-time tooling and is
+excluded from the published `dist/`.
+
+- [`bpps/text-summarize/`](./bpps/text-summarize/README.md) — FN-075,
+  capability `text:summarize` v1.0.0. Canonical pattern for the four
+  sibling reference BPPs (FN-076 `code:audit:solidity`, FN-077
+  `web:research`, FN-078 `image:generate`, FN-079 `data:analyze`).
+- [`bpps/code-audit-solidity/`](./bpps/code-audit-solidity/README.md) — FN-076,
+  capability `code:audit:solidity` v1.0.0. Wraps `slither`/`mythril`
+  when available + LLM auditor; runs a self-asserted
+  `skill.solidity-audit/v1` credential preflight.
+- [`bpps/web-research/`](./bpps/web-research/README.md) — FN-077,
+  capability `web:research` v1.0.0. Plans sub-queries, fans out across
+  an injected `SearchProvider`, fetches and extracts top sources, and
+  synthesises a sourced Markdown report with a typed `Citation[]`.
