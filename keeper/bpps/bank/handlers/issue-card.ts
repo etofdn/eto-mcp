@@ -36,6 +36,7 @@ import {
   type IssueCardInput,
   BankIssuerError,
 } from "../../../../src/issuers/bank.js";
+import { defaultBankLedger } from "../credential-ledger.js";
 
 // ---------------------------------------------------------------------------
 // Schema gate
@@ -350,8 +351,11 @@ export const stubs: IssueCardDeps = {
     return { tx_signature, credential_pda };
   },
   recordCard: async (pda, card) => {
+    // FN-105: persist to the shared bank credential ledger so the v1
+    // GC sweeper sees this entry alongside open-checking entries.
+    await defaultBankLedger.recordCard(pda, card);
     console.log(
-      `[STUB] recordCard pda=${pda.slice(0, 8)} holder=${card.holder.slice(0, 8)}`,
+      `[STUB] recordCard pda=${pda.slice(0, 8)} holder=${card.holder.slice(0, 8)} → ledger size=${defaultBankLedger.size()}`,
     );
   },
   flagReconciliation: async (card_pda, holder, _body) => {
