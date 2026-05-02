@@ -31,6 +31,10 @@
     "./issuers/bank-mock": {
       "types": "./dist/issuers/bank-mock.d.ts",
       "import": "./dist/issuers/bank-mock.js"
+    },
+    "./issuers/bank": {
+      "types": "./dist/issuers/bank.d.ts",
+      "import": "./dist/issuers/bank.js"
     }
   },
   "files": [
@@ -42,8 +46,7 @@
     "typecheck": "tsc -p tsconfig.issuers.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc -p tsconfig.json --noEmit",
-    "bridge": "bun run src/bridge-server.ts"
+    "lint": "tsc -p tsconfig.issuers.json"
   },
   "engines": {
     "node": ">=20",

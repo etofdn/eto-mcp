@@ -17,10 +17,24 @@
  * pre-fund a USD treasury and reverse with a re-mint on failure; v0 instead
  * calls flagReconciliation so operations staff can handle it manually.
  *
- * Fee: 1pip = 0.01% per FN-109, implemented as floor(amount / 10_000).
+ * Fee: 1pip = 0.01% per FN-109, centralised in `./fee.ts`.
+ * Treasury remittance: after a successful USD push, the fee is remitted to the
+ *   bank treasury account via `deps.remitToTreasury` (FN-109 acceptance
+ *   criterion). The resulting tx_signature is included in the outcome.
+ *
+ * NOTE: remitToTreasury is NOT called when burn_failed or push_failed_post_burn
+ *   because the fee is only realised once the full offramp completes (the USD
+ *   push succeeded). In the post-burn / push-failure path the fee is not yet
+ *   earned — reconciliation handles the corrective action.
  */
 
 import { createHash } from 'node:crypto';
+import {
+  oneBipFee,
+  BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX,
+  stubRemitToTreasury,
+  type RemitToTreasury,
+} from './fee.js';
 
 export interface OfframpRequest {
   holder: string;                     // hex pubkey burning eUSD
@@ -45,6 +59,8 @@ export interface OfframpOutcome {
   fulfillment_uri: string;
   burn_tx_signature?: string;
   external_ref?: string;
+  /** tx_signature of the treasury remittance for the 1-pip fee (FN-109). */
+  treasury_remit_tx_signature?: string;
 }
 
 export interface OfframpDeps {
@@ -54,8 +70,17 @@ export interface OfframpDeps {
   pushUsd: (cents: number, dest: OfframpRequest['destination']) => Promise<{ external_ref: string }>;
   /** Open a manual-reconcile case if burn succeeds but push fails. STUBBED — real impl wakes ops. */
   flagReconciliation: (offramp_id: string, holder: string, burned_atomic: number) => Promise<void>;
-  /** 1-pip fee per FN-109 (0.01%). */
+  /**
+   * 1-pip fee per FN-109 (0.01%). Defaults to `oneBipFee` from fee.ts.
+   * Kept as injectable dep for test/mock overrides; do NOT remove.
+   */
   feeFor: (eusd_amount: number) => number;
+  /**
+   * Remit the 1-pip fee to the bank treasury after a successful push (FN-109).
+   * Called only on the happy path (phase === 'pushed'). NOT called when
+   * burn_failed or push_failed_post_burn — see module doc for rationale.
+   */
+  remitToTreasury: RemitToTreasury;
 }
 
 export class OfframpRejected extends Error {
@@ -105,27 +130,43 @@ export async function executeOfframp(req: OfframpRequest, deps: OfframpDeps): Pr
 
   // Phase 2: push USD. NOTE: if this fails, eUSD is already burned (real systems
   // pre-fund a USD treasury and reverse with a re-mint; v0 just flags for ops).
+  // FN-109: remitToTreasury is NOT called in the push-failure path because the
+  // fee is only earned when the full offramp completes successfully.
+  let push_external_ref: string;
   try {
     const push = await deps.pushUsd(usd_cents, req.destination);
-    return {
-      offramp_id,
-      phase: 'pushed',
-      burned_atomic: req.eusd_amount_atomic,
-      fee_atomic: fee,
-      usd_cents_pushed: usd_cents,
-      fulfillment_uri: `eto://offramp/${offramp_id}`,
-      burn_tx_signature: burn_sig,
-      external_ref: push.external_ref,
-    };
+    push_external_ref = push.external_ref;
   } catch {
     await deps.flagReconciliation(offramp_id, req.holder, req.eusd_amount_atomic);
     throw new OfframpRejected('push_failed_post_burn');
   }
+
+  // FN-109: remit fee to bank treasury after successful push. Called
+  // unconditionally — stub short-circuits when fee === 0 so we never branch here.
+  const remit = await deps.remitToTreasury({
+    fee_atomic: fee,
+    treasury_pda_hex: BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX,
+    source: 'offramp',
+    correlation_id: offramp_id,
+  });
+
+  return {
+    offramp_id,
+    phase: 'pushed',
+    burned_atomic: req.eusd_amount_atomic,
+    fee_atomic: fee,
+    usd_cents_pushed: usd_cents,
+    fulfillment_uri: `eto://offramp/${offramp_id}`,
+    burn_tx_signature: burn_sig,
+    external_ref: push_external_ref,
+    treasury_remit_tx_signature: remit.tx_signature,
+  };
 }
 
 /** v0 stubs. */
 export const stubs: OfframpDeps = {
-  feeFor: (eusd_amount) => Math.floor(eusd_amount / 10_000),
+  feeFor: oneBipFee,
+  remitToTreasury: stubRemitToTreasury,
   burnOnChain: async (args) => {
     const sig = createHash('sha256').update('burn:' + JSON.stringify(args)).digest('hex').slice(0, 64);
     console.log(`[STUB] burnOnChain holder=${args.holder_token_pda.slice(0, 8)} amount=${args.amount} → ${sig.slice(0, 16)}`);

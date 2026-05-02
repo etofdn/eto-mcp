@@ -1,0 +1,7 @@
+{
+  "_source": "Beckn v2.0 LTS reference: https://developers.becknprotocol.io/docs/protocol-specifications/",
+  "_note": "Malformed envelope: missing required 'context' field. Bridge must return 400 + NACK BECKN_400.",
+  "message": {
+    "intent": { "item": { "descriptor": { "name": "coffee" } } }
+  }
+}
