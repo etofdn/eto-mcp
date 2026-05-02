@@ -38,8 +38,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.build.issuers.json",
+    "typecheck": "tsc -p tsconfig.issuers.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc -p tsconfig.json --noEmit",
@@ -52,6 +52,7 @@
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^20.12.0",
+    "bs58": "^6.0.0",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"
   },
