@@ -9,14 +9,80 @@
 //   CIVIC_ISSUER_KEYPAIR_PATH  filesystem path to the issuer keypair
 //   CIVIC_NETWORK_ID           32-byte hex `IssuerNetwork` id
 //
+// Beckn bridge env vars:
+//   BECKN_BPP_BACKEND_URL              base URL of the backend BPP (enables inbound BPP role)
+//   BECKN_BPP_FORWARD_TIMEOUT_MS       abort timeout for backend POST (default: 5000)
+//   BECKN_BAP_CALLBACK_TIMEOUT_MS      abort timeout for on_confirm callback (default: 5000)
+//   BECKN_BAP_CALLBACK_ALLOWED_HOSTS   comma-separated allowlist of BAP hostnames; empty → deny all
+//   BECKN_BPP_ID                       BPP identifier echoed in on_confirm context
+//   BECKN_BPP_URI                      BPP URI echoed in on_confirm context
+//
 // `civic.enabled` is derived: true iff both `CIVIC_GATEKEEPER_NETWORK`
 // and `CIVIC_ISSUER_KEYPAIR_PATH` are non-empty.
+// `becknBridge.enabled` is derived: true iff `BECKN_BPP_BACKEND_URL` is non-empty.
 
 import type { CivicConfig } from "./issuers/civic.types.js";
 import bs58 from "bs58";
 
+// ---------- Beckn bridge config ----------
+
+/**
+ * Configuration for the inbound BPP role of the Beckn HTTP bridge (FN-090).
+ *
+ * `enabled` is derived from whether `bppBackendUrl` is non-empty.
+ * When `enabled` is false, `/confirm` returns 503.
+ *
+ * `bapCallbackAllowedHosts` is the allowlist of hostnames the gateway will
+ * POST `on_confirm` to. An empty list means deny-all (safe default in
+ * production). Pass `["*"]` as an explicit wildcard for tests only.
+ */
+export interface BecknBridgeConfig {
+  /** Whether the inbound BPP role is active. Derived from `bppBackendUrl`. */
+  readonly enabled: boolean;
+  /** Base URL of the upstream BPP service this gateway forwards `/confirm` to. */
+  readonly bppBackendUrl: string;
+  /** Milliseconds before the backend forward call times out. Default: 5000. */
+  readonly forwardTimeoutMs: number;
+  /** Milliseconds before the on_confirm BAP callback times out. Default: 5000. */
+  readonly bapCallbackTimeoutMs: number;
+  /**
+   * Allowlist of hostnames the gateway may POST `on_confirm` to.
+   * Empty array → deny all callbacks.
+   * `["*"]` → wildcard (for tests only; do not set in production).
+   */
+  readonly bapCallbackAllowedHosts: string[];
+  /** BPP identifier echoed in on_confirm context. Falls back to inbound bpp_id if unset. */
+  readonly bppId: string;
+  /** BPP URI echoed in on_confirm context. Falls back to inbound bpp_uri if unset. */
+  readonly bppUri: string;
+}
+
+export function loadBecknBridgeConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): BecknBridgeConfig {
+  const bppBackendUrl = (env.BECKN_BPP_BACKEND_URL ?? "").trim();
+  const forwardTimeoutMs = parseInt(env.BECKN_BPP_FORWARD_TIMEOUT_MS ?? "5000", 10);
+  const bapCallbackTimeoutMs = parseInt(env.BECKN_BAP_CALLBACK_TIMEOUT_MS ?? "5000", 10);
+  const allowedHostsRaw = (env.BECKN_BAP_CALLBACK_ALLOWED_HOSTS ?? "").trim();
+  const bapCallbackAllowedHosts = allowedHostsRaw.length > 0
+    ? allowedHostsRaw.split(",").map((h) => h.trim()).filter(Boolean)
+    : [];
+  const bppId = (env.BECKN_BPP_ID ?? "").trim();
+  const bppUri = (env.BECKN_BPP_URI ?? "").trim();
+  return {
+    enabled: bppBackendUrl.length > 0,
+    bppBackendUrl,
+    forwardTimeoutMs: Number.isFinite(forwardTimeoutMs) && forwardTimeoutMs > 0 ? forwardTimeoutMs : 5000,
+    bapCallbackTimeoutMs: Number.isFinite(bapCallbackTimeoutMs) && bapCallbackTimeoutMs > 0 ? bapCallbackTimeoutMs : 5000,
+    bapCallbackAllowedHosts,
+    bppId,
+    bppUri,
+  };
+}
+
 export interface AppConfig {
   readonly civic: CivicConfig;
+  readonly becknBridge: BecknBridgeConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,5 +231,56 @@ export function loadAppConfig(
   // `readEnv` is exported via use to satisfy the unused-warning gate
   // in case future blocks use it directly.
   void readEnv;
-  return { civic: loadCivicConfig(env) };
+  return {
+    civic: loadCivicConfig(env),
+    becknBridge: loadBecknBridgeConfig(env),
+  };
 }
+
+// ---------------------------------------------------------------------------
+// Runtime config singleton
+// ---------------------------------------------------------------------------
+//
+// Used by auth.ts, auth-routes.ts, and rate-limiter.ts. Sourced from env vars
+// with sensible defaults so the MCP server boots without a config file.
+//
+// NOTE: This object deliberately uses required-with-defaults rather than
+// optional fields so that consumers get a concrete value for every field
+// (avoids exactOptionalPropertyTypes false positives at call-sites).
+
+export interface RuntimeConfig {
+  readonly auth: {
+    /** Bypass auth checks in dev/testnet mode (ETO_DEV_BYPASS=1). */
+    readonly devBypass: boolean;
+    /** Session token TTL in seconds (default: 86400). */
+    readonly sessionTtlSeconds: number;
+    /** Session refresh window in seconds (default: 3600). */
+    readonly refreshTtlSeconds: number;
+  };
+  readonly network: "mainnet" | "testnet" | "devnet";
+  readonly rateLimits: {
+    readonly readPerMinute: number;
+    readonly writePerMinute: number;
+    readonly deployPerMinute: number;
+  };
+}
+
+function validateNetwork(v: string | undefined): "mainnet" | "testnet" | "devnet" {
+  if (v === "mainnet" || v === "testnet" || v === "devnet") return v;
+  return "testnet";
+}
+
+/** Lazily-loaded runtime config singleton. */
+export const config: RuntimeConfig = {
+  auth: {
+    devBypass: process.env["ETO_DEV_BYPASS"] === "1",
+    sessionTtlSeconds: Number(process.env["ETO_SESSION_TTL_SECONDS"] ?? 86400),
+    refreshTtlSeconds: Number(process.env["ETO_REFRESH_TTL_SECONDS"] ?? 3600),
+  },
+  network: validateNetwork(process.env["ETO_NETWORK"]),
+  rateLimits: {
+    readPerMinute: Number(process.env["ETO_RATE_READ_PER_MIN"] ?? 120),
+    writePerMinute: Number(process.env["ETO_RATE_WRITE_PER_MIN"] ?? 30),
+    deployPerMinute: Number(process.env["ETO_RATE_DEPLOY_PER_MIN"] ?? 5),
+  },
+};

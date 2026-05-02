@@ -1,5 +1,5 @@
 /**
- * Tests for Onramp BPP handler (FN-107 / T-3.10.2.2).
+ * Tests for Onramp BPP handler (FN-107 / T-3.10.2.2, FN-109 / T-3.10.2.4).
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -10,6 +10,7 @@ import {
   type OnrampRequest,
   type OnrampDeps,
 } from './onramp.js';
+import { BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX } from './fee.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -35,6 +36,7 @@ function makeDeps(overrides: Partial<OnrampDeps> = {}): OnrampDeps {
     feeFor: vi.fn((amount: number) => Math.floor(amount / 10_000)),
     verifyUsdPull: vi.fn().mockResolvedValue(true),
     mintOnChain: vi.fn().mockResolvedValue({ tx_signature: 'f'.repeat(64) }),
+    remitToTreasury: vi.fn().mockResolvedValue({ tx_signature: 'a'.repeat(64) }),
     ...overrides,
   };
 }
@@ -70,6 +72,25 @@ describe('executeOnramp — happy path', () => {
       recipient_token_pda: TOKEN_PDA,
       amount: 99_990_000,
     });
+  });
+
+  it('calls remitToTreasury once after successful mint (FN-109)', async () => {
+    const deps = makeDeps();
+    const result = await executeOnramp(makeRequest({ usd_amount_cents: 10_000 }), deps);
+
+    expect(deps.remitToTreasury).toHaveBeenCalledOnce();
+    expect(deps.remitToTreasury).toHaveBeenCalledWith({
+      fee_atomic: 10_000,
+      treasury_pda_hex: BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX,
+      source: 'onramp',
+      correlation_id: result.onramp_id,
+    });
+  });
+
+  it('includes treasury_remit_tx_signature in outcome (FN-109)', async () => {
+    const deps = makeDeps();
+    const result = await executeOnramp(makeRequest(), deps);
+    expect(result.treasury_remit_tx_signature).toBe('a'.repeat(64));
   });
 });
 
@@ -140,11 +161,11 @@ describe('executeOnramp — invalid_amount', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Atomicity: USD pull failure blocks mint
+// Atomicity: USD pull failure blocks mint AND remitToTreasury
 // ---------------------------------------------------------------------------
 
 describe('executeOnramp — atomicity on USD pull failure', () => {
-  it('throws usd_pull_failed; mintOnChain NOT called', async () => {
+  it('throws usd_pull_failed; mintOnChain and remitToTreasury NOT called', async () => {
     const deps = makeDeps({
       verifyUsdPull: vi.fn().mockResolvedValue(false),
     });
@@ -153,21 +174,24 @@ describe('executeOnramp — atomicity on USD pull failure', () => {
       .rejects.toMatchObject({ reason: 'usd_pull_failed' });
 
     expect(deps.mintOnChain).not.toHaveBeenCalled();
+    expect(deps.remitToTreasury).not.toHaveBeenCalled();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Mint failure
+// Mint failure — remitToTreasury NOT called
 // ---------------------------------------------------------------------------
 
 describe('executeOnramp — mint failure', () => {
-  it('throws mint_failed when mintOnChain rejects', async () => {
+  it('throws mint_failed when mintOnChain rejects; remitToTreasury NOT called', async () => {
     const deps = makeDeps({
       mintOnChain: vi.fn().mockRejectedValue(new Error('on-chain unavailable')),
     });
 
     await expect(executeOnramp(makeRequest(), deps))
       .rejects.toMatchObject({ reason: 'mint_failed' });
+
+    expect(deps.remitToTreasury).not.toHaveBeenCalled();
   });
 });
 
@@ -229,5 +253,15 @@ describe('stubs', () => {
     expect(stubs.feeFor(100_000_000)).toBe(10_000);
     expect(stubs.feeFor(10_000)).toBe(1);
     expect(stubs.feeFor(9_999)).toBe(0);   // below 1pip threshold
+  });
+
+  it('remitToTreasury returns 64-hex tx_signature', async () => {
+    const { tx_signature } = await stubs.remitToTreasury({
+      fee_atomic: 10_000,
+      treasury_pda_hex: BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX,
+      source: 'onramp',
+      correlation_id: '0'.repeat(64),
+    });
+    expect(tx_signature).toMatch(/^[0-9a-f]{64}$/);
   });
 });

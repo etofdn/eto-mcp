@@ -375,7 +375,15 @@ function jcsCompareUtf16(a: string, b: string): number {
   return a.length - b.length;
 }
 
-function sha256Hex(input: string): string {
+/**
+ * Compute the SHA-256 digest of a UTF-8 string and return it as a
+ * lowercase 64-character hex string. Exported so downstream issuer
+ * modules (`bank.ts`, etc.) can share this helper without re-declaring
+ * it (DRY + single implementation for the `claim_hash` convention).
+ *
+ * Added as an additive export in FN-097 — no behaviour change.
+ */
+export function sha256Hex(input: string): string {
   return createHash("sha256").update(input, "utf8").digest("hex");
 }
 

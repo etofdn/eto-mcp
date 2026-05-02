@@ -1,0 +1,39 @@
+{
+  "_source": "Beckn v2.0 LTS reference: https://developers.becknprotocol.io/docs/protocol-specifications/",
+  "_note": "BPP on_init callback to BAP with a draft order and payment terms. Mirrors transaction_id/message_id per §5.2.3.",
+  "context": {
+    "domain": "retail",
+    "action": "on_init",
+    "version": "2.0.0",
+    "bap_id": "bap.example.com",
+    "bap_uri": "https://bap.example.com/beckn",
+    "bpp_id": "bpp.example.com",
+    "bpp_uri": "https://bpp.example.com/beckn",
+    "transaction_id": "d4e5f6a7-b8c9-0123-defa-234567890123",
+    "message_id": "e5f6a7b8-c9d0-1234-efab-345678901234",
+    "timestamp": "2026-01-01T00:02:05.000Z",
+    "ttl": "PT30S"
+  },
+  "message": {
+    "order": {
+      "provider": { "id": "prov-001" },
+      "items": [
+        { "id": "item-001", "quantity": { "count": 1 } }
+      ],
+      "billing": {
+        "name": "Alice Example",
+        "email": "alice@example.com"
+      },
+      "quote": {
+        "price": { "currency": "USD", "value": "3.50" }
+      },
+      "payments": [
+        {
+          "type": "ON-ORDER",
+          "params": { "currency": "USD", "amount": "3.50" },
+          "status": "NOT-PAID"
+        }
+      ]
+    }
+  }
+}
