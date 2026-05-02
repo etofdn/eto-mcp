@@ -28,6 +28,8 @@
 
 import { createHash } from 'node:crypto';
 
+import { defaultBankLedger } from '../credential-ledger.js';
+
 export interface OpenCheckingRequest {
   subject: string;                    // hex pubkey — receives credential, owns account
   bank_issuer: string;                // hex — bank issuer pubkey (this BPP's signing identity)
@@ -173,6 +175,9 @@ export const stubs: OpenCheckingDeps = {
     );
   },
   recordCheckingAccount: async (pda, acc) => {
-    console.log(`[STUB] recordCheckingAccount pda=${pda.slice(0, 8)} holder=${acc.holder.slice(0, 8)} opening=${acc.opening_balance}`);
+    // FN-105: persist to the shared bank credential ledger so issue-card
+    // and open-checking entries live in one place for the v1 GC sweeper.
+    await defaultBankLedger.recordCheckingAccount(pda, acc);
+    console.log(`[STUB] recordCheckingAccount pda=${pda.slice(0, 8)} holder=${acc.holder.slice(0, 8)} opening=${acc.opening_balance} → ledger size=${defaultBankLedger.size()}`);
   },
 };
