@@ -22,11 +22,14 @@
 // downstream consumers (FN-132 1099 issuer, FN-133 travel-rule
 // generator) can hash the output for caching / diffing.
 //
-// **v0 caveat — UNSIGNED.** The `issuer` field is a placeholder DID
-// (`did:eto:indexer:audit-trail:v0`). This audit feed is NOT
-// cryptographically signed in v0; downstream consumers must treat the
-// document as derived data, not as proof. Signing (VC-JOSE / Ed25519)
-// is a follow-up task.
+// **Signing.** Signing is opt-in via the injected `VcSigner`; the
+// default `NoOpVcSigner` preserves the historical unsigned shape
+// (no `proof` key in the emitted document). Set
+// `AUDIT_SIGNING_KEY_PATH` and pass `createVcSignerFromEnv({ issuerDid })`
+// to emit an `Ed25519Signature2020` proof block per W3C VC Data
+// Integrity / RFC 8785 (FN-084). The proof preimage is
+// `sha256(JCS(vcWithoutProof))` — the proof block is excluded from the
+// hash input.
 //
 // **Determinism guarantees.** Given identical event inputs and bounds,
 // `buildAuditFeed` MUST produce a byte-identical document apart from
@@ -39,6 +42,11 @@ import {
   kytTraceEventSchema,
   revocationRootUpdatedEventSchema,
 } from "./audit-trail.types.js";
+import {
+  NoOpVcSigner,
+  type Ed25519Signature2020Proof,
+  type VcSigner,
+} from "./vc-signer.js";
 
 export type {
   CounterpartyWire,
@@ -303,7 +311,10 @@ export interface AuditFeedJsonLd {
   "@context": readonly [typeof AUDIT_TRAIL_CONTEXT_VC, typeof AUDIT_TRAIL_CONTEXT_ETO];
   id: string;
   type: readonly ["VerifiableCredential", "AuditTrailFeed"];
-  issuer: typeof AUDIT_TRAIL_ISSUER_DID;
+  // FN-084: widened from the literal `typeof AUDIT_TRAIL_ISSUER_DID` to
+  // `string` so an injected `VcSigner` can override the placeholder DID.
+  // The default value is still `AUDIT_TRAIL_ISSUER_DID`.
+  issuer: string;
   issuanceDate: string;
   credentialSubject: {
     id: string;
@@ -312,6 +323,9 @@ export interface AuditFeedJsonLd {
     events: readonly AuditFeedEvent[];
     summary: AuditFeedSummary;
   };
+  /** FN-084: optional Ed25519Signature2020 proof block. Absent when the
+   *  default `NoOpVcSigner` is in use (preserves byte-stable v0 shape). */
+  proof?: Ed25519Signature2020Proof;
 }
 
 // ---------------------------------------------------------------------
@@ -334,6 +348,11 @@ export interface AuditTrailIndexerDeps {
   logger?: AuditLogger;
   /** Defaults to `() => new Date()`. Tests inject a fixed clock. */
   clock?: () => Date;
+  /**
+   * FN-084: optional VC signer. Defaults to `NoOpVcSigner(AUDIT_TRAIL_ISSUER_DID)`
+   * which produces a byte-stable unsigned document (no `proof` key).
+   */
+  signer?: VcSigner;
 }
 
 const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]+$/;
@@ -401,11 +420,13 @@ export class AuditTrailIndexer {
   private readonly source: KytEventSource;
   private readonly logger?: AuditLogger;
   private readonly clock: () => Date;
+  private readonly signer: VcSigner;
 
   public constructor(deps: AuditTrailIndexerDeps) {
     this.source = deps.source;
     if (deps.logger) this.logger = deps.logger;
     this.clock = deps.clock ?? (() => new Date());
+    this.signer = deps.signer ?? new NoOpVcSigner(AUDIT_TRAIL_ISSUER_DID);
   }
 
   public async buildAuditFeed(
@@ -542,11 +563,16 @@ export class AuditTrailIndexer {
       revocationCount: revEvents.length,
     };
 
+    const issuerDid =
+      this.signer.issuerDid !== AUDIT_TRAIL_ISSUER_DID
+        ? this.signer.issuerDid
+        : AUDIT_TRAIL_ISSUER_DID;
+
     const feed: AuditFeedJsonLd = {
       "@context": [AUDIT_TRAIL_CONTEXT_VC, AUDIT_TRAIL_CONTEXT_ETO],
       id: feedUrn(authority, sinceSlot, untilSlot),
       type: AUDIT_TRAIL_VC_TYPE,
-      issuer: AUDIT_TRAIL_ISSUER_DID,
+      issuer: issuerDid,
       issuanceDate: this.clock().toISOString(),
       credentialSubject: {
         id: `did:eto:agent:${authority}`,
@@ -560,10 +586,23 @@ export class AuditTrailIndexer {
       },
     };
 
+    // FN-084: sign the proof-less document and attach the proof block
+    // iff the signer produced a non-empty proofValue. The NoOp path
+    // returns proofValue === "", which we map to no `proof` key so the
+    // v0 unsigned wire shape stays byte-identical.
+    // Pass a shallow copy so the signer cannot observe (or be passed)
+    // a `proof` field. The proof block is excluded from the JCS
+    // preimage per W3C VC Data Integrity §11.4.
+    const proof = await this.signer.sign({ ...feed });
+    if (proof.proofValue !== "") {
+      feed.proof = proof;
+    }
+
     this.logger?.info?.("audit-trail: built feed", {
       authority,
       kytCount: summary.kytCount,
       revocationCount: summary.revocationCount,
+      signed: proof.proofValue !== "",
     });
 
     return feed;

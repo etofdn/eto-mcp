@@ -34,10 +34,13 @@
  * feed. The injectable `clock` defaults to `() => new Date()`; tests pin
  * it to a fixed timestamp for byte-stable assertions.
  *
- * **v0 unsigned caveat.** The `issuer` field is a placeholder DID
- * (`did:eto:indexer:travel-rule:v0`). This report is NOT cryptographically
- * signed in v0; consumers must treat the document as derived data, not
- * as proof. Signing (VC-JOSE / Ed25519) is a follow-up task.
+ * **Signing.** Signing is opt-in via the injected `VcSigner`; the
+ * default `NoOpVcSigner` preserves the historical unsigned shape (no
+ * `proof` key in the emitted document). Set `AUDIT_SIGNING_KEY_PATH`
+ * and pass `createVcSignerFromEnv({ issuerDid })` to emit an
+ * `Ed25519Signature2020` proof block per W3C VC Data Integrity /
+ * RFC 8785 (FN-084). The proof preimage is `sha256(JCS(vcWithoutProof))`
+ * — the proof block is excluded from the hash input.
  *
  * **Spec §9.3 mapping.** `parties[0]` (BAP) is the originator; `parties[1]`
  * (BPP) is the beneficiary. When the audited authority is the BAP, we look
@@ -52,6 +55,11 @@ import {
   type AuditLogger,
   type KytEventSource,
 } from "./audit-trail.js";
+import {
+  NoOpVcSigner,
+  type Ed25519Signature2020Proof,
+  type VcSigner,
+} from "./vc-signer.js";
 import {
   type AmountResolverEntry,
   type Ivms101Party,
@@ -351,8 +359,13 @@ export interface TravelRuleReportJsonLd {
   ];
   id: string;
   type: typeof TRAVEL_RULE_REPORT_TYPE;
-  issuer: typeof TRAVEL_RULE_ISSUER_DID;
+  // FN-084: widened from the literal `typeof TRAVEL_RULE_ISSUER_DID` to
+  // `string` so an injected `VcSigner` can override the placeholder DID.
+  issuer: string;
   issuanceDate: string;
+  /** FN-084: optional Ed25519Signature2020 proof block. Absent when the
+   *  default `NoOpVcSigner` is in use (preserves byte-stable v0 shape). */
+  proof?: Ed25519Signature2020Proof;
   credentialSubject: {
     id: string;
     authority: string;
@@ -476,6 +489,12 @@ export interface TravelRuleReportGeneratorDeps {
   logger?: AuditLogger;
   /** Defaults to `() => new Date()`. Tests inject a fixed clock. */
   clock?: () => Date;
+  /**
+   * FN-084: optional VC signer. Defaults to
+   * `NoOpVcSigner(TRAVEL_RULE_ISSUER_DID)` which produces a byte-stable
+   * unsigned document (no `proof` key).
+   */
+  signer?: VcSigner;
 }
 
 /**
@@ -490,6 +509,7 @@ export class TravelRuleReportGenerator {
   private readonly amountResolver: AmountResolver;
   private readonly logger?: AuditLogger;
   private readonly clock: () => Date;
+  private readonly signer: VcSigner;
 
   public constructor(deps: TravelRuleReportGeneratorDeps) {
     // If source is already an AuditTrailIndexer, reuse it; otherwise wrap.
@@ -505,6 +525,7 @@ export class TravelRuleReportGenerator {
     this.amountResolver = deps.amountResolver;
     if (deps.logger) this.logger = deps.logger;
     this.clock = deps.clock ?? (() => new Date());
+    this.signer = deps.signer ?? new NoOpVcSigner(TRAVEL_RULE_ISSUER_DID);
   }
 
   public async buildReport(
@@ -648,11 +669,16 @@ export class TravelRuleReportGenerator {
       entries.reduce((sum, e) => sum + e.amountUsd, 0),
     );
 
+    const issuerDid =
+      this.signer.issuerDid !== TRAVEL_RULE_ISSUER_DID
+        ? this.signer.issuerDid
+        : TRAVEL_RULE_ISSUER_DID;
+
     const report: TravelRuleReportJsonLd = {
       "@context": [TRAVEL_RULE_CONTEXT_FATF, TRAVEL_RULE_CONTEXT_ETO],
       id: reportUrn(authority, sinceSlot, untilSlot),
       type: TRAVEL_RULE_REPORT_TYPE,
-      issuer: TRAVEL_RULE_ISSUER_DID,
+      issuer: issuerDid,
       issuanceDate: this.clock().toISOString(),
       credentialSubject: {
         id: `did:eto:agent:${authority}`,
@@ -675,11 +701,20 @@ export class TravelRuleReportGenerator {
       },
     };
 
+    // FN-084: sign the proof-less document and attach proof iff non-empty.
+    // Pass a shallow copy so the signer never observes the `proof` key
+    // (W3C VC Data Integrity §11.4 excludes proof from the JCS preimage).
+    const proof = await this.signer.sign({ ...report });
+    if (proof.proofValue !== "") {
+      report.proof = proof;
+    }
+
     this.logger?.info?.("travel-rule: built report", {
       authority,
       entries: entries.length,
       skippedMissingParty,
       skippedMissingAmount,
+      signed: proof.proofValue !== "",
     });
 
     return report;

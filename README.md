@@ -263,9 +263,10 @@ injectable `KytEventSource` and emits a deterministic JSON-LD audit
 feed shaped as a `VerifiableCredential` of type
 `["VerifiableCredential", "AuditTrailFeed"]`. Events are sorted by
 `(slot, txSignature)` for byte-stable output, and the
-`credentialSubject.summary` carries per-stage counters. v0 is
-**unsigned** (issuer DID `did:eto:indexer:audit-trail:v0` is a
-placeholder); the production source will subscribe to
+`credentialSubject.summary` carries per-stage counters. Signing is opt-in via the injected `VcSigner` (FN-084); the default
+`NoOpVcSigner` preserves the historical unsigned shape (no `proof`
+key, issuer DID `did:eto:indexer:audit-trail:v0`). The production
+source will subscribe to
 `singularity:kyt:*` and `singularity:revocation:root_updated` log
 lines via Solana JSON-RPC `logsSubscribe`. Consumed downstream by the
 1099 issuer (FN-132) and travel-rule generator (FN-133). Tests use the
@@ -304,8 +305,52 @@ are resolved via the injected `AmountResolver`. v0 ships the in-memory
 reference implementations (`InMemoryPartyDirectory`,
 `InMemoryAmountResolver`); production wiring (backed by the issuer
 registry and `EtoRpcClient` transaction lookups) is a follow-up task.
-v0 reports are **unsigned** (issuer DID `did:eto:indexer:travel-rule:v0`
-is a placeholder). Per spec §9.3: `parties[0]` (BAP) is the originator;
+Signing is opt-in via the injected `VcSigner` (FN-084); the default
+`NoOpVcSigner` preserves the historical unsigned shape (issuer DID
+`did:eto:indexer:travel-rule:v0`, no `proof` key on the document). Per
+spec §9.3: `parties[0]` (BAP) is the originator;
 `parties[1]` (BPP) is the beneficiary. Entries are sorted by
 `(slot, txSignature)` for byte-stable output; the injectable `clock`
 allows tests to pin `issuanceDate` for deterministic assertions.
+
+### Audit / travel-rule signing (`@eto/mcp` → `src/services/indexer/vc-signer.ts`)
+
+FN-084. Compliance-grade `Ed25519Signature2020` proof blocks for the
+audit-trail and travel-rule JSON-LD documents per the W3C VC Data
+Integrity 1.0 spec. Signing is **opt-in**: the default `NoOpVcSigner`
+emits the historical unsigned shape (no `proof` key, byte-stable
+against pre-FN-084 fixtures). To enable signing, set
+`AUDIT_SIGNING_KEY_PATH` and inject `createVcSignerFromEnv({ issuerDid })`
+into `AuditTrailIndexerDeps.signer` / `TravelRuleReportGeneratorDeps.signer`.
+
+**Env var.**
+
+- `AUDIT_SIGNING_KEY_PATH` — filesystem path to a 32-byte Ed25519 seed.
+  The file may be raw 32 bytes, hex (with or without `0x` prefix), or
+  base64 / base64url. Anything else throws `expected 32-byte Ed25519
+  seed`. The loaded secret is never logged or echoed back in error
+  messages.
+
+**Proof block shape.** Attached as `feed.proof` /
+`report.proof` when a non-NoOp signer is configured:
+
+```jsonc
+{
+  "type": "Ed25519Signature2020",
+  "created": "2026-05-02T12:34:56.000Z",
+  "verificationMethod": "did:eto:issuer:bank-prod#key-1",
+  "proofPurpose": "assertionMethod",
+  "proofValue": "<base64url(Ed25519(sha256(JCS(vcWithoutProof))))>"
+}
+```
+
+**Hash input (spec §11.4).** `claim_hash = sha256(JCS(vcWithoutProof))`.
+The `proof` block itself is **excluded** from the JCS preimage; the
+indexer wiring strips it before calling `signer.sign(...)` and only
+attaches the returned proof afterwards.
+
+**Backwards compatibility.** When `AUDIT_SIGNING_KEY_PATH` is unset (or
+no `signer` is injected), the default `NoOpVcSigner` returns a sentinel
+proof with `proofValue === ""`; the indexers detect this and OMIT the
+`proof` key entirely so output is byte-identical to v0. All existing
+fixture-based tests pass unchanged.

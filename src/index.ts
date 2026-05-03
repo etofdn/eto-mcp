@@ -220,3 +220,21 @@ export type {
   TravelRuleReportJsonLd,
 } from "./services/indexer/travel-rule.js";
 
+// VC signer for audit-trail / travel-rule documents (FN-084) —
+// `Ed25519Signature2020` proof blocks per W3C VC Data Integrity / RFC 8785.
+export {
+  DEFAULT_UNSIGNED_DID,
+  Ed25519VcSigner,
+  NoOpVcSigner,
+  base64UrlEncode,
+  canonicalizeJcs,
+  createVcSignerFromEnv,
+} from "./services/indexer/vc-signer.js";
+export type {
+  CreateVcSignerFromEnvOpts,
+  Ed25519Signature2020Proof,
+  Ed25519VcSignerFromKeyFileOpts,
+  Ed25519VcSignerInit,
+  VcSigner,
+} from "./services/indexer/vc-signer.js";
+
