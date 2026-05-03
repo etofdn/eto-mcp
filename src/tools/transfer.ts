@@ -7,7 +7,19 @@ import { blockhashCache } from "../write/blockhash-cache.js";
 import { submitter } from "../write/submitter.js";
 import { solToLamports, lamportsToSol } from "../utils/units.js";
 import { resolveAddresses } from "../utils/address.js";
+import { encodeMemo } from "../memo/index.js";
 import bs58 from "bs58";
+
+// Shared zod shape for the optional `typed_memo` argument. See
+// docs/memo-schema-registry.md for the registered schemas. Encoding happens
+// inside the tool handlers so producers cannot bypass envelope/payload
+// validation.
+const TYPED_MEMO_SHAPE = z
+  .object({
+    type: z.string().describe("Short kind discriminator, e.g. 'eval_score', 'payment', 'coordination_log'."),
+    payload: z.record(z.unknown()).describe("Typed payload validated against the registered schema for `type`."),
+  })
+  .describe("Optional typed memo encoded via the memo schema registry. See docs/memo-schema-registry.md. Mutually exclusive with `memo`.");
 
 export function registerTransferTools(server: McpServer): void {
   server.tool(
@@ -18,13 +30,31 @@ export function registerTransferTools(server: McpServer): void {
       amount: z.string().describe("Amount to transfer, e.g. '1.5' for SOL or '1500000000' for lamports"),
       unit: z.enum(["sol", "lamports"]).default("sol").optional(),
       from_wallet: z.string().optional().describe("Wallet ID to send from; defaults to the active wallet"),
-      memo: z.string().optional().describe("Optional memo string anchored on-chain via SPL Memo Program v2; becomes part of the transaction signature so distinct memos never coalesce"),
+      memo: z.string().optional().describe("Optional memo string anchored on-chain via SPL Memo Program v2; becomes part of the transaction signature so distinct memos never coalesce. Mutually exclusive with `typed_memo`."),
+      typed_memo: TYPED_MEMO_SHAPE.optional(),
       idempotency_key: z.string().optional().describe("Optional caller-supplied uniqueness suffix. Use when sending parallel transfers that share from/to/amount/memo to guarantee distinct submissions."),
       skip_simulation: z.boolean().default(false).optional(),
     },
     async (args) => {
       try {
-        const { to, amount, unit = "sol", from_wallet, memo, idempotency_key, skip_simulation = false } = args;
+        const { to, amount, unit = "sol", from_wallet, memo: rawMemo, typed_memo, idempotency_key, skip_simulation = false } = args;
+
+        if (rawMemo !== undefined && typed_memo !== undefined) {
+          return {
+            content: [{ type: "text" as const, text: "Provide either `memo` or `typed_memo`, not both." }],
+          };
+        }
+
+        let memo: string | undefined = rawMemo;
+        if (typed_memo !== undefined) {
+          try {
+            memo = encodeMemo(typed_memo.type, typed_memo.payload);
+          } catch (encErr: any) {
+            return {
+              content: [{ type: "text" as const, text: `Error encoding typed_memo: ${encErr?.message ?? String(encErr)}` }],
+            };
+          }
+        }
 
         // Resolve sender wallet
         const walletId = from_wallet ?? getActiveWalletId();
@@ -121,13 +151,14 @@ export function registerTransferTools(server: McpServer): void {
 
   server.tool(
     "batch_transfer",
-    "Executes multiple native SOL transfers sequentially from a single sender wallet. Accepts an array of up to 20 transfer objects, each specifying a recipient address and amount in SOL. An optional per-transfer memo field is supported. All transfers share the same sender wallet (from_wallet or the active wallet). Returns a summary of successful and failed transfers with individual signatures.",
+    "Executes multiple native SOL transfers sequentially from a single sender wallet. Accepts an array of up to 20 transfer objects, each specifying a recipient address, amount in SOL, and an optional per-transfer `memo` (free-form) or `typed_memo` (encoded via the memo schema registry — see docs/memo-schema-registry.md). `memo` and `typed_memo` are mutually exclusive per entry. All transfers share the same sender wallet (from_wallet or the active wallet). Returns a summary of successful and failed transfers with individual signatures.",
     {
       transfers: z.array(
         z.object({
           to: z.string().describe("Recipient address (base58 or 0x)"),
           amount: z.string().describe("Amount in SOL"),
           memo: z.string().optional(),
+          typed_memo: TYPED_MEMO_SHAPE.optional(),
         })
       ).max(20).describe("List of transfers to execute (max 20)"),
       from_wallet: z.string().optional().describe("Wallet ID to send from; defaults to active wallet"),
@@ -157,9 +188,25 @@ export function registerTransferTools(server: McpServer): void {
         let lastBlockhash: string | null = null;
 
         for (let i = 0; i < transfers.length; i++) {
-          const { to, amount, memo } = transfers[i];
+          const { to, amount, memo: rawMemo, typed_memo } = transfers[i];
 
           try {
+            if (rawMemo !== undefined && typed_memo !== undefined) {
+              failCount++;
+              results.push(`[${i + 1}] ERROR  to=${to}  amount=${amount} SOL  error=Provide either \`memo\` or \`typed_memo\`, not both.`);
+              continue;
+            }
+            let memo: string | undefined = rawMemo;
+            if (typed_memo !== undefined) {
+              try {
+                memo = encodeMemo(typed_memo.type, typed_memo.payload);
+              } catch (encErr: any) {
+                failCount++;
+                results.push(`[${i + 1}] ERROR  to=${to}  amount=${amount} SOL  error=encode typed_memo: ${encErr?.message ?? String(encErr)}`);
+                continue;
+              }
+            }
+
             const toAddresses = resolveAddresses(to);
             const toSvm = toAddresses.svm;
             const lamports = solToLamports(amount);
