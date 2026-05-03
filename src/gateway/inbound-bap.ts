@@ -186,6 +186,47 @@ export function validateBecknEnvelope(
 
   return { ok: true };
 }
+/**
+ * Narrow helper exported for callers to run *only* the TTL-freshness expiry
+ * check (returns identical NACK body shape as validateBecknEnvelope).
+ * This lets inbound-bap.ts call it explicitly after ajv to match FN-074 parity
+ * and avoids logic drift by centralizing the parse+expiry math.
+ */
+export function validateBecknEnvelopeFreshness(
+  ctx: unknown,
+  now?: number,
+): { ok: true } | { ok: false; status: 400; body: NackBody } {
+  const c = ctx as Record<string, unknown> | null | undefined;
+
+  const ts = c && typeof c["timestamp"] === "string" ? c["timestamp"] : undefined;
+  const ttl = c && typeof c["ttl"] === "string" ? c["ttl"] : undefined;
+
+  if (ttl && ts) {
+    const ttlMs = parseIso8601DurationMs(ttl);
+    if (ttlMs !== null) {
+      const expiresAt = Date.parse(ts) + ttlMs;
+      const effectiveNow = now ?? Date.now();
+      if (expiresAt < effectiveNow) {
+        return {
+          ok: false,
+          status: 400,
+          body: {
+            message: { ack: { status: "NACK" } },
+            error: {
+              code: "EXPIRED_TTL",
+              message: `envelope expired: timestamp ${ts} + ttl ${ttl} = ${new Date(
+                expiresAt
+              ).toISOString()} which is before now (${new Date(effectiveNow).toISOString()})`,
+            },
+            context: ctx,
+          },
+        };
+      }
+    }
+  }
+
+  return { ok: true };
+}
 
 export type { BecknAction };
 
@@ -198,7 +239,8 @@ export interface InboundBapDeps {
 
 export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
   app.post("/search", async (req: Request, res: Response) => {
-    const envResult = validateBecknEnvelope((req.body as Record<string, unknown> | undefined)?.context);
+    const now = Date.now();
+    const envResult = validateBecknEnvelope((req.body as Record<string, unknown> | undefined)?.context, now);
     if (!envResult.ok) {
       res.status(envResult.status).json(envResult.body);
       return;
@@ -209,6 +251,11 @@ export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
         error: "beckn_validation_failed",
         details: v.errors,
       });
+      return;
+    }
+    const fresh = validateBecknEnvelopeFreshness((req.body as Record<string, unknown> | undefined)?.context, now);
+    if (!fresh.ok) {
+      res.status(fresh.status).json(fresh.body);
       return;
     }
     try {
@@ -226,7 +273,8 @@ export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
   });
 
   app.post("/select", async (req: Request, res: Response) => {
-    const envResult = validateBecknEnvelope((req.body as Record<string, unknown> | undefined)?.context);
+    const now = Date.now();
+    const envResult = validateBecknEnvelope((req.body as Record<string, unknown> | undefined)?.context, now);
     if (!envResult.ok) {
       res.status(envResult.status).json(envResult.body);
       return;
@@ -234,6 +282,11 @@ export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
     const v = validateBecknRequest("select", req.body);
     if (!v.ok) {
       res.status(400).json({ error: "beckn_validation_failed", details: v.errors });
+      return;
+    }
+    const fresh = validateBecknEnvelopeFreshness((req.body as Record<string, unknown> | undefined)?.context, now);
+    if (!fresh.ok) {
+      res.status(fresh.status).json(fresh.body);
       return;
     }
     try {
