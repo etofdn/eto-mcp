@@ -22,11 +22,16 @@
 // downstream consumers (FN-132 1099 issuer, FN-133 travel-rule
 // generator) can hash the output for caching / diffing.
 //
-// **v0 caveat — UNSIGNED.** The `issuer` field is a placeholder DID
-// (`did:eto:indexer:audit-trail:v0`). This audit feed is NOT
-// cryptographically signed in v0; downstream consumers must treat the
-// document as derived data, not as proof. Signing (VC-JOSE / Ed25519)
-// is a follow-up task.
+// **Signing (FN-084).** The indexer accepts an optional `signer:
+// VcSigner`. When `signer` is omitted OR is a `NoOpVcSigner`, the feed
+// is byte-identical to the v0 unsigned output: `issuer` is the
+// placeholder DID `did:eto:indexer:audit-trail:v0` and the document
+// carries no `proof` block. When a real `Ed25519VcSigner` is injected,
+// `issuer` is overridden with `signer.issuerDid` and a populated
+// `Ed25519Signature2020` `proof` block is appended whose `proofValue`
+// is `base64url(ed25519_sign(sha256(JCS(vcWithoutProof))))` (the §11.4
+// `claim_hash` invariant — the proof block itself is excluded from the
+// hash input).
 //
 // **Determinism guarantees.** Given identical event inputs and bounds,
 // `buildAuditFeed` MUST produce a byte-identical document apart from
@@ -39,6 +44,11 @@ import {
   kytTraceEventSchema,
   revocationRootUpdatedEventSchema,
 } from "./audit-trail.types.js";
+import {
+  NoOpVcSigner,
+  type Ed25519Signature2020Proof,
+  type VcSigner,
+} from "./vc-signer.js";
 
 export type {
   CounterpartyWire,
@@ -303,7 +313,11 @@ export interface AuditFeedJsonLd {
   "@context": readonly [typeof AUDIT_TRAIL_CONTEXT_VC, typeof AUDIT_TRAIL_CONTEXT_ETO];
   id: string;
   type: readonly ["VerifiableCredential", "AuditTrailFeed"];
-  issuer: typeof AUDIT_TRAIL_ISSUER_DID;
+  /**
+   * Defaults to `AUDIT_TRAIL_ISSUER_DID`. When a non-NoOp `signer` is
+   * injected, this is overridden with `signer.issuerDid` (FN-084).
+   */
+  issuer: string;
   issuanceDate: string;
   credentialSubject: {
     id: string;
@@ -312,6 +326,8 @@ export interface AuditFeedJsonLd {
     events: readonly AuditFeedEvent[];
     summary: AuditFeedSummary;
   };
+  /** FN-084: present iff a non-NoOp `VcSigner` was injected. */
+  proof?: Ed25519Signature2020Proof;
 }
 
 // ---------------------------------------------------------------------
@@ -334,6 +350,12 @@ export interface AuditTrailIndexerDeps {
   logger?: AuditLogger;
   /** Defaults to `() => new Date()`. Tests inject a fixed clock. */
   clock?: () => Date;
+  /**
+   * Optional VC signer (FN-084). When omitted or set to a
+   * `NoOpVcSigner`, the emitted feed is byte-identical to v0 (no
+   * `proof` block, original placeholder issuer DID).
+   */
+  signer?: VcSigner;
 }
 
 const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]+$/;
@@ -401,11 +423,13 @@ export class AuditTrailIndexer {
   private readonly source: KytEventSource;
   private readonly logger?: AuditLogger;
   private readonly clock: () => Date;
+  private readonly signer?: VcSigner;
 
   public constructor(deps: AuditTrailIndexerDeps) {
     this.source = deps.source;
     if (deps.logger) this.logger = deps.logger;
     this.clock = deps.clock ?? (() => new Date());
+    if (deps.signer) this.signer = deps.signer;
   }
 
   public async buildAuditFeed(
@@ -565,6 +589,17 @@ export class AuditTrailIndexer {
       kytCount: summary.kytCount,
       revocationCount: summary.revocationCount,
     });
+
+    // FN-084: attach Ed25519Signature2020 proof when a real signer is
+    // injected. NoOpVcSigner short-circuits to v0 unsigned output.
+    if (this.signer && !(this.signer instanceof NoOpVcSigner)) {
+      const issuerDid = this.signer.issuerDid;
+      const feedWithIssuer: AuditFeedJsonLd = { ...feed, issuer: issuerDid };
+      const proof = await this.signer.sign(
+        feedWithIssuer as unknown as Record<string, unknown>,
+      );
+      return { ...feedWithIssuer, proof };
+    }
 
     return feed;
   }

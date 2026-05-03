@@ -324,56 +324,13 @@ export function buildBankFiatRampTestVc(
   };
 }
 
-/**
- * Minimal JCS (RFC 8785) canonicalization sufficient for the VC
- * shape we emit: ordered object keys (lexicographic over UTF-16 code
- * units), arrays preserved in source order, no insignificant
- * whitespace. We never emit non-integer numbers in the VC.
- *
- * Kept inline so the adapter remains a single-file unit-of-review;
- * if a fourth issuer needs JCS we'll lift this into a shared module.
- */
-export function jcsCanonicalize(value: unknown): string {
-  return jcsStringify(value);
-}
-
-function jcsStringify(value: unknown): string {
-  if (value === null) return "null";
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) {
-      throw new Error("jcsCanonicalize: non-finite number");
-    }
-    if (!Number.isInteger(value)) {
-      throw new Error("jcsCanonicalize: non-integer numbers not supported");
-    }
-    return value.toString();
-  }
-  if (typeof value === "string") return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return `[${value.map((v) => jcsStringify(v)).join(",")}]`;
-  }
-  if (typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    const keys = Object.keys(obj).sort(jcsCompareUtf16);
-    const parts = keys.map(
-      (k) => `${JSON.stringify(k)}:${jcsStringify(obj[k])}`,
-    );
-    return `{${parts.join(",")}}`;
-  }
-  throw new Error(`jcsCanonicalize: unsupported type ${typeof value}`);
-}
-
-/** Lexicographic compare over UTF-16 code units, per RFC 8785 §3.2.3. */
-function jcsCompareUtf16(a: string, b: string): number {
-  const len = Math.min(a.length, b.length);
-  for (let i = 0; i < len; i += 1) {
-    const ca = a.charCodeAt(i);
-    const cb = b.charCodeAt(i);
-    if (ca !== cb) return ca - cb;
-  }
-  return a.length - b.length;
-}
+// JCS (RFC 8785) canonicalization was originally inlined here; FN-084
+// became the fourth caller (audit-trail + travel-rule signing) so the
+// implementation now lives in `src/utils/jcs.ts`. The re-export below
+// keeps `jcsCanonicalize` part of this module's public surface for
+// existing downstream callers (issuer modules, tests).
+import { jcsCanonicalize } from "../utils/jcs.js";
+export { jcsCanonicalize };
 
 /**
  * Compute the SHA-256 digest of a UTF-8 string and return it as a

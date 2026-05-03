@@ -271,6 +271,79 @@ lines via Solana JSON-RPC `logsSubscribe`. Consumed downstream by the
 1099 issuer (FN-132) and travel-rule generator (FN-133). Tests use the
 shipped `InMemoryKytEventSource` reference implementation.
 
+#### Audit-trail persistence (FN-083)
+
+A Postgres-backed `PostgresKytEventSource` is available as a drop-in
+replacement for `InMemoryKytEventSource`. Configure it via the
+`AUDIT_DB_URL` environment variable (a standard `postgres://…` connection
+string). When `AUDIT_DB_URL` is unset the `createKytEventSourceFromEnv`
+factory returns an empty `InMemoryKytEventSource` as a safe fallback.
+
+**Migration** (run once against the target database):
+
+```sh
+psql "$AUDIT_DB_URL" -f scripts/migrations/001_kyt_events.sql
+```
+
+The migration is idempotent (`CREATE TABLE IF NOT EXISTS`) and creates
+two tables — `kyt_events` and `revocation_events` — that together hold
+every `KytTrace` and `RevocationRootUpdated` event observed on-chain.
+
+**FATF R.11 retention.** FATF Recommendation 11 requires virtual-asset
+service providers to retain transfer records for at least **five years**.
+These tables satisfy that requirement. Do not DELETE or TRUNCATE them in
+production.
+
+#### Compliance VC signing (FN-084)
+
+The `AuditTrailIndexer` (FN-130) and `TravelRuleReportGenerator` (FN-133)
+both accept an optional `signer: VcSigner`. When provided with a real
+`Ed25519VcSigner`, the emitted `AuditFeedJsonLd` /
+`TravelRuleReportJsonLd` carry a populated W3C VC Data Integrity
+`Ed25519Signature2020` `proof` block:
+
+```
+proofValue = base64url(ed25519_sign(sha256(JCS(vcWithoutProof))))
+```
+
+where `JCS` is RFC 8785 canonical JSON (see `src/utils/jcs.ts`). The
+`proof` block itself is **excluded** from the hash input — this matches
+the `claim_hash = sha256(JCS(vcWithoutProof))` invariant from spec
+§11.4. The signer's `issuerDid` overrides the placeholder issuer DID
+(`did:eto:indexer:audit-trail:v0` / `…:travel-rule:v0`) inside the
+canonicalised input.
+
+**`AUDIT_SIGNING_KEY_PATH` env var.** The factory
+`createVcSignerFromEnv({ issuerDid })` returns:
+
+- `Ed25519VcSigner.fromKeyFile(...)` when `AUDIT_SIGNING_KEY_PATH` is a
+  non-empty path.
+- `NoOpVcSigner` otherwise. **`NoOpVcSigner` is the default** and
+  short-circuits both indexers to byte-identical-to-v0 output (no
+  `proof` block, original placeholder issuer DID). Existing callers
+  that don't opt into signing keep working unchanged.
+
+**Supported key file formats:**
+
+- Raw 32-byte file → seed.
+- Raw 64-byte file → first 32 bytes used as seed (nacl-style).
+- Hex-encoded text (64 or 128 hex chars, optional trailing newline).
+- PEM PKCS#8 Ed25519 (e.g. produced by
+  `openssl genpkey -algorithm ED25519 -out audit.pem`).
+
+Generate a key:
+
+```sh
+openssl genpkey -algorithm ED25519 -out audit.pem
+export AUDIT_SIGNING_KEY_PATH=$PWD/audit.pem
+```
+
+**Do not log or persist the secret key** — only the public DID and the
+emitted `proof` block leave the signer.
+
+Follow-ups (out of scope for FN-084): key rotation, multi-key
+`verificationMethod`, `did:web` resolution, HSM/KMS-backed signers.
+
 ### 1099 issuance flow sketch (`@eto/mcp` → `keeper/bpps/bank/handlers/tax-1099-sketch.ts`)
 
 T-3.13.1.3 / FN-132. Manually-triggered bank-as-BPP flow that, given a

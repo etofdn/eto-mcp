@@ -147,8 +147,10 @@ export {
   AuditTrailIndexer,
   AuditTrailIndexerError,
   InMemoryKytEventSource,
+  PostgresKytEventSource,
   buildAuditFeed,
   counterpartyWireSchema,
+  createKytEventSourceFromEnv,
   kytStageWireSchema,
   kytTraceEventSchema,
   partyTraceWireSchema,
@@ -171,6 +173,7 @@ export type {
   KytStageWire,
   KytTraceEvent,
   PartyTraceWire,
+  PostgresKytEventSourceInit,
   RevocationRootUpdatedEvent,
 } from "./services/indexer/index.js";
 
@@ -219,4 +222,35 @@ export type {
   TravelRuleReportGeneratorDeps,
   TravelRuleReportJsonLd,
 } from "./services/indexer/travel-rule.js";
+
+// FN-084: VC signer abstraction (Ed25519Signature2020) used by the
+// audit-trail and travel-rule indexers above.
+export {
+  Ed25519VcSigner,
+  NoOpVcSigner,
+  createVcSignerFromEnv,
+  proofPreimage,
+} from "./services/indexer/vc-signer.js";
+export type {
+  CreateVcSignerFromEnvOpts,
+  Ed25519Signature2020Proof,
+  Ed25519VcSignerFromKeyFileInit,
+  Ed25519VcSignerInit,
+  VcSigner,
+} from "./services/indexer/vc-signer.js";
+
+// VC signing for the audit-trail / travel-rule indexers (FN-084).
+export {
+  Ed25519VcSigner,
+  NoOpVcSigner,
+  createVcSignerFromEnv,
+  proofPreimage,
+} from "./services/indexer/vc-signer.js";
+export type {
+  CreateVcSignerFromEnvOpts,
+  Ed25519Signature2020Proof,
+  Ed25519VcSignerFromKeyFileInit,
+  Ed25519VcSignerInit,
+  VcSigner,
+} from "./services/indexer/vc-signer.js";
 
