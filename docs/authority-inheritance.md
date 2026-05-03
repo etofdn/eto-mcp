@@ -374,19 +374,19 @@ when filed:
    verified `SessionClaims`, and update `parseAgentState` in
    `src/tools/agent.ts` to decode the new fields per §4.1. Includes the
    `BindAgentAuthority` opt-in instruction for legacy accounts.
-   - **Filed as:** _to be recorded after `fn_task_create`_
+   - **Filed as:** **FN-044**
 
 2. **`create_a2a_channel` authorization fast-path.** Wire
    `sharesHumanAuthority` into the `create_a2a_channel` handler in
    `src/tools/a2a.ts` per §5.1. Must not regress the legacy / no-binding
    path.
-   - **Filed as:** _to be recorded after `fn_task_create`_
+   - **Filed as:** **FN-045** (depends on FN-044)
 
 3. **`join_swarm` authorization fast-path.** Wire `sharesHumanAuthority`
    into the `join_swarm` handler in `src/tools/swarm.ts` per §5.2. Iterates
    members; bypasses invitation/stake gates only when at least one member
    shares the caller's `human_authority`.
-   - **Filed as:** _to be recorded after `fn_task_create`_
+   - **Filed as:** **FN-046** (depends on FN-044)
 
 ---
 
