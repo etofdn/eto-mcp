@@ -47,7 +47,7 @@ Or add manually to `~/.claude/claude_desktop_config.json`:
 ### All Categories
 | Category | Tools | Count |
 |----------|-------|-------|
-| Query | get_balance, get_account, get_transaction, get_block, search, get_chain_stats, get_block_height, get_account_transactions | 8 |
+| Query | get_balance, get_account, get_transaction, get_block, search, get_chain_stats, get_block_height, get_account_transactions, query_memos | 9 |
 | Wallet | create_wallet, import_wallet, list_wallets, get_wallet, set_active_wallet, derive_address | 6 |
 | Transfer | transfer_native, batch_transfer, estimate_fee | 3 |
 | Token | create_token, mint_tokens, transfer_token, burn_tokens, get_token_info, get_token_balance, list_token_holdings, freeze_token_account | 8 |
