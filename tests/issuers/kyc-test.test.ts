@@ -11,7 +11,7 @@
  * only. The boundary invariant we lock here is therefore "the schema
  * id, the bridge nullifier, and the kycLevel='mock-test' marker are
  * all present so a relying party cannot mistake this for real KYC".
- * See FN-018 follow-up FN-018F-1 for the upgrade path.
+ * See FN-018 follow-up FN-072 for the upgrade path.
  */
 
 import { createHash } from "node:crypto";
@@ -292,7 +292,7 @@ describe("kyc.us-test issuer — boundary suite (FN-018)", () => {
     // `kycLevel: "mock-test"` so a relying party cannot mistake it
     // for real KYC. We pin the exact field set so any future change
     // either flows through this test (and the spec) or tightens the
-    // contract on purpose. See FN-018 follow-up FN-018F-1 for the
+    // contract on purpose. See FN-018 follow-up FN-072 for the
     // hash-the-PII upgrade path.
     const vc = buildKycTestVc({
       agentCardPubkey: CARD_A,
