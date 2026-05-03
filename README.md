@@ -315,24 +315,39 @@ allows tests to pin `issuanceDate` for deterministic assertions.
 
 ### Audit / travel-rule signing (`@eto/mcp` → `src/services/indexer/vc-signer.ts`)
 
-FN-084. Compliance-grade `Ed25519Signature2020` proof blocks for the
-audit-trail and travel-rule JSON-LD documents per the W3C VC Data
-Integrity 1.0 spec. Signing is **opt-in**: the default `NoOpVcSigner`
-emits the historical unsigned shape (no `proof` key, byte-stable
-against pre-FN-084 fixtures). To enable signing, set
-`AUDIT_SIGNING_KEY_PATH` and inject `createVcSignerFromEnv({ issuerDid })`
-into `AuditTrailIndexerDeps.signer` / `TravelRuleReportGeneratorDeps.signer`.
+FN-084 + FN-030. Compliance-grade W3C VC Data Integrity proof blocks
+for the audit-trail and travel-rule JSON-LD documents. Three proof
+suites are supported, all sharing the same canonical preimage — only
+the signature container differs:
 
-**Env var.**
+| `VC_PROOF_SUITE` value     | Proof `type`              | Container                                       |
+| -------------------------- | ------------------------- | ----------------------------------------------- |
+| `Ed25519Signature2020`     | `Ed25519Signature2020`    | `proofValue` = base64url(Ed25519(digest))       |
+| `JsonWebSignature2020`     | `JsonWebSignature2020`    | `jws` = detached JWS, alg=EdDSA, b64=false      |
+| `cose-2024`                | `DataIntegrityProof`      | `proofValue` = base64url(COSE_Sign1(digest))    |
+
+Signing is **opt-in**: the default `NoOpVcSigner` emits the historical
+unsigned shape (no `proof` key, byte-stable against pre-FN-084
+fixtures). To enable signing, set `AUDIT_SIGNING_KEY_PATH` and inject
+`createVcSignerFromEnv({ issuerDid })` into
+`AuditTrailIndexerDeps.signer` / `TravelRuleReportGeneratorDeps.signer`.
+
+**Env vars.**
 
 - `AUDIT_SIGNING_KEY_PATH` — filesystem path to a 32-byte Ed25519 seed.
   The file may be raw 32 bytes, hex (with or without `0x` prefix), or
   base64 / base64url. Anything else throws `expected 32-byte Ed25519
   seed`. The loaded secret is never logged or echoed back in error
   messages.
+- `VC_PROOF_SUITE` — one of `Ed25519Signature2020` (default),
+  `JsonWebSignature2020`, or `cose-2024`. Unknown values throw
+  `VC_PROOF_SUITE: unsupported value <x>`. With `AUDIT_SIGNING_KEY_PATH`
+  unset, the value is ignored and `NoOpVcSigner` is returned.
 
-**Proof block shape.** Attached as `feed.proof` /
-`report.proof` when a non-NoOp signer is configured:
+**Proof block shapes.** Attached as `feed.proof` / `report.proof` when
+a non-NoOp signer is configured.
+
+*`Ed25519Signature2020` (legacy default):*
 
 ```jsonc
 {
@@ -344,7 +359,40 @@ into `AuditTrailIndexerDeps.signer` / `TravelRuleReportGeneratorDeps.signer`.
 }
 ```
 
-**Hash input (spec §11.4).** `claim_hash = sha256(JCS(vcWithoutProof))`.
+*`JsonWebSignature2020` (RFC 7515 §A.5 detached JWS):*
+
+```jsonc
+{
+  "type": "JsonWebSignature2020",
+  "created": "...",
+  "verificationMethod": "<issuerDid>#key-1",
+  "proofPurpose": "assertionMethod",
+  // header = {"alg":"EdDSA","b64":false,"crit":["b64"]}
+  // signing input = utf8(encodedHeader || ".") || sha256(JCS(vcWithoutProof))
+  "jws": "<encodedHeader>..<base64urlSig>",
+  "proofValue": "<same string as jws>"
+}
+```
+
+*`DataIntegrityProof` with `cryptosuite: "cose-2024"` (COSE_Sign1):*
+
+```jsonc
+{
+  "type": "DataIntegrityProof",
+  "cryptosuite": "cose-2024",
+  "created": "...",
+  "verificationMethod": "<issuerDid>#key-1",
+  "proofPurpose": "assertionMethod",
+  // base64url of CBOR tag 18 [protected, {}, payload, signature]
+  // protected = bstr({1: -8})  // alg = EdDSA
+  // payload   = sha256(JCS(vcWithoutProof))     (32 bytes)
+  // signature = Ed25519 over Sig_structure       (64 bytes)
+  "proofValue": "<base64url(COSE_Sign1)>"
+}
+```
+
+**Hash input (spec §11.4).** `claim_hash = sha256(JCS(vcWithoutProof))`
+applies to **all three suites** — only the signature container differs.
 The `proof` block itself is **excluded** from the JCS preimage; the
 indexer wiring strips it before calling `signer.sign(...)` and only
 attaches the returned proof afterwards.
