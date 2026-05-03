@@ -2,6 +2,12 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { rpc } from "../read/rpc-client.js";
 import { lamportsToSol, solToLamports } from "../utils/units.js";
+import { getSignerFactory } from "../signing/index.js";
+import { getActiveWalletId } from "./wallet.js";
+import { buildTransferTx } from "../wasm/index.js";
+import { blockhashCache } from "../write/blockhash-cache.js";
+import { submitter } from "../write/submitter.js";
+import { resolveAddresses } from "../utils/address.js";
 
 // Dispatcher map for tools executable directly via RPC in batch context
 const toolDispatch: Record<string, (params: any) => Promise<string>> = {
@@ -42,6 +48,49 @@ const toolDispatch: Record<string, (params: any) => Promise<string>> = {
   get_account_transactions: async (p) => {
     const txs = await rpc.etoGetAccountTransactions(p.address, p.limit ?? 20, p.offset ?? 0);
     return txs ? JSON.stringify(txs, null, 2) : `No transactions found for ${p.address}`;
+  },
+  transfer_native: async (p) => {
+    const to: string = p.to;
+    const amount: string = String(p.amount);
+    const unit: "sol" | "lamports" = p.unit ?? "sol";
+    const fromWallet: string | undefined = p.from_wallet;
+    const memo: string | undefined = p.memo;
+    const idempotencyKeyIn: string | undefined = p.idempotency_key;
+
+    const walletId = fromWallet ?? getActiveWalletId();
+    if (!walletId) {
+      throw new Error("No wallet specified and no active wallet set. Use set_active_wallet or provide from_wallet.");
+    }
+
+    const factory = getSignerFactory();
+    const signer = await factory.getSigner(walletId);
+    const fromSvm = signer.getPublicKey();
+
+    const toSvm = resolveAddresses(to).svm;
+    const lamports = unit === "lamports" ? BigInt(amount) : solToLamports(amount);
+
+    const { blockhash } = await blockhashCache.getBlockhash();
+    const txBytes = buildTransferTx(fromSvm, toSvm, lamports, blockhash, memo);
+    const signedBytes = await signer.sign(txBytes);
+    const signedBase64 = Buffer.from(signedBytes).toString("base64");
+
+    const memoSuffix = memo ? `-m:${memo}` : "";
+    const userSuffix = idempotencyKeyIn ? `-i:${idempotencyKeyIn}` : "";
+    const idemKey = `transfer-${fromSvm}-${toSvm}-${lamports}-${blockhash}${memoSuffix}${userSuffix}`;
+
+    const result = await submitter.submitAndConfirm({
+      signedTxBase64: signedBase64,
+      vm: "svm",
+      idempotencyKey: idemKey,
+    });
+
+    if (result.status === "confirmed" || result.status === "finalized") {
+      return `Transferred ${lamportsToSol(lamports)} ETO to ${toSvm}. Signature: ${result.signature}${result.coalesced ? " (coalesced)" : ""}`;
+    }
+    if (result.status === "timeout") {
+      return `Transfer submitted; confirmation timed out. Signature: ${result.signature}. Verify via get_transaction.`;
+    }
+    throw new Error(result.error?.explanation ?? result.error?.raw_message ?? "transfer failed");
   },
 };
 
