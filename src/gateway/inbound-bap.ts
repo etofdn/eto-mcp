@@ -169,6 +169,15 @@ export function validateBecknEnvelope(
     const expiresAt = Date.parse(ts) + ttlMs;
     const effectiveNow = now ?? Date.now();
     if (expiresAt < effectiveNow) {
+      // debug for FN-188 flaky PT30S
+      console.error(
+        "[ENVELOPE-EXPIRED]",
+        "ts=", ts,
+        "ttlMs=", ttlMs,
+        "expires=", new Date(expiresAt).toISOString(),
+        "now=", new Date(effectiveNow).toISOString(),
+        "deltaMs=", expiresAt - effectiveNow
+      );
       return {
         ok: false,
         status: 400,
@@ -239,7 +248,8 @@ export interface InboundBapDeps {
 
 export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
   app.post("/search", async (req: Request, res: Response) => {
-    const envResult = validateBecknEnvelope((req.body as Record<string, unknown> | undefined)?.context);
+    const now = Date.now();
+    const envResult = validateBecknEnvelope((req.body as Record<string, unknown> | undefined)?.context, now);
     if (!envResult.ok) {
       res.status(envResult.status).json(envResult.body);
       return;
@@ -252,7 +262,7 @@ export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
       });
       return;
     }
-    const fresh = validateBecknEnvelopeFreshness((req.body as Record<string, unknown> | undefined)?.context);
+    const fresh = validateBecknEnvelopeFreshness((req.body as Record<string, unknown> | undefined)?.context, now);
     if (!fresh.ok) {
       res.status(fresh.status).json(fresh.body);
       return;
@@ -272,7 +282,8 @@ export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
   });
 
   app.post("/select", async (req: Request, res: Response) => {
-    const envResult = validateBecknEnvelope((req.body as Record<string, unknown> | undefined)?.context);
+    const now = Date.now();
+    const envResult = validateBecknEnvelope((req.body as Record<string, unknown> | undefined)?.context, now);
     if (!envResult.ok) {
       res.status(envResult.status).json(envResult.body);
       return;
@@ -282,7 +293,7 @@ export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
       res.status(400).json({ error: "beckn_validation_failed", details: v.errors });
       return;
     }
-    const fresh = validateBecknEnvelopeFreshness((req.body as Record<string, unknown> | undefined)?.context);
+    const fresh = validateBecknEnvelopeFreshness((req.body as Record<string, unknown> | undefined)?.context, now);
     if (!fresh.ok) {
       res.status(fresh.status).json(fresh.body);
       return;

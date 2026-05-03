@@ -128,7 +128,7 @@ describe("Beckn v2.0 Envelope Conformance (SB-17..SB-20)", () => {
       context: {
         ...validSearchBody.context,
         ttl: "PT30S", // valid ISO-8601 duration
-        timestamp: new Date().toISOString(),
+        timestamp: new Date(Date.now() + 2000).toISOString(), // fresh safety margin for Wall time between creation & check
       },
     };
     const { status, body: resBody } = await jsonPost(server, "/search", body);
