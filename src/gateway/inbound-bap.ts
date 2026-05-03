@@ -231,13 +231,40 @@ export function validateBecknEnvelopeFreshness(
 export type { BecknAction };
 
 export interface InboundBapDeps {
-  /** Submit an on-chain Beckn instruction. STUBBED today. */
-  submitOnChain: (action: BecknAction, args: unknown) => Promise<{ tx_signature: string }>;
+  /**
+   * Submit an on-chain Beckn instruction. Optional — when omitted the
+   * deps default to the ambient `ChainClient` (FN-091): real
+   * `SvmChainClient` if `ETO_RPC_ENDPOINT` is set, otherwise the
+   * `StubChainClient` that returns deterministic `stub-<hex>` sigs.
+   *
+   * Existing callers that pass an explicit `submitOnChain` continue to
+   * work unchanged — preserves the dep-injection seam used by tests.
+   */
+  submitOnChain?: (action: BecknAction, args: unknown) => Promise<{ tx_signature: string }>;
+  /**
+   * FN-091: optional chain client. If neither this nor `submitOnChain`
+   * is provided, the bridge constructs one via `createDefaultChainClient()`.
+   */
+  chainClient?: import("./chain-client.js").ChainClient;
   /** Resolve catalog responses for a SearchIntent. STUBBED today. */
   pollCatalogResponses?: (intent_hash: string, max: number) => Promise<unknown[]>;
 }
 
 export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
+  // FN-091: resolve effective submit function once at mount time.
+  // Priority: explicit submitOnChain (legacy / test override) > injected
+  // chainClient > ambient default (Stub or Svm depending on env).
+  const resolvedSubmit: (action: BecknAction, args: unknown) => Promise<{ tx_signature: string }> =
+    deps.submitOnChain ??
+    (async (action, args) => {
+      const cc = deps.chainClient ?? (await import("./chain-client.js")).createDefaultChainClient();
+      const r = await cc.submit(action, args);
+      return { tx_signature: r.tx_signature };
+    });
+  // Wrap deps so existing handler bodies keep using `deps.submitOnChain`
+  // without a code shape change.
+  deps = { ...deps, submitOnChain: resolvedSubmit };
+
   app.post("/search", async (req: Request, res: Response) => {
     const now = Date.now();
     const envResult = validateBecknEnvelope((req.body as Record<string, unknown> | undefined)?.context, now);
