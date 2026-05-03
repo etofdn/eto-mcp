@@ -6,7 +6,8 @@ import { buildTransferTx } from "../wasm/index.js";
 import { blockhashCache } from "../write/blockhash-cache.js";
 import { submitter } from "../write/submitter.js";
 import { solToLamports, lamportsToSol } from "../utils/units.js";
-import { resolveAddresses } from "../utils/address.js";
+import { resolveAddressesAsync } from "../utils/address.js";
+import { localSignerFactory } from "../signing/local-signer.js";
 import bs58 from "bs58";
 
 export function registerTransferTools(server: McpServer): void {
@@ -38,8 +39,9 @@ export function registerTransferTools(server: McpServer): void {
         const signer = await factory.getSigner(walletId);
         const fromSvm = signer.getPublicKey();
 
-        // Resolve recipient to SVM address
-        const toAddresses = resolveAddresses(to);
+        // Resolve recipient to SVM address (registry-backed, FN-016)
+        const registry = localSignerFactory.getRegistryForCurrentScope();
+        const toAddresses = await resolveAddressesAsync(to, registry);
         const toSvm = toAddresses.svm;
 
         // Convert amount to lamports
@@ -160,7 +162,8 @@ export function registerTransferTools(server: McpServer): void {
           const { to, amount, memo } = transfers[i];
 
           try {
-            const toAddresses = resolveAddresses(to);
+            const registry = localSignerFactory.getRegistryForCurrentScope();
+            const toAddresses = await resolveAddressesAsync(to, registry);
             const toSvm = toAddresses.svm;
             const lamports = solToLamports(amount);
 
