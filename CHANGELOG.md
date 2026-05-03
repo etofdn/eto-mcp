@@ -34,7 +34,6 @@
 
 - Add Marqeta integration v0.5 placeholder + swap-surface checklist ([`a7dc246`](a7dc24602e5f7cb586d95681a0ed1cddcd837b77))
 - Audit cast_call vs read_contract — document return-format difference ([#23](https://github.com/etofdn/eto-mcp/issues/23)) ([`62fc53a`](62fc53aeec203b3b0935cb03ab3954516b471672))
-- Add CHANGELOG entry for tool-description disambiguation ([#17](https://github.com/etofdn/eto-mcp/issues/17)) ([`9e7d168`](9e7d1686469d236ee7e7fa655530be9f34527c15))
 
 ### Features
 
@@ -67,6 +66,9 @@
 - Update read_contract description to note raw-hex return and cast_call alternative ([#27](https://github.com/etofdn/eto-mcp/issues/27)) ([`49b3550`](49b3550a4a63f380ac6af37e9e4b7013f3fc9ea0))
 - Update cast_call description with contrast vs read_contract ([#28](https://github.com/etofdn/eto-mcp/issues/28)) ([`8b14a2c`](8b14a2cd9c492d77def6722fda4b09dd1425a6ee))
 - Update forge_create description to clarify low-level raw deploy path ([#29](https://github.com/etofdn/eto-mcp/issues/29)) ([`71fb4e7`](71fb4e7998ac5abe4ca2ba7a19a5c18b1704175c))
+- Wire IssueCardDeps.recordCard to shared bank credential ledger ([#48](https://github.com/etofdn/eto-mcp/issues/48)) ([`7b575e5`](7b575e5f282952f28a29456133a88d3640d2f477))
+- Add changeset for Poseidon-2 swap and VK regeneration note ([#50](https://github.com/etofdn/eto-mcp/issues/50)) ([`da71e91`](da71e91e21955d911109a40f67e00ed913849dfc))
+- Merge fusion/fn-083 ([`a3efddb`](a3efddb0c81dcc3fab579245a5846cf02a142d72))
 
 ### Refactor
 
