@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eto.fdn/spec/memo-schemas/coordination_log.v1.json",
+  "title": "eto.memo.coordination_log.v1 payload",
+  "description": "Payload portion of an eto.memo.coordination_log.v1 envelope. A single A2A task lifecycle event suitable for replay and audit.",
+  "type": "object",
+  "required": ["event", "task_id", "actor"],
+  "additionalProperties": false,
+  "properties": {
+    "event": {
+      "type": "string",
+      "enum": ["task_offered", "task_accepted", "task_completed", "task_cancelled"],
+      "description": "Lifecycle transition this record represents."
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Stable identifier for the task across the full lifecycle."
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Identifier of the agent emitting this event (DID or wallet address)."
+    },
+    "peer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Optional counterparty agent identifier."
+    },
+    "parent_event": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Optional reference to a prior event (e.g. signature or memo digest) this event responds to."
+    }
+  }
+}

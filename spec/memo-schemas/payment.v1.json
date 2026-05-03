@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eto.fdn/spec/memo-schemas/payment.v1.json",
+  "title": "eto.memo.payment.v1 payload",
+  "description": "Payload portion of an eto.memo.payment.v1 envelope. Annotates a value transfer with billing intent.",
+  "type": "object",
+  "required": ["purpose", "invoice_id"],
+  "additionalProperties": false,
+  "properties": {
+    "purpose": {
+      "type": "string",
+      "enum": ["service", "escrow", "refund", "tip"],
+      "description": "Reason for the transfer."
+    },
+    "invoice_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Caller-supplied invoice or charge identifier."
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Optional A2A task identifier this payment settles."
+    },
+    "unit_price_lamports": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional unit price in lamports (per-quantity)."
+    },
+    "quantity": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optional quantity multiplier; total = unit_price_lamports * quantity."
+    }
+  }
+}

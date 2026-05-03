@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eto.fdn/spec/memo-schemas/eval_score.v1.json",
+  "title": "eto.memo.eval_score.v1 payload",
+  "description": "Payload portion of an eto.memo.eval_score.v1 envelope. One agent's evaluation of another agent on a single named metric.",
+  "type": "object",
+  "required": ["subject", "metric", "score", "evaluator"],
+  "additionalProperties": false,
+  "properties": {
+    "subject": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Identifier of the agent being evaluated (DID or wallet address)."
+    },
+    "metric": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Short metric label, e.g. 'response_quality' or 'on_time_delivery'."
+    },
+    "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Normalized score in [0, 1]."
+    },
+    "evaluator": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Identifier of the agent producing the evaluation (DID or wallet address)."
+    },
+    "evidence_uri": {
+      "type": "string",
+      "format": "uri",
+      "description": "Optional pointer to off-chain evidence (transcript, eval run, etc.)."
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 280,
+      "description": "Optional free-form note (≤280 chars to preserve memo size budget)."
+    }
+  }
+}
