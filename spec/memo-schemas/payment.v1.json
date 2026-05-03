@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://eto.fdn/spec/memo-schemas/payment.v1.json",
-  "title": "eto.memo.payment.v1 payload",
-  "description": "Payload portion of an eto.memo.payment.v1 envelope. Annotates a value transfer with billing intent.",
+  "title": "eto.memo.payment.v1",
+  "description": "Payload schema for a structured payment memo. Validates the `payload` portion of an eto.memo.payment.v1 envelope; envelope shape is defined in docs/memo-schema-registry.md §2.",
   "type": "object",
   "required": ["purpose", "invoice_id"],
   "additionalProperties": false,
@@ -10,29 +10,29 @@
     "purpose": {
       "type": "string",
       "enum": ["service", "escrow", "refund", "tip"],
-      "description": "Reason for the transfer."
+      "description": "What this payment is for."
     },
     "invoice_id": {
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
-      "description": "Caller-supplied invoice or charge identifier."
+      "description": "Producer-issued invoice identifier; unique per producer."
     },
     "task_id": {
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
-      "description": "Optional A2A task identifier this payment settles."
+      "description": "Optional reference to a coordination_log task this payment fulfills."
     },
     "unit_price_lamports": {
       "type": "integer",
       "minimum": 0,
-      "description": "Optional unit price in lamports (per-quantity)."
+      "description": "Optional per-unit price in lamports."
     },
     "quantity": {
       "type": "integer",
       "minimum": 1,
-      "description": "Optional quantity multiplier; total = unit_price_lamports * quantity."
+      "description": "Optional unit count; total = unit_price_lamports * quantity."
     }
   }
 }

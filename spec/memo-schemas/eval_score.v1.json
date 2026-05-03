@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://eto.fdn/spec/memo-schemas/eval_score.v1.json",
-  "title": "eto.memo.eval_score.v1 payload",
-  "description": "Payload portion of an eto.memo.eval_score.v1 envelope. One agent's evaluation of another agent on a single named metric.",
+  "title": "eto.memo.eval_score.v1",
+  "description": "Payload schema for an evaluation score memo: one agent or oracle scoring a subject against a named metric. Validates the `payload` portion of an eto.memo.eval_score.v1 envelope; envelope shape is defined in docs/memo-schema-registry.md §2.",
   "type": "object",
   "required": ["subject", "metric", "score", "evaluator"],
   "additionalProperties": false,
@@ -10,36 +10,37 @@
     "subject": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 256,
-      "description": "Identifier of the agent being evaluated (DID or wallet address)."
+      "maxLength": 128,
+      "description": "Agent under evaluation. Either a DID (e.g. did:eto:...) or an SVM/EVM address."
     },
     "metric": {
       "type": "string",
       "minLength": 1,
       "maxLength": 64,
-      "description": "Short metric label, e.g. 'response_quality' or 'on_time_delivery'."
+      "description": "Short metric identifier, e.g. 'helpfulness', 'latency_p95', 'task_success'."
     },
     "score": {
       "type": "number",
       "minimum": 0,
       "maximum": 1,
-      "description": "Normalized score in [0, 1]."
+      "description": "Normalized score in [0, 1]. Producers are responsible for any per-metric scaling."
     },
     "evaluator": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 256,
-      "description": "Identifier of the agent producing the evaluation (DID or wallet address)."
+      "maxLength": 128,
+      "description": "Identity of the evaluator (DID or address)."
     },
     "evidence_uri": {
       "type": "string",
       "format": "uri",
-      "description": "Optional pointer to off-chain evidence (transcript, eval run, etc.)."
+      "maxLength": 256,
+      "description": "Optional pointer to off-chain evidence (logs, transcripts) for records that exceed the on-chain memo size budget."
     },
     "notes": {
       "type": "string",
       "maxLength": 280,
-      "description": "Optional free-form note (≤280 chars to preserve memo size budget)."
+      "description": "Optional free-form note (≤ 280 chars)."
     }
   }
 }
