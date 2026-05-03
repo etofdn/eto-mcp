@@ -9,6 +9,34 @@ import { solToLamports, lamportsToSol } from "../utils/units.js";
 import { resolveAddresses } from "../utils/address.js";
 import bs58 from "bs58";
 
+/**
+ * Pure helper that composes the idempotency key used to coalesce in-flight
+ * `transfer_native` submissions. Exported for unit testing — the handler
+ * below MUST call this rather than duplicating the formatting logic, so the
+ * test suite locks the on-chain coalescing contract in.
+ *
+ * Format: `transfer-${from}-${to}-${lamports}-${blockhash}${memoSuffix}${userSuffix}`
+ *   - memoSuffix = memo ? `-m:${memo}` : ""   (empty string is treated as no memo)
+ *   - userSuffix = idempotencyKey ? `-i:${idempotencyKey}` : ""
+ *
+ * Order matters: distinct memos must never collide, and a caller-supplied
+ * `idempotencyKey` must always force a distinct submission even when
+ * from/to/amount/blockhash/memo are identical.
+ */
+export function buildTransferIdempotencyKey(params: {
+  from: string;
+  to: string;
+  lamports: bigint | number | string;
+  blockhash: string;
+  memo?: string;
+  idempotencyKey?: string;
+}): string {
+  const { from, to, lamports, blockhash, memo, idempotencyKey } = params;
+  const memoSuffix = memo ? `-m:${memo}` : "";
+  const userSuffix = idempotencyKey ? `-i:${idempotencyKey}` : "";
+  return `transfer-${from}-${to}-${lamports}-${blockhash}${memoSuffix}${userSuffix}`;
+}
+
 export function registerTransferTools(server: McpServer): void {
   server.tool(
     "transfer_native",
@@ -63,9 +91,14 @@ export function registerTransferTools(server: McpServer): void {
         // Idempotency key includes memo + caller-supplied suffix so distinct
         // memos never collide in the in-flight map and callers launching
         // parallel transfers can guarantee uniqueness.
-        const memoSuffix = memo ? `-m:${memo}` : "";
-        const userSuffix = idempotency_key ? `-i:${idempotency_key}` : "";
-        const idemKey = `transfer-${fromSvm}-${toSvm}-${lamports}-${blockhash}${memoSuffix}${userSuffix}`;
+        const idemKey = buildTransferIdempotencyKey({
+          from: fromSvm,
+          to: toSvm,
+          lamports,
+          blockhash,
+          memo,
+          idempotencyKey: idempotency_key,
+        });
 
         // Submit
         const result = await submitter.submitAndConfirm({
