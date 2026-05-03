@@ -34,10 +34,13 @@
  * feed. The injectable `clock` defaults to `() => new Date()`; tests pin
  * it to a fixed timestamp for byte-stable assertions.
  *
- * **v0 unsigned caveat.** The `issuer` field is a placeholder DID
- * (`did:eto:indexer:travel-rule:v0`). This report is NOT cryptographically
- * signed in v0; consumers must treat the document as derived data, not
- * as proof. Signing (VC-JOSE / Ed25519) is a follow-up task.
+ * **Signing (FN-084).** The generator accepts an optional `signer:
+ * VcSigner`. When `signer` is omitted OR is a `NoOpVcSigner`, the report
+ * is byte-identical to the v0 unsigned output: `issuer` is the placeholder
+ * DID `did:eto:indexer:travel-rule:v0` and the document carries no `proof`
+ * block. When a real `Ed25519VcSigner` is injected, `issuer` is overridden
+ * with `signer.issuerDid` and a populated `Ed25519Signature2020` `proof`
+ * block is appended over `sha256(JCS(reportWithoutProof))` per spec §11.4.
  *
  * **Spec §9.3 mapping.** `parties[0]` (BAP) is the originator; `parties[1]`
  * (BPP) is the beneficiary. When the audited authority is the BAP, we look
@@ -52,6 +55,11 @@ import {
   type AuditLogger,
   type KytEventSource,
 } from "./audit-trail.js";
+import {
+  NoOpVcSigner,
+  type Ed25519Signature2020Proof,
+  type VcSigner,
+} from "./vc-signer.js";
 import {
   type AmountResolverEntry,
   type Ivms101Party,
@@ -351,7 +359,11 @@ export interface TravelRuleReportJsonLd {
   ];
   id: string;
   type: typeof TRAVEL_RULE_REPORT_TYPE;
-  issuer: typeof TRAVEL_RULE_ISSUER_DID;
+  /**
+   * Defaults to `TRAVEL_RULE_ISSUER_DID`. When a non-NoOp `signer` is
+   * injected, this is overridden with `signer.issuerDid` (FN-084).
+   */
+  issuer: string;
   issuanceDate: string;
   credentialSubject: {
     id: string;
@@ -372,6 +384,8 @@ export interface TravelRuleReportJsonLd {
       skippedMissingAmount: number;
     };
   };
+  /** FN-084: present iff a non-NoOp `VcSigner` was injected. */
+  proof?: Ed25519Signature2020Proof;
 }
 
 // ---------------------------------------------------------------------
@@ -476,6 +490,12 @@ export interface TravelRuleReportGeneratorDeps {
   logger?: AuditLogger;
   /** Defaults to `() => new Date()`. Tests inject a fixed clock. */
   clock?: () => Date;
+  /**
+   * Optional VC signer (FN-084). When omitted or set to a `NoOpVcSigner`,
+   * the emitted report is byte-identical to v0 (no `proof` block,
+   * original placeholder issuer DID).
+   */
+  signer?: VcSigner;
 }
 
 /**
@@ -490,6 +510,7 @@ export class TravelRuleReportGenerator {
   private readonly amountResolver: AmountResolver;
   private readonly logger?: AuditLogger;
   private readonly clock: () => Date;
+  private readonly signer?: VcSigner;
 
   public constructor(deps: TravelRuleReportGeneratorDeps) {
     // If source is already an AuditTrailIndexer, reuse it; otherwise wrap.
@@ -505,6 +526,7 @@ export class TravelRuleReportGenerator {
     this.amountResolver = deps.amountResolver;
     if (deps.logger) this.logger = deps.logger;
     this.clock = deps.clock ?? (() => new Date());
+    if (deps.signer) this.signer = deps.signer;
   }
 
   public async buildReport(
@@ -681,6 +703,20 @@ export class TravelRuleReportGenerator {
       skippedMissingParty,
       skippedMissingAmount,
     });
+
+    // FN-084: attach Ed25519Signature2020 proof when a real signer is
+    // injected. NoOpVcSigner short-circuits to v0 unsigned output.
+    if (this.signer && !(this.signer instanceof NoOpVcSigner)) {
+      const issuerDid = this.signer.issuerDid;
+      const reportWithIssuer: TravelRuleReportJsonLd = {
+        ...report,
+        issuer: issuerDid,
+      };
+      const proof = await this.signer.sign(
+        reportWithIssuer as unknown as Record<string, unknown>,
+      );
+      return { ...reportWithIssuer, proof };
+    }
 
     return report;
   }
