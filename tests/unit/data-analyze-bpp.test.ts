@@ -51,6 +51,23 @@ import {
   createDataAnalyzeHandler,
 } from "../../keeper/bpps/data-analyze/handler.js";
 import {
+  PLANNER_PHASE,
+  fallbackReport,
+  isPlannerError,
+  plannerError,
+  runPlanner,
+  type PlannerLlmClient,
+} from "../../keeper/bpps/data-analyze/planner.js";
+import {
+  DEV_SELF_ISSUER_PUBKEY,
+  MissingSelfCredentialError,
+  assertSelfSkillCredential,
+  inMemoryAgentCardLoader,
+  parseSelfIssuersEnv,
+  resolveSelfIssuerSet,
+} from "../../keeper/bpps/data-analyze/self-cred.js";
+import type { AgentCardSnapshot } from "../../keeper/templates/bpp/index.js";
+import {
   canonicalJson,
   makeStubSigner,
   SigningRuntimeChain,
@@ -915,6 +932,405 @@ describe("runBpp end-to-end", () => {
     for (const c of inner.completed) {
       const out = (c.output as { result: AnalyzeOutput }).result;
       expect(out.artifact.sha256).toBe(sha256Hex(out.artifact.content));
+    }
+  });
+});
+
+/* ========================================================================== */
+/* Step 6 — catalog publish                                                   */
+/* ========================================================================== */
+
+describe("catalog publish", () => {
+  it("advertises capability + price + auth on the catalog/search response", () => {
+    // The Beckn catalog/search response is sourced from `tags` + `config`
+    // — both are public on the BPP module. Assert both fields land.
+    expect(tags.domain + ":" + tags.action).toBe("data:analyze");
+    expect(tags.price).toBeDefined();
+    expect(tags.price.amount).toMatch(/^\d+(\.\d+)?$/);
+    expect(tags.price.currency).toBe("ETO");
+    expect(typeof config.authority).toBe("string");
+    expect(config.authority.length).toBeGreaterThanOrEqual(32);
+    expect(config.capabilityTags).toBe(tags);
+  });
+
+  it("price is also expressible in integer cents (×100)", () => {
+    const cents = Math.round(parseFloat(tags.price.amount) * 100);
+    expect(Number.isInteger(cents)).toBe(true);
+    expect(cents).toBeGreaterThan(0);
+  });
+});
+
+/* ========================================================================== */
+/* Step 7 — planner happy path / fallback                                     */
+/* ========================================================================== */
+
+describe("runPlanner", () => {
+  const profile = {
+    rowCount: 3,
+    columnCount: 1,
+    columns: [
+      {
+        name: "x",
+        inferredType: "integer" as const,
+        nonNullCount: 3,
+        nullCount: 0,
+        distinctCount: 3,
+        min: 1,
+        max: 3,
+      },
+    ],
+    delimiter: "," as const,
+    encoding: "utf-8" as const,
+    truncated: false,
+  };
+  const sample = { columns: ["x"], head: [["1"], ["2"], ["3"]], random: [] };
+
+  function rawFromReport(r: AnalysisReport): string {
+    return JSON.stringify(r);
+  }
+
+  it("phase-tagged error helper produces stable codes", () => {
+    expect(plannerError("llm-timeout").message).toBe(
+      "data-analyze:planner:llm-timeout",
+    );
+    expect(plannerError("schema-invalid", "x").message).toBe(
+      "data-analyze:planner:schema-invalid: x",
+    );
+    expect(isPlannerError(plannerError("llm-error"))).toBe(true);
+    expect(isPlannerError(new Error("other"))).toBe(false);
+    expect(PLANNER_PHASE).toBe("data-analyze:planner");
+  });
+
+  it("happy path returns Zod-validated AnalysisReport", async () => {
+    const llm: PlannerLlmClient = {
+      async complete() {
+        return rawFromReport(cannedReport);
+      },
+    };
+    const out = await runPlanner(profile, sample, { modelId: "m" }, { llm });
+    expect(out.summary).toBe(cannedReport.summary);
+    expect(out.findings).toEqual(cannedReport.findings);
+  });
+
+  it("tolerates code-fenced JSON responses", async () => {
+    const llm: PlannerLlmClient = {
+      async complete() {
+        return "```json\n" + rawFromReport(cannedReport) + "\n```";
+      },
+    };
+    const out = await runPlanner(profile, sample, { modelId: "m" }, { llm });
+    expect(out.summary).toBe(cannedReport.summary);
+  });
+
+  it("throws phase-tagged llm-timeout when LLM aborts", async () => {
+    const llm: PlannerLlmClient = {
+      async complete(req) {
+        // Simulate the LLM honouring the abort signal.
+        if (req.signal?.aborted) {
+          throw new DOMException("aborted", "AbortError");
+        }
+        await new Promise((resolve, reject) => {
+          req.signal?.addEventListener("abort", () => {
+            const e = new Error("aborted");
+            e.name = "AbortError";
+            reject(e);
+          });
+        });
+        return "";
+      },
+    };
+    await expect(
+      runPlanner(profile, sample, { modelId: "m", timeoutMs: 5 }, { llm }),
+    ).rejects.toThrow(/data-analyze:planner:llm-timeout/);
+  });
+
+  it("throws phase-tagged llm-error on transport failure", async () => {
+    const llm: PlannerLlmClient = {
+      async complete() {
+        throw new Error("ECONNRESET");
+      },
+    };
+    await expect(
+      runPlanner(profile, sample, { modelId: "m" }, { llm }),
+    ).rejects.toThrow(/data-analyze:planner:llm-error/);
+  });
+
+  it("throws phase-tagged invalid-response on malformed JSON", async () => {
+    const llm: PlannerLlmClient = {
+      async complete() {
+        return "this is not json at all";
+      },
+    };
+    await expect(
+      runPlanner(profile, sample, { modelId: "m" }, { llm }),
+    ).rejects.toThrow(/data-analyze:planner:invalid-response/);
+  });
+
+  it("throws phase-tagged schema-invalid when zod rejects", async () => {
+    const llm: PlannerLlmClient = {
+      async complete() {
+        // Missing required arrays.
+        return JSON.stringify({ summary: "x" });
+      },
+    };
+    await expect(
+      runPlanner(profile, sample, { modelId: "m" }, { llm }),
+    ).rejects.toThrow(/data-analyze:planner:schema-invalid/);
+  });
+
+  it("fallbackReport produces a schema-valid report from profile only", () => {
+    const r = fallbackReport(profile, [
+      {
+        constant: false,
+        allDistinct: true,
+        highNullRate: false,
+        monotonic: true,
+        outlierHeavy: false,
+      },
+    ], "trend?");
+    expect(r.summary.length).toBeGreaterThan(0);
+    expect(r.findings.length).toBeGreaterThan(0);
+    expect(r.suggestedQuestions.length).toBeGreaterThan(0);
+    expect(r.anomalies.some((a) => a.includes("monotonic"))).toBe(true);
+    expect(r.answer).toBeDefined();
+  });
+});
+
+/* ========================================================================== */
+/* Step 8 — init / confirm handle + idempotent retry                          */
+/* ========================================================================== */
+
+describe("handler init/confirm + idempotent retry", () => {
+  const goodFetched = {
+    text: "a,b\n1,2\n3,4\n5,6\n",
+    sourceBytes: 16,
+    contentType: "text/csv",
+  };
+
+  function makeFixedHandler() {
+    return createDataAnalyzeHandler({
+      fetcher: async () => goodFetched,
+      profiler: (text, opts) => profileCsv(text, opts, { rng: makeRng(7) }),
+      analyzer: async () => ({
+        markdown: "# Data Analysis Report\n## Summary\nfixed.\n",
+        report: cannedReport,
+      }),
+      modelId: "test-model",
+      now: () => 1700_000_000,
+    });
+  }
+
+  const initInput: AnalyzeInput = {
+    source: { kind: "csv", text: "a,b\n1,2\n3,4\n5,6\n" },
+    question: "trend?",
+  };
+
+  it("init handle: validates input + advertised action", async () => {
+    const h = makeFixedHandler();
+    const res = await h.handleTask(
+      {
+        taskId: "init-1",
+        bapPubkey: "BAP",
+        bppPubkey: config.authority,
+        networkPubkey: "NET",
+        action: `${tags.domain}:${tags.action}`,
+        input: initInput,
+      },
+      { logger: silentLogger, agent: { authority: config.authority, name: "n" }, now: () => 0 },
+    );
+    expect(res.status).toBe("success");
+    if (res.status === "success") {
+      expect(res.output.modelId).toBe("test-model");
+      expect(res.output.profile.rowCount).toBeGreaterThan(0);
+    }
+  });
+
+  it("confirm handle: emits a sha256-bound Markdown artifact", async () => {
+    const h = makeFixedHandler();
+    const res = await h.handleTask(
+      {
+        taskId: "confirm-1",
+        bapPubkey: "BAP",
+        bppPubkey: config.authority,
+        networkPubkey: "NET",
+        action: `${tags.domain}:${tags.action}`,
+        input: initInput,
+      },
+      { logger: silentLogger, agent: { authority: config.authority, name: "n" }, now: () => 0 },
+    );
+    expect(res.status).toBe("success");
+    if (res.status === "success") {
+      expect(res.output.artifact.mimeType).toBe("text/markdown");
+      expect(res.output.artifact.sha256).toBe(
+        sha256Hex(res.output.artifact.content),
+      );
+    }
+  });
+
+  it("idempotent retry: same input produces byte-identical artifact", async () => {
+    const h = makeFixedHandler();
+    const ctx = {
+      logger: silentLogger,
+      agent: { authority: config.authority, name: "n" },
+      now: () => 0,
+    };
+    const r1 = await h.handleTask(
+      {
+        taskId: "retry-1",
+        bapPubkey: "BAP",
+        bppPubkey: config.authority,
+        networkPubkey: "NET",
+        action: "data:analyze",
+        input: initInput,
+      },
+      ctx,
+    );
+    const r2 = await h.handleTask(
+      {
+        taskId: "retry-1", // same taskId — idempotent retry
+        bapPubkey: "BAP",
+        bppPubkey: config.authority,
+        networkPubkey: "NET",
+        action: "data:analyze",
+        input: initInput,
+      },
+      ctx,
+    );
+    expect(r1.status).toBe("success");
+    expect(r2.status).toBe("success");
+    if (r1.status === "success" && r2.status === "success") {
+      expect(r2.output.artifact.sha256).toBe(r1.output.artifact.sha256);
+      expect(r2.output.artifact.content).toBe(r1.output.artifact.content);
+      expect(r2.output.artifact.producedAtSec).toBe(
+        r1.output.artifact.producedAtSec,
+      );
+    }
+  });
+
+  it("handler stable-reasons planner phase-tagged errors", async () => {
+    const h = createDataAnalyzeHandler({
+      fetcher: async () => goodFetched,
+      profiler: (text, opts) => profileCsv(text, opts, { rng: makeRng(7) }),
+      analyzer: async () => {
+        throw plannerError("llm-timeout", "5ms");
+      },
+      modelId: "test-model",
+      now: () => 0,
+    });
+    const res = await h.handleTask(
+      {
+        taskId: "t",
+        bapPubkey: "BAP",
+        bppPubkey: config.authority,
+        networkPubkey: "NET",
+        action: "data:analyze",
+        input: initInput,
+      },
+      { logger: silentLogger, agent: { authority: config.authority, name: "n" }, now: () => 0 },
+    );
+    expect(res.status).toBe("failure");
+    if (res.status === "failure") {
+      // Planner phase-tag is preserved through stableReason's fallback path.
+      expect(res.reason).toMatch(/data-analyze:planner:llm-timeout/);
+    }
+  });
+});
+
+/* ========================================================================== */
+/* Step 9 — self-credential preflight                                         */
+/* ========================================================================== */
+
+describe("assertSelfSkillCredential", () => {
+  const SCHEMA = "a".repeat(64);
+  const ISSUER = "Issuer1111111111111111111111111111111111111";
+  const AUTHORITY = "DataAnalyzeBppAuthority11111111111111111111";
+
+  function card(creds: AgentCardSnapshot["credentials"]): AgentCardSnapshot {
+    return { authority: AUTHORITY, credentials: creds };
+  }
+
+  it("passes when a matching credential is present", async () => {
+    const loader = inMemoryAgentCardLoader(
+      new Map([
+        [
+          AUTHORITY,
+          card([
+            {
+              schema: SCHEMA,
+              predicateHash: "0".repeat(64),
+              issuer: ISSUER,
+              validFrom: 0,
+              validUntil: 0,
+              revoked: false,
+            },
+          ]),
+        ],
+      ]),
+    );
+    await expect(
+      assertSelfSkillCredential({
+        loadAgentCard: loader,
+        ownAuthority: AUTHORITY,
+        issuerSet: [ISSUER],
+        schemaId: SCHEMA,
+        nowSec: () => 1000,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("throws MissingSelfCredentialError when no credential matches", async () => {
+    const loader = inMemoryAgentCardLoader(
+      new Map([[AUTHORITY, card([])]]),
+    );
+    await expect(
+      assertSelfSkillCredential({
+        loadAgentCard: loader,
+        ownAuthority: AUTHORITY,
+        issuerSet: [ISSUER],
+        schemaId: SCHEMA,
+        nowSec: () => 1000,
+      }),
+    ).rejects.toBeInstanceOf(MissingSelfCredentialError);
+  });
+
+  it("rejects revoked credentials", async () => {
+    const loader = inMemoryAgentCardLoader(
+      new Map([
+        [
+          AUTHORITY,
+          card([
+            {
+              schema: SCHEMA,
+              predicateHash: "0".repeat(64),
+              issuer: ISSUER,
+              validFrom: 0,
+              validUntil: 0,
+              revoked: true,
+            },
+          ]),
+        ],
+      ]),
+    );
+    await expect(
+      assertSelfSkillCredential({
+        loadAgentCard: loader,
+        ownAuthority: AUTHORITY,
+        issuerSet: [ISSUER],
+        schemaId: SCHEMA,
+        nowSec: () => 1000,
+      }),
+    ).rejects.toBeInstanceOf(MissingSelfCredentialError);
+  });
+
+  it("issuer-env helpers fall back to dev pubkey", () => {
+    expect(parseSelfIssuersEnv(undefined)).toEqual([]);
+    expect(parseSelfIssuersEnv("a, b ,c")).toEqual(["a", "b", "c"]);
+    const prev = process.env.DATA_ANALYZE_SELF_ISSUERS;
+    delete process.env.DATA_ANALYZE_SELF_ISSUERS;
+    try {
+      expect(resolveSelfIssuerSet()).toEqual([DEV_SELF_ISSUER_PUBKEY]);
+    } finally {
+      if (prev !== undefined) process.env.DATA_ANALYZE_SELF_ISSUERS = prev;
     }
   });
 });
