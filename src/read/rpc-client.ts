@@ -12,6 +12,20 @@ interface JsonRpcResponse<T> {
   };
 }
 
+/**
+ * FN-197 / FN-198: validate that a string looks like a real on-chain
+ * transaction signature before letting it leave the RPC client. Accepts
+ * either base58 (40-90 chars, base58 alphabet) or hex (64-128 chars).
+ * Rejects the JSON.stringify-of-an-error-object case.
+ */
+const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{40,90}$/;
+const HEX_SIG_RE = /^(0x)?[0-9a-fA-F]{64,128}$/;
+function isValidSignature(s: string): boolean {
+  if (typeof s !== "string") return false;
+  if (s.length === 0) return false;
+  return BASE58_RE.test(s) || HEX_SIG_RE.test(s);
+}
+
 export class EtoRpcClient {
   private endpoint: string;
   private counter = 0;
@@ -43,6 +57,16 @@ export class EtoRpcClient {
     if (json.error) {
       throw new Error(
         `JSON-RPC error ${json.error.code}: ${json.error.message}`
+      );
+    }
+
+    // FN-198: a malformed response with neither a `result` nor `error`
+    // field used to slip through as `undefined` and surface downstream
+    // as a phantom value (e.g. `JSON.stringify(undefined)` → `undefined`).
+    // Reject explicitly so the caller learns the node is misbehaving.
+    if (json.result === undefined) {
+      throw new Error(
+        `JSON-RPC response for ${method} has neither result nor error field`,
       );
     }
 
@@ -81,7 +105,21 @@ export class EtoRpcClient {
 
   async faucet(address: string, amount: number): Promise<string> {
     const result: any = await this.call<any>("faucet", [address, amount]);
-    return result?.signature ?? result?.txhash ?? result?.tx_hash ?? (typeof result === "string" ? result : JSON.stringify(result));
+    const candidate =
+      result?.signature ?? result?.txhash ?? result?.tx_hash ??
+      (typeof result === "string" ? result : null);
+    // FN-197 / FN-198: never fall back to JSON.stringify(result) — that
+    // turned a rate-limit error or a phantom-faucet payload into a
+    // string callers treated as a real signature. Validate, or throw.
+    // The chain-side mock-faucet replacement is tracked as FN-196.
+    if (!candidate || !isValidSignature(candidate)) {
+      throw new Error(
+        `faucet returned non-signature response (got ${typeof result}: ${JSON.stringify(
+          result,
+        ).slice(0, 200)}). The local node may be running a mock faucet; see FN-196.`,
+      );
+    }
+    return candidate;
   }
 
   getTransaction(signature: string): Promise<any> {
