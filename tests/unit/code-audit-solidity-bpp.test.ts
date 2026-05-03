@@ -897,7 +897,7 @@ import {
 import {
   SigningRuntimeChain,
   makeStubSigner,
-} from "../../keeper/bpps/code-audit-solidity/chain-adapter.js";
+} from "../../keeper/templates/bpp/index.js";
 import type { AuditInput, AuditOutput } from "../../keeper/bpps/code-audit-solidity/types.js";
 import { PER_FILE_MAX_BYTES as MAX_BYTES_2 } from "../../keeper/bpps/code-audit-solidity/types.js";
 
