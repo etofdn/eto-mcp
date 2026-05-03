@@ -1,279 +1,281 @@
 /**
- * Agent identity model: human × model × environment × session_scope.
+ * Agent Identity Model — `human × model × environment × session`.
  *
- * This module is the canonical TypeScript reference for the identity shape
- * defined in {@link ../../docs/agent-identity-model.md}. It is **reference-
- * only** until FN-059 wires it into request handlers / A2A bridges; nothing
- * in production code paths imports it yet. Do not change `session_info`,
- * `SessionClaims`, or any MCP tool registration as part of consuming this
- * file — those are FN-059's job.
+ * Reference TypeScript shape for the spec at
+ * [`docs/agent-identity-model.md`](../../docs/agent-identity-model.md).
  *
- * Tracking issue: https://github.com/etofdn/eto-mcp/issues/11
+ * **Status (FN-058):** spec-only. This module is exported but is NOT wired
+ * into any MCP tool, request handler, or transport. FN-059 is the first task
+ * that will consume `AgentIdentity` in a handler. Do not import from
+ * `src/tools/session.ts` here — the builder takes a structurally typed input
+ * (a `session_info`-shaped payload) to keep this module decoupled from any
+ * concrete tool implementation.
  *
- * @see ../../docs/agent-identity-model.md §2 for field-by-field threat model.
- * @see ../../docs/agent-identity-model.md §3 for the authority-inheritance rule.
- * @see ../../docs/agent-identity-model.md §5 for the interim builder semantics.
+ * Field-level JSDoc references the section numbers in
+ * `docs/agent-identity-model.md` (e.g. `§2.1`).
  */
 
-/**
- * Auth strategies recognized by `human_authority.auth_strategy`. The first
- * three correspond to verified human auth flows on the gateway. `dev` and
- * `__stdio__` are explicitly **unverified** trust modes.
- *
- * Mirrors `AuthStrategy` in `src/gateway/session.ts` plus the `__stdio__`
- * scope sentinel from `src/signing/session-context.ts`.
- *
- * @see ../../docs/agent-identity-model.md §2.1
- */
-export type HumanAuthStrategy =
-  | "siwe"
-  | "inapp_email"
-  | "inapp_oauth"
-  | "dev"
-  | "__stdio__";
+import type { SvmAddress, EvmAddress } from "./index.js";
+
+// ---------------------------------------------------------------------------
+// §2.1 — human_authority
+// ---------------------------------------------------------------------------
 
 /**
- * The verified human principal whose authority the agent borrows.
+ * Which auth backend issued the human attestation behind this identity.
  *
- * @see ../../docs/agent-identity-model.md §2.1
+ * Matches the realistic set of strategies in `src/gateway/session.ts`
+ * (`AuthStrategy`) plus two synthetic kinds:
+ *
+ * - `"stdio"` — the stdio entrypoint runs in the literal `"__stdio__"` scope
+ *   without any human attestation. Local-trust only.
+ * - `"unknown"` — fallback when no `auth_strategy` is present and the scope
+ *   is not one of the known synthetic scopes.
+ *
+ * See spec §2.1.
+ */
+export type HumanAuthorityKind =
+  | "thirdweb" // siwe / inapp_email / inapp_oauth — real human-attested
+  | "dev"      // dev-bypass; never inherits authority
+  | "stdio"    // __stdio__ scope; local trust only
+  | "unknown";
+
+/**
+ * The human (or human-controlled service account) that consented to this
+ * agent acting on their behalf. See spec §2.1.
  */
 export interface HumanAuthority {
-  /** Subject identifier (thirdweb wallet, "dev-user", or stdio principal). */
+  /** Persistence-key form of the human identity. Today: `SessionPayload.sub`,
+   *  `"__stdio__"`, or `"__dev__"`. See spec §2.1. */
   sub: string;
-  /** Auth strategy that produced this principal. */
-  auth_strategy: HumanAuthStrategy;
-  /**
-   * `true` only for verified flows (`siwe`, `inapp_email`, `inapp_oauth`).
-   * `dev` and `__stdio__` MUST be reported as `false` so authority
-   * inheritance refuses to engage. See spec §3.
-   */
-  verified: boolean;
+  /** Coarse classification of the auth backend; see {@link HumanAuthorityKind}. */
+  kind: HumanAuthorityKind;
+  /** Raw `auth_strategy` from the session token, when present. Mirrors
+   *  `SessionPayload.auth_strategy` from `src/gateway/session.ts`. */
+  auth_strategy?: "siwe" | "inapp_email" | "inapp_oauth" | "dev";
 }
 
+// ---------------------------------------------------------------------------
+// §2.2 — model_attestation
+// ---------------------------------------------------------------------------
+
 /**
- * Status of the model-provider attestation.
+ * Discriminator for {@link ModelAttestation}. See spec §2.2 and §4.
  *
- * - `verified` — JWS validated against provider JWKS (FN-061; not implemented).
- * - `self_declared` — caller asserted `provider`/`model`; not verified.
- * - `absent` — no model metadata supplied.
- *
- * @see ../../docs/agent-identity-model.md §2.2
+ * - `"verified"` — provider-signed JWS verified against published JWKS.
+ *   ONLY this state is safe for capability gating.
+ * - `"self_declared"` — the agent advertised a model claim but no signature
+ *   was verified. Telemetry-only; never gate capabilities on this.
+ * - `"absent"` — no claim was made (or verification failed). Do not branch
+ *   on model identity at all.
  */
 export type AttestationStatus = "verified" | "self_declared" | "absent";
 
-/**
- * Which AI model / provider issued the agent's actions. Forward-looking;
- * see §4 of the spec for the verification roadmap (tracked in FN-061).
- *
- * @see ../../docs/agent-identity-model.md §2.2
- */
-export interface ModelAttestation {
-  attestation_status: AttestationStatus;
-  /** Provider identifier, e.g. "anthropic", "openai", "google". */
-  provider?: string;
-  /** Model identifier with version, e.g. "claude-sonnet-4-5". */
-  model?: string;
-  /** Reserved for FN-061: detached JWS signature. */
-  signature?: string;
-  /** Reserved for FN-061: ISO-8601 issuance time. */
-  signed_at?: string;
-  /** Reserved for FN-061: signing key id from provider JWKS. */
-  key_id?: string;
-}
+/** A claim about which AI model produced the agent's actions. See spec §2.2. */
+export type ModelAttestation =
+  | {
+      attestation_status: "verified";
+      provider: string;
+      model_id: string;
+      /** JWS `kid` from the verified attestation. */
+      kid: string;
+      /** Issuance timestamp (seconds since epoch) of the verified JWS. */
+      issued_at: number;
+    }
+  | {
+      attestation_status: "self_declared";
+      provider: string;
+      model_id: string;
+    }
+  | {
+      attestation_status: "absent";
+    };
+
+// ---------------------------------------------------------------------------
+// §2.3 — environment
+// ---------------------------------------------------------------------------
+
+/** Execution surface the agent is running on. See spec §2.3. */
+export type ExecutionSurface = "stdio" | "sse" | "dev";
 
 /**
- * Cryptographic anchor for the active wallet of an `Environment`.
- *
- * @see ../../docs/agent-identity-model.md §2.3
+ * Cryptographic anchor — the wallet whose private keys actually sign actions.
+ * Matches the active-wallet shape returned by `session_info`. See spec §2.3.
  */
 export interface WalletAnchor {
-  wallet_id: string;
-  /** base58 Ed25519 pubkey, or `null` if the signer could not derive it. */
-  svm: string | null;
-  /** 0x-prefixed hex EVM address, or `null` if the signer could not derive it. */
-  evm: string | null;
+  id: string;
+  /** Base58 Ed25519 public key. Null if the signer could not be loaded. */
+  svm: SvmAddress | null;
+  /** 0x-hex secp256k1 address. Null if the signer could not be loaded. */
+  evm: EvmAddress | null;
+  label?: string | null;
 }
 
-/**
- * Execution surface the agent runs on, anchored cryptographically by the
- * active wallet's keypair.
- *
- * @see ../../docs/agent-identity-model.md §2.3
- */
+/** Where the agent is executing + its cryptographic anchor. See spec §2.3. */
 export interface Environment {
-  /** Stable identifier for this MCP instance (env-derived; see Q2 in spec §7). */
-  mcp_server: string;
-  network: "mainnet" | "testnet" | "devnet";
+  surface: ExecutionSurface;
+  /** Stable per-process identifier; today: the server's `last_restart_iso`. */
+  server_instance: string;
+  /** The active wallet whose keys sign actions. */
   wallet_anchor: WalletAnchor;
-  /** ISO-8601 from `session_info.last_restart_iso`. */
-  last_restart_iso: string;
 }
 
-/**
- * Bounds the identity to a single MCP session.
- *
- * @see ../../docs/agent-identity-model.md §2.4
- */
+// ---------------------------------------------------------------------------
+// §2.4 — session_scope
+// ---------------------------------------------------------------------------
+
+/** The bounded MCP session window. See spec §2.4. */
 export interface SessionScope {
-  /** `currentScope()` — sub / "__stdio__" / "__dev__". */
+  /** Persistence-key form of the scope; mirrors `currentScope()`. */
   scope: string;
-  token_expires_at: string | null;
-  token_expires_in_seconds: number | null;
-  /** `SessionPayload.jti` for revocation correlation. */
+  /** Session token id (`SessionPayload.jti`) when known. */
   jti?: string;
+  /** ISO-8601 expiry; null when no token is bound (e.g. stdio). */
+  expires_at_iso: string | null;
+  /** Capabilities granted on the session token; see `CAPABILITY_SCOPES`. */
+  capabilities: string[];
 }
 
+// ---------------------------------------------------------------------------
+// §6 — top-level shape
+// ---------------------------------------------------------------------------
+
 /**
- * The four-axis identity an agent presents in cross-agent (A2A) trust
- * decisions. See `docs/agent-identity-model.md` for the full spec.
+ * The canonical agent identity tuple. See spec §1 and §6.
+ *
+ * Consumers MUST evaluate all four axes independently; see §3 for the
+ * authority-inheritance rule and §5 for the trust degradation that applies
+ * when `model_attestation.attestation_status !== "verified"`.
  */
 export interface AgentIdentity {
+  /** §2.1 — who authorized this agent. */
   human_authority: HumanAuthority;
+  /** §2.2 — which AI model is steering it. */
   model_attestation: ModelAttestation;
+  /** §2.3 — where it's running and the cryptographic anchor. */
   environment: Environment;
+  /** §2.4 — bounded MCP session window. */
   session_scope: SessionScope;
 }
 
-/**
- * Shape of the `session_info` MCP tool response. Replicated here (rather than
- * imported from `src/tools/session.ts`) so this module remains pure and the
- * builder can be exercised from any context — request handlers, A2A bridges,
- * tests — without dragging tool-registration side effects.
- */
-export interface SessionInfoLike {
-  wallets: Array<{
-    id: string;
-    label: string | null;
-    svm: string | null;
-    evm: string | null;
-  }>;
-  active_wallet_id: string | null;
-  scope: string;
-  auth_strategy: string | null;
-  token_expires_at: string | null;
-  token_expires_in_seconds: number | null;
-  last_restart_iso: string;
-}
+// ---------------------------------------------------------------------------
+// §5 — interim builder
+// ---------------------------------------------------------------------------
 
 /**
- * Optional fields callers may layer on top of a {@link SessionInfoLike}
- * payload when building an interim {@link AgentIdentity}.
+ * Structurally typed input mirroring the `session_info` MCP tool's response
+ * shape. We accept it as a plain shape (not by importing from
+ * `src/tools/session.ts`) so this module stays decoupled from the tool layer.
+ *
+ * See spec §5.
  */
-export interface InterimIdentityExtras {
-  /** Self-declared provider, e.g. "anthropic". Sets attestation_status to "self_declared". */
-  provider?: string;
-  /** Self-declared model, e.g. "claude-sonnet-4-5". */
-  model?: string;
-  /** Override for `Environment.mcp_server`. Defaults to "eto-mcp". */
-  mcp_server?: string;
-  /** Override for `Environment.network`. Defaults to "testnet". */
-  network?: "mainnet" | "testnet" | "devnet";
-  /** Subject override (e.g. when scope is "__stdio__" / "__dev__" and a richer sub is known). */
-  sub?: string;
-  /** Token jti for revocation correlation. */
+export interface InterimAgentIdentityInput {
+  /** From `currentScope()`; required. */
+  scope: string;
+  /** Active wallet id; from `getActiveWalletId()`. */
+  active_wallet_id: string | null;
+  /** Wallet list as returned by `session_info`. */
+  wallets: ReadonlyArray<{
+    id: string;
+    label?: string | null;
+    svm: SvmAddress | null;
+    evm: EvmAddress | null;
+  }>;
+  /** From `SessionPayload.auth_strategy`. */
+  auth_strategy?: "siwe" | "inapp_email" | "inapp_oauth" | "dev" | null;
+  /** ISO string from `session_info.token_expires_at`. */
+  token_expires_at?: string | null;
+  /** ISO string from `session_info.last_restart_iso`. */
+  last_restart_iso: string;
+  /** Optional: caller-declared model. Becomes a `self_declared` attestation. */
+  declared_model?: { provider: string; model_id: string };
+  /** Optional: capabilities from `SessionPayload.caps`. Defaults to `[]`. */
+  capabilities?: ReadonlyArray<string>;
+  /** Optional: `SessionPayload.jti` when available. */
   jti?: string;
 }
 
-const VERIFIED_STRATEGIES: ReadonlySet<HumanAuthStrategy> = new Set([
-  "siwe",
-  "inapp_email",
-  "inapp_oauth",
-]);
-
-const KNOWN_STRATEGIES: ReadonlySet<HumanAuthStrategy> = new Set([
-  "siwe",
-  "inapp_email",
-  "inapp_oauth",
-  "dev",
-  "__stdio__",
-]);
-
-function normalizeStrategy(input: string | null | undefined, scope: string): HumanAuthStrategy {
-  if (input && (KNOWN_STRATEGIES as ReadonlySet<string>).has(input)) {
-    return input as HumanAuthStrategy;
-  }
-  // Fall back from scope sentinels when the session has no explicit strategy
-  // (stdio entrypoint sets scope="__stdio__" but the SessionPayload.auth_strategy
-  // field is absent; dev-bypass paths likewise).
-  if (scope === "__stdio__") return "__stdio__";
-  return "dev";
-}
-
 /**
- * Build a structurally valid {@link AgentIdentity} from a `session_info`-
- * shaped payload, with no I/O and no provider integration.
+ * Build an {@link AgentIdentity} from a `session_info`-shaped payload, with
+ * no provider integration. The result always has
+ * `model_attestation.attestation_status` of `"self_declared"` (when
+ * `declared_model` is present) or `"absent"`.
  *
- * Invariants:
- * - `model_attestation.attestation_status` is `"self_declared"` when
- *   `extras.provider` or `extras.model` is supplied, otherwise `"absent"`.
- *   It is never `"verified"` from this builder — verification is FN-061.
- * - `human_authority.verified` is `true` only for `siwe` / `inapp_email` /
- *   `inapp_oauth` strategies.
- * - Throws if `input.scope` is missing/empty — the spec requires every
- *   identity to be bound to a session scope (§2.4).
+ * Pure function — no I/O, no global state.
  *
- * @see ../../docs/agent-identity-model.md §5
+ * @throws {Error} if `scope` is missing or empty (see spec §5: there is no
+ * meaningful identity without a session-scope persistence key).
  */
 export function buildInterimAgentIdentity(
-  input: SessionInfoLike,
-  extras: InterimIdentityExtras = {},
+  input: InterimAgentIdentityInput,
 ): AgentIdentity {
   if (!input.scope || typeof input.scope !== "string") {
     throw new Error(
-      "buildInterimAgentIdentity: missing required field `session_scope` " +
-        "(input.scope must be a non-empty string)",
+      "buildInterimAgentIdentity: missing required `session_scope` source — `scope` must be a non-empty string (see docs/agent-identity-model.md §5).",
     );
   }
 
-  const strategy = normalizeStrategy(input.auth_strategy, input.scope);
-  const sub = extras.sub ?? input.scope;
-
-  const human_authority: HumanAuthority = {
-    sub,
-    auth_strategy: strategy,
-    verified: VERIFIED_STRATEGIES.has(strategy),
-  };
-
-  const hasModelHint = extras.provider !== undefined || extras.model !== undefined;
-  const model_attestation: ModelAttestation = hasModelHint
+  const human_authority = resolveHumanAuthority(input);
+  const environment = resolveEnvironment(input);
+  const model_attestation: ModelAttestation = input.declared_model
     ? {
         attestation_status: "self_declared",
-        ...(extras.provider !== undefined ? { provider: extras.provider } : {}),
-        ...(extras.model !== undefined ? { model: extras.model } : {}),
+        provider: input.declared_model.provider,
+        model_id: input.declared_model.model_id,
       }
     : { attestation_status: "absent" };
 
-  const activeId = input.active_wallet_id;
-  const activeWallet =
-    (activeId && input.wallets.find((w) => w.id === activeId)) ||
-    input.wallets[0] ||
-    null;
-
-  const wallet_anchor: WalletAnchor = activeWallet
-    ? {
-        wallet_id: activeWallet.id,
-        svm: activeWallet.svm,
-        evm: activeWallet.evm,
-      }
-    : {
-        wallet_id: activeId ?? "",
-        svm: null,
-        evm: null,
-      };
-
-  const environment: Environment = {
-    mcp_server: extras.mcp_server ?? "eto-mcp",
-    network: extras.network ?? "testnet",
-    wallet_anchor,
-    last_restart_iso: input.last_restart_iso,
-  };
-
   const session_scope: SessionScope = {
     scope: input.scope,
-    token_expires_at: input.token_expires_at ?? null,
-    token_expires_in_seconds: input.token_expires_in_seconds ?? null,
-    ...(extras.jti !== undefined ? { jti: extras.jti } : {}),
+    expires_at_iso: input.token_expires_at ?? null,
+    capabilities: [...(input.capabilities ?? [])],
+    ...(input.jti !== undefined ? { jti: input.jti } : {}),
   };
 
   return { human_authority, model_attestation, environment, session_scope };
+}
+
+function resolveHumanAuthority(input: InterimAgentIdentityInput): HumanAuthority {
+  const strategy = input.auth_strategy ?? undefined;
+  let kind: HumanAuthorityKind;
+  if (input.scope === "__stdio__") kind = "stdio";
+  else if (input.scope === "__dev__" || strategy === "dev") kind = "dev";
+  else if (
+    strategy === "siwe" ||
+    strategy === "inapp_email" ||
+    strategy === "inapp_oauth"
+  )
+    kind = "thirdweb";
+  else kind = "unknown";
+
+  return {
+    sub: input.scope,
+    kind,
+    ...(strategy !== undefined ? { auth_strategy: strategy } : {}),
+  };
+}
+
+function resolveEnvironment(input: InterimAgentIdentityInput): Environment {
+  let surface: ExecutionSurface;
+  if (input.scope === "__stdio__") surface = "stdio";
+  else if (input.scope === "__dev__" || input.auth_strategy === "dev") surface = "dev";
+  else surface = "sse";
+
+  const active = input.wallets.find((w) => w.id === input.active_wallet_id) ??
+    input.wallets[0];
+
+  const wallet_anchor: WalletAnchor = active
+    ? {
+        id: active.id,
+        svm: active.svm,
+        evm: active.evm,
+        label: active.label ?? null,
+      }
+    : { id: "", svm: null, evm: null, label: null };
+
+  return {
+    surface,
+    server_instance: input.last_restart_iso,
+    wallet_anchor,
+  };
 }
