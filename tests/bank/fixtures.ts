@@ -34,6 +34,10 @@ import type {
   SavingsAccount,
   YieldDeps,
 } from "../../keeper/bpps/bank/yield.js";
+import type { OnrampDeps } from "../../keeper/bpps/bank/handlers/onramp.js";
+import type { OfframpDeps } from "../../keeper/bpps/bank/handlers/offramp.js";
+import type { RemitToTreasury } from "../../keeper/bpps/bank/handlers/fee.js";
+import { oneBipFee } from "../../keeper/bpps/bank/handlers/fee.js";
 
 /* -------------------------------------------------------------------------- */
 /* Stable pubkeys (64-char lowercase hex)                                     */
@@ -111,6 +115,21 @@ export interface MockChainState {
 
   /** Wire IDs that have been locked. */
   lockedWireIds: Set<string>;
+
+  /**
+   * Bank treasury TokenAccount balance (atomic eUSD).
+   *
+   * Every call to the FN-079 `remitToTreasury` mock credits the treasury here
+   * so onramp/offramp tests can assert the 1-pip fee actually lands.
+   */
+  treasuryBalance: bigint;
+  /** Per-call audit trail of treasury remittances. */
+  treasuryRemits: Array<{
+    fee_atomic: number;
+    source: "onramp" | "offramp";
+    correlation_id: string;
+    treasury_pda_hex: string;
+  }>;
 }
 
 /** Create a fresh mock chain state with holder pre-seeded with eUSD. */
@@ -135,6 +154,9 @@ export function makeInitialState(): MockChainState {
     savingsCredential: null,
 
     lockedWireIds: new Set(),
+
+    treasuryBalance: 0n,
+    treasuryRemits: [],
   };
 }
 
@@ -350,6 +372,75 @@ export function makeWireDeps(state: MockChainState): WireDeps {
       state.checkingBalance += total;
       const tx_signature = detSig("refund", wire_id);
       return { tx_signature };
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Onramp / offramp deps — FN-079 treasury remittance                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Build a `RemitToTreasury` mock that credits `state.treasuryBalance` and
+ * appends an audit entry to `state.treasuryRemits`.
+ *
+ * The returned tx_signature is deterministic so retries are idempotent
+ * (matching the FN-109 contract documented in fee.ts).
+ */
+export function makeRemitToTreasury(state: MockChainState): RemitToTreasury {
+  return async (args) => {
+    state.treasuryBalance += BigInt(args.fee_atomic);
+    state.treasuryRemits.push({
+      fee_atomic: args.fee_atomic,
+      source: args.source,
+      correlation_id: args.correlation_id,
+      treasury_pda_hex: args.treasury_pda_hex,
+    });
+    const tx_signature = detSig(
+      "treasury",
+      args.source,
+      args.correlation_id,
+      String(args.fee_atomic),
+    );
+    return { tx_signature };
+  };
+}
+
+/** Build `OnrampDeps` wired to `state`. Mints credit the holder wallet. */
+export function makeOnrampDeps(state: MockChainState): OnrampDeps {
+  return {
+    feeFor: oneBipFee,
+    remitToTreasury: makeRemitToTreasury(state),
+    verifyUsdPull: async () => true,
+    mintOnChain: async ({ amount }) => {
+      state.walletBalance += BigInt(amount);
+      const tx_signature = detSig("mint", String(amount));
+      return { tx_signature };
+    },
+  };
+}
+
+/** Build `OfframpDeps` wired to `state`. Burns debit the holder wallet. */
+export function makeOfframpDeps(state: MockChainState): OfframpDeps {
+  return {
+    feeFor: oneBipFee,
+    remitToTreasury: makeRemitToTreasury(state),
+    burnOnChain: async ({ amount }) => {
+      if (state.walletBalance < BigInt(amount)) {
+        throw new Error(
+          `burnOnChain: insufficient wallet balance (have ${state.walletBalance}, want ${amount})`,
+        );
+      }
+      state.walletBalance -= BigInt(amount);
+      const tx_signature = detSig("burn", String(amount));
+      return { tx_signature };
+    },
+    pushUsd: async (cents, _dest) => {
+      const external_ref = detSig("push", String(cents)).slice(0, 16);
+      return { external_ref };
+    },
+    flagReconciliation: async () => {
+      // no-op for happy-path tests
     },
   };
 }

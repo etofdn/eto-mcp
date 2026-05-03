@@ -11,11 +11,14 @@
  *   2. Fee is always floored (no rounding up).
  *   3. Fee is remitted to the bank treasury account after each successful
  *      onramp/offramp via `RemitToTreasury`.
- *   4. `BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX` is a v0 placeholder pending
- *      real on-chain treasury PDA derivation (see follow-up task FN-109).
+ *   4. `BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX` is the canonical on-chain
+ *      treasury TokenAccount PDA, derived from the bank eUSD program seed
+ *      `['treasury', 'eusd']` via the runtime PDA derivation (FN-079).
  */
 
 import { createHash } from 'node:crypto';
+import bs58 from 'bs58';
+import { findPda } from '../../../../src/wasm/index.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -33,20 +36,65 @@ import { createHash } from 'node:crypto';
 export const ONE_BIP_DIVISOR = 10_000;
 
 /**
- * v0 placeholder for the bank treasury token account PDA (hex-encoded).
+ * Bank eUSD program ID (base58).
  *
- * This is a deterministic 64-hex-char ASCII placeholder derived from the
- * string `'eto.bank.treasury.eusd.v0'`. It is NOT a real on-chain address.
+ * Resolves the on-chain program that owns the eUSD mint, treasury, and
+ * holder TokenAccount PDAs.  In production this is supplied via the
+ * `ETO_PROGRAM_BANK_EUSD` environment variable; in dev/tests it falls back
+ * to a stable placeholder pubkey (`EToBankEusdProgram1111111111111111111111111`)
+ * so that `findPda` produces a deterministic address across runs.
  *
- * **Action required (follow-up):** Replace with the real Solana PDA derived
- * from the bank program seed `['treasury', 'eusd']` before mainnet launch.
- * See follow-up task for on-chain treasury PDA derivation.
+ * NOTE: The placeholder string is base58 and decodes to a valid 32-byte
+ * pubkey — it is not a real signing key, but it IS a real Solana-style
+ * address that can be used as the program-id input to PDA derivation.
+ */
+export const EUSD_PROGRAM_ID: string =
+  process.env['ETO_PROGRAM_BANK_EUSD'] ??
+  'EToBankEusdProgram1111111111111111111111111';
+
+/** Seeds for the canonical bank treasury TokenAccount PDA (per spec §16.3). */
+const TREASURY_PDA_SEEDS: readonly Uint8Array[] = [
+  new TextEncoder().encode('treasury'),
+  new TextEncoder().encode('eusd'),
+];
+
+/**
+ * Derive the canonical treasury TokenAccount PDA address (base58) and bump.
  *
- * Format: 64 lowercase hex characters (represents a 32-byte address).
+ * Reproduce on the command line:
+ *   findPda(
+ *     [utf8('treasury'), utf8('eusd')],
+ *     ETO_PROGRAM_BANK_EUSD,
+ *   )
+ *
+ * The derivation matches `Pubkey::find_program_address` in the on-chain
+ * bank program: `sha256(seeds... || [bump] || program_id || "ProgramDerivedAddress")`.
+ */
+export function deriveBankTreasuryPda(): { address: string; bump: number } {
+  return findPda(
+    TREASURY_PDA_SEEDS as Uint8Array[],
+    EUSD_PROGRAM_ID,
+  );
+}
+
+/**
+ * Canonical bank treasury TokenAccount PDA, hex-encoded (64 chars = 32 bytes).
+ *
+ * Derived via `findPda(['treasury', 'eusd'], EUSD_PROGRAM_ID)` — this is the
+ * real Solana PDA the on-chain bank program uses to hold the 1-pip fee
+ * remittances (spec §16.3).
+ *
+ * To reproduce manually:
+ *   1. seeds   = [utf8('treasury'), utf8('eusd')]
+ *   2. program = EUSD_PROGRAM_ID (base58)
+ *   3. address = findPda(seeds, program).address  // base58
+ *   4. hex     = bs58.decode(address).toString('hex')
+ *
+ * Format: 64 lowercase hex characters.
  */
 export const BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX: string = (() => {
-  // sha256('eto.bank.treasury.eusd.v0') → 32 bytes → 64 hex chars
-  return createHash('sha256').update('eto.bank.treasury.eusd.v0').digest('hex');
+  const { address } = deriveBankTreasuryPda();
+  return Buffer.from(bs58.decode(address)).toString('hex');
 })();
 
 // ---------------------------------------------------------------------------

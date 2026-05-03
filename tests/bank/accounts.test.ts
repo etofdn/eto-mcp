@@ -18,6 +18,20 @@
 import { describe, it, expect, beforeAll } from "vitest";
 
 import {
+  executeOnramp,
+} from "../../keeper/bpps/bank/handlers/onramp.js";
+import {
+  executeOfframp,
+} from "../../keeper/bpps/bank/handlers/offramp.js";
+import {
+  BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX,
+  EUSD_PROGRAM_ID,
+  deriveBankTreasuryPda,
+  oneBipFee,
+} from "../../keeper/bpps/bank/handlers/fee.js";
+import bs58 from "bs58";
+import { findPda } from "../../src/wasm/index.js";
+import {
   openChecking,
   OpenCheckingRejected,
   REQUIRED_SCHEMAS,
@@ -47,6 +61,8 @@ import {
   makeOpenSavingsDeps,
   makeWireDeps,
   makeYieldDeps,
+  makeOnrampDeps,
+  makeOfframpDeps,
   HOLDER_PUBKEY,
   BANK_ISSUER_PUBKEY,
   INITIAL_MINT_ATOMIC,
@@ -368,5 +384,101 @@ describe("bank account lifecycle (E11)", () => {
     expect(state.checkingBalance).toBeGreaterThanOrEqual(0n); // on-chain
     expect(state.savingsBalance).toBeGreaterThanOrEqual(0n); // on-chain
     expect(state.wireEscrowBalance).toBe(0n); // on-chain — fully released
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* FN-079 — Treasury PDA derivation + remittance via onramp/offramp           */
+/* -------------------------------------------------------------------------- */
+
+describe("FN-079 — bank treasury PDA derivation", () => {
+  it("BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX equals findPda(['treasury','eusd'], EUSD_PROGRAM_ID)", () => {
+    const expected = findPda(
+      [
+        new TextEncoder().encode("treasury"),
+        new TextEncoder().encode("eusd"),
+      ],
+      EUSD_PROGRAM_ID,
+    );
+    const expectedHex = Buffer.from(bs58.decode(expected.address))
+      .toString("hex");
+
+    expect(BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX).toBe(expectedHex);
+    expect(BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX).toMatch(/^[0-9a-f]{64}$/);
+
+    // helper exported alongside the constant matches
+    const helper = deriveBankTreasuryPda();
+    expect(helper.address).toBe(expected.address);
+    expect(helper.bump).toBe(expected.bump);
+  });
+
+  it("is NOT the legacy sha256('eto.bank.treasury.eusd.v0') placeholder", async () => {
+    const { createHash } = await import("node:crypto");
+    const legacy = createHash("sha256")
+      .update("eto.bank.treasury.eusd.v0")
+      .digest("hex");
+    expect(BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX).not.toBe(legacy);
+  });
+});
+
+describe("FN-079 — treasury receives 1-pip fee on each onramp/offramp", () => {
+  it("onramp credits the treasury and offramp credits the treasury again", async () => {
+    const s = makeInitialState();
+    expect(s.treasuryBalance).toBe(0n);
+
+    // ---- onramp: $100.00 → fee = floor(100_000_000 / 10_000) = 10_000
+    const onramp = await executeOnramp(
+      {
+        recipient: HOLDER_PUBKEY,
+        recipient_token_account_pda: "c".repeat(64),
+        usd_amount_cents: 10_000, // $100.00
+        funding_method: "mock",
+        external_payment_ref: "fn-079-onramp",
+        initiated_slot: 9000,
+      },
+      makeOnrampDeps(s),
+    );
+
+    expect(onramp.phase).toBe("minted");
+    expect(onramp.fee).toBe(10_000); // 1-pip on 100_000_000
+    expect(onramp.fee).toBe(oneBipFee(100_000_000));
+    expect(s.treasuryBalance).toBe(10_000n);
+    expect(s.treasuryRemits).toHaveLength(1);
+    expect(s.treasuryRemits[0]).toMatchObject({
+      fee_atomic: 10_000,
+      source: "onramp",
+      correlation_id: onramp.onramp_id,
+      treasury_pda_hex: BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX,
+    });
+
+    // ---- offramp: 50 eUSD = 50_000_000 atomic → fee = 5_000
+    const offramp = await executeOfframp(
+      {
+        holder: HOLDER_PUBKEY,
+        holder_token_account_pda: "d".repeat(64),
+        eusd_amount_atomic: 50_000_000,
+        destination: {
+          account_holder_name: "FN-079 Test Recipient",
+          routing_number: "021000021",
+          account_number: "123456789",
+        },
+        initiated_slot: 9100,
+      },
+      makeOfframpDeps(s),
+    );
+
+    expect(offramp.phase).toBe("pushed");
+    expect(offramp.fee_atomic).toBe(5_000); // 1-pip on 50_000_000
+    expect(offramp.fee_atomic).toBe(oneBipFee(50_000_000));
+
+    // Treasury accumulates fees from BOTH ramps.
+    expect(s.treasuryBalance).toBe(10_000n + 5_000n);
+    expect(s.treasuryRemits).toHaveLength(2);
+    expect(s.treasuryRemits[1]).toMatchObject({
+      fee_atomic: 5_000,
+      source: "offramp",
+      correlation_id: offramp.offramp_id,
+      treasury_pda_hex: BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX,
+    });
   });
 });
