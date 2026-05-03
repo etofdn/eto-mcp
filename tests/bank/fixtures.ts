@@ -31,6 +31,11 @@ import type {
   WireKind,
 } from "../../keeper/bpps/bank/handlers/wire.js";
 import type {
+  IssueCardDeps,
+  IssueCardCredential,
+  CardDebitCredentialBody,
+} from "../../keeper/bpps/bank/handlers/issue-card.js";
+import type {
   SavingsAccount,
   YieldDeps,
 } from "../../keeper/bpps/bank/yield.js";
@@ -111,6 +116,17 @@ export interface MockChainState {
 
   /** Wire IDs that have been locked. */
   lockedWireIds: Set<string>;
+
+  /** Issued card.debit credential PDA, null until issued. */
+  cardCredentialPda: string | null;
+  /** Issued card PDA, null until issued. */
+  cardPda: string | null;
+  /** Issued card credential body, null until issued. */
+  cardCredential: IssueCardCredential | null;
+  /** Card auth IDs already consumed (replay protection). */
+  usedCardAuthIds: Set<string>;
+  /** Card auth events emitted on-chain (auth_id, amount, holder). */
+  cardAuthEvents: Array<{ auth_id: string; amount: bigint; holder: string }>;
 }
 
 /** Create a fresh mock chain state with holder pre-seeded with eUSD. */
@@ -135,6 +151,12 @@ export function makeInitialState(): MockChainState {
     savingsCredential: null,
 
     lockedWireIds: new Set(),
+
+    cardCredentialPda: null,
+    cardPda: null,
+    cardCredential: null,
+    usedCardAuthIds: new Set(),
+    cardAuthEvents: [],
   };
 }
 
@@ -351,6 +373,121 @@ export function makeWireDeps(state: MockChainState): WireDeps {
       const tx_signature = detSig("refund", wire_id);
       return { tx_signature };
     },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Issue-card handler deps                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Build `issueCard` deps that read/write to `state`.
+ *
+ * `hasRequiredCreds` controls whether `verifyHolderCredentials` succeeds.
+ */
+export function makeIssueCardDeps(
+  state: MockChainState,
+  hasRequiredCreds: () => boolean = () => true,
+): IssueCardDeps {
+  return {
+    verifyHolderCredentials: async (_subject, _schemas) => hasRequiredCreds(),
+    verifyLinkedAccount: async (linked_account_pda, holder) => {
+      return (
+        state.checkingPda === linked_account_pda &&
+        state.checkingHolder === holder
+      );
+    },
+    issueCardCredential: async (cred) => {
+      state.cardCredential = cred;
+      const tx_signature = detSig("card-cred", cred.body.card_id_hash);
+      const credential_pda = detSig("card-cred-pda", cred.body.card_id_hash);
+      state.cardCredentialPda = credential_pda;
+      return { tx_signature, credential_pda };
+    },
+    recordCard: async (pda, _card: CardDebitCredentialBody) => {
+      state.cardPda = pda;
+    },
+    flagReconciliation: async (_pda, _holder, _body) => {
+      // no-op in tests
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Simulated on-chain CardAuth instruction                                    */
+/* -------------------------------------------------------------------------- */
+
+export class CardAuthError extends Error {
+  constructor(
+    public readonly reason:
+      | "no_card"
+      | "holder_mismatch"
+      | "insufficient_balance"
+      | "replay",
+  ) {
+    super(`card-auth rejected: ${reason}`);
+  }
+}
+
+export interface CardAuthRequest {
+  /** Hex auth_id (any non-empty string — uniqueness is what matters). */
+  auth_id: string;
+  /** Atomic eUSD units. Must be > 0. */
+  amount: bigint;
+  /** Hex64 holder pubkey. */
+  holder: string;
+}
+
+export interface CardAuthResult {
+  auth_id: string;
+  amount: bigint;
+  new_balance: bigint;
+}
+
+/**
+ * Simulate the on-chain `card_auth` instruction (FN-126).
+ *
+ * Pre-conditions:
+ *   - state.cardPda must be set (card has been issued)
+ *   - request.holder must match state.checkingHolder
+ *   - state.checkingBalance must cover request.amount
+ *   - request.auth_id must not have been used before (replay protection)
+ *
+ * On success: debits `state.checkingBalance` by `amount`, marks auth_id as
+ * used, and appends an event to `state.cardAuthEvents`.
+ */
+export function submitCardAuth(
+  state: MockChainState,
+  req: CardAuthRequest,
+): CardAuthResult {
+  if (req.amount <= 0n) {
+    throw new Error("submitCardAuth: amount must be > 0");
+  }
+  if (state.cardPda === null) {
+    throw new CardAuthError("no_card");
+  }
+  if (state.checkingHolder !== req.holder) {
+    throw new CardAuthError("holder_mismatch");
+  }
+  // Replay protection MUST come before balance check so a replay against a
+  // now-insufficient balance still surfaces as `replay`.
+  if (state.usedCardAuthIds.has(req.auth_id)) {
+    throw new CardAuthError("replay");
+  }
+  if (state.checkingBalance < req.amount) {
+    throw new CardAuthError("insufficient_balance");
+  }
+  state.checkingBalance -= req.amount;
+  state.usedCardAuthIds.add(req.auth_id);
+  state.cardAuthEvents.push({
+    auth_id: req.auth_id,
+    amount: req.amount,
+    holder: req.holder,
+  });
+  return {
+    auth_id: req.auth_id,
+    amount: req.amount,
+    new_balance: state.checkingBalance,
   };
 }
 
