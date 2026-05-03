@@ -7,7 +7,7 @@ import { secp256k1 } from "@noble/curves/secp256k1";
 import { numberToBytesBE } from "@noble/curves/abstract/utils";
 import bs58 from "bs58";
 import type { Signer, SignerFactory } from "./signer-interface.js";
-import { WalletStore } from "./wallet-store.js";
+import { WalletStore, type WalletData } from "./wallet-store.js";
 import { currentScope } from "./session-context.js";
 
 ed.etc.sha512Sync = (...m: Uint8Array[]) => sha512(ed.etc.concatBytes(...m));
@@ -74,6 +74,8 @@ interface WalletEntry {
   label: string;
   privateKey: Uint8Array;
   publicKey: Uint8Array;
+  /** Canonical EVM address populated at wallet creation (FN-016). */
+  evmAddress?: string;
 }
 
 export class LocalSignerFactory implements SignerFactory {
@@ -117,7 +119,35 @@ export class LocalSignerFactory implements SignerFactory {
         // ensureLoaded()s wait on the same promise.
         s.beginLoad(loaded => {
           const bucket = this.walletsForScope(scope);
-          for (const [id, w] of loaded) bucket.set(id, w);
+          let needsResave = false;
+          for (const [id, w] of loaded) {
+            // Migration path (FN-016): old wallet files don't store evmAddress.
+            // Re-derive it from the private key so the registry is fully populated
+            // on cold start without requiring manual re-import.
+            let evmAddress = w.evmAddress;
+            if (!evmAddress) {
+              const signer = new LocalSigner(w.privateKey);
+              evmAddress = signer.getEvmSigningAddress();
+              needsResave = true;
+            }
+            const entry: WalletEntry = {
+              label: w.label,
+              privateKey: w.privateKey,
+              publicKey: w.publicKey,
+              evmAddress,
+            };
+            bucket.set(id, entry);
+            // Restore SVM↔EVM registry so resolve_cross_vm_address works
+            // immediately after load (FN-016).
+            s.recordCrossVmMapping(bs58.encode(w.publicKey), evmAddress);
+          }
+          // Re-save to persist the migrated evmAddress fields so next load
+          // is instantaneous (no private-key derivation required).
+          if (needsResave && this.configured) {
+            void this.persistScope(scope).catch(err =>
+              console.error("[eto-mcp] FN-016 migration re-save failed:", err),
+            );
+          }
         });
       }
     }
@@ -128,35 +158,43 @@ export class LocalSignerFactory implements SignerFactory {
     return this.walletsForScope(currentScope());
   }
 
-  private toWalletData(entry: WalletEntry): { label: string; privateKey: Uint8Array; publicKey: Uint8Array } {
-    return { label: entry.label, privateKey: entry.privateKey, publicKey: entry.publicKey };
+  private toWalletData(entry: WalletEntry): WalletData {
+    return {
+      label: entry.label,
+      privateKey: entry.privateKey,
+      publicKey: entry.publicKey,
+      evmAddress: entry.evmAddress,
+    };
   }
 
   private async persistScope(scope: string): Promise<void> {
     if (!this.configured) return;
     const bucket = this.walletsForScope(scope);
-    const serializable = new Map<string, { label: string; privateKey: Uint8Array; publicKey: Uint8Array }>();
+    const serializable = new Map<string, WalletData>();
     for (const [id, w] of bucket) serializable.set(id, this.toWalletData(w));
     await this.storeFor(scope).save(serializable);
   }
 
   async createWallet(label: string): Promise<{ walletId: string; svmAddress: string; evmAddress: string }> {
     const scope = currentScope();
-    await this.storeFor(scope).ensureLoaded();
+    const store = this.storeFor(scope);
+    await store.ensureLoaded();
     const privateKey = new Uint8Array(32);
     crypto.getRandomValues(privateKey);
     const publicKey = ed.getPublicKey(privateKey);
     const walletId = crypto.randomUUID();
 
-    this.wallets().set(walletId, { label, privateKey, publicKey });
+    const signer = new LocalSigner(privateKey);
+    const svmAddress = signer.getPublicKey();
+    const evmAddress = signer.getEvmSigningAddress();
+
+    this.wallets().set(walletId, { label, privateKey, publicKey, evmAddress });
+    // Register SVM↔EVM mapping immediately so resolve_cross_vm_address works
+    // as soon as the wallet is created (FN-016).
+    store.recordCrossVmMapping(svmAddress, evmAddress);
     await this.persistScope(scope);
 
-    const signer = new LocalSigner(privateKey);
-    return {
-      walletId,
-      svmAddress: signer.getPublicKey(),
-      evmAddress: signer.getEvmAddress(),
-    };
+    return { walletId, svmAddress, evmAddress };
   }
 
   async getSigner(walletId: string): Promise<Signer> {
@@ -177,7 +215,8 @@ export class LocalSignerFactory implements SignerFactory {
 
   async importWallet(label: string, privateKeyHex: string): Promise<{ walletId: string; svmAddress: string; evmAddress: string }> {
     const scope = currentScope();
-    await this.storeFor(scope).ensureLoaded();
+    const store = this.storeFor(scope);
+    await store.ensureLoaded();
 
     const hex = privateKeyHex.startsWith("0x") ? privateKeyHex.slice(2) : privateKeyHex;
     if (hex.length !== 64) {
@@ -190,20 +229,30 @@ export class LocalSignerFactory implements SignerFactory {
     const publicKey = ed.getPublicKey(privateKey);
     const walletId = crypto.randomUUID();
 
-    this.wallets().set(walletId, { label, privateKey, publicKey });
+    const signer = new LocalSigner(privateKey);
+    const svmAddress = signer.getPublicKey();
+    const evmAddress = signer.getEvmSigningAddress();
+
+    this.wallets().set(walletId, { label, privateKey, publicKey, evmAddress });
+    // Register SVM↔EVM mapping immediately so resolve_cross_vm_address works
+    // as soon as the wallet is imported (FN-016).
+    store.recordCrossVmMapping(svmAddress, evmAddress);
     await this.persistScope(scope);
 
-    const signer = new LocalSigner(privateKey);
-    return {
-      walletId,
-      svmAddress: signer.getPublicKey(),
-      evmAddress: signer.getEvmAddress(),
-    };
+    return { walletId, svmAddress, evmAddress };
   }
 
   /** Expose the scope's store for callers that need readActive()/writeActive(). */
   storeForScope(scope: string): WalletStore {
     return this.storeFor(scope);
+  }
+
+  /**
+   * Returns the WalletRegistry for the current execution scope.
+   * Used by `resolve_cross_vm_address` and `derive_address` tools (FN-016).
+   */
+  getRegistryForCurrentScope(): import("../utils/address.js").WalletRegistry {
+    return this.storeFor(currentScope()).asRegistry();
   }
 
   /** Look up a wallet entry in a specific scope without switching scopes. */
