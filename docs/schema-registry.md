@@ -2,6 +2,8 @@
 
 > Tracking issue: [etofdn/eto-mcp#11](https://github.com/etofdn/eto-mcp/issues/11)
 > Closes: FN-179, FN-193, FN-203 (FN-057 follow-through).
+>
+> **See also:** [`docs/memo-schema-registry.md`](./memo-schema-registry.md) catalogs the disjoint **memo schema** registry (`eto.memo.*`) used to type SPL Memo v2 records anchored by `transfer_native` / `batch` and surfaced via `query_memos`. This document covers **credential schemas** (`eto.beckn.schema.*`), which are W3C VC payloads gated on-chain by `schema_hash = SHA-256(label)`. The two registries share a versioning philosophy but live under disjoint namespaces and have different identity / validation models (on-chain hash gating vs off-chain Ajv validation).
 
 This document catalogs every Beckn-mapped credential schema referenced by the
 eto-mcp codebase, their pre-image label (the string that hashes into the on-chain
