@@ -37,10 +37,15 @@
  * **Signing.** Signing is opt-in via the injected `VcSigner`; the
  * default `NoOpVcSigner` preserves the historical unsigned shape (no
  * `proof` key in the emitted document). Set `AUDIT_SIGNING_KEY_PATH`
- * and pass `createVcSignerFromEnv({ issuerDid })` to emit an
- * `Ed25519Signature2020` proof block per W3C VC Data Integrity /
- * RFC 8785 (FN-084). The proof preimage is `sha256(JCS(vcWithoutProof))`
- * — the proof block is excluded from the hash input.
+ * and pass `createVcSignerFromEnv({ issuerDid })` to emit a W3C VC
+ * Data Integrity proof block. Three suites are supported via the
+ * `VC_PROOF_SUITE` env var (FN-084 + FN-030):
+ *   - `Ed25519Signature2020` (default, legacy)
+ *   - `JsonWebSignature2020` (JOSE detached JWS, alg=EdDSA)
+ *   - `cose-2024` (DataIntegrityProof, COSE_Sign1, alg=EdDSA)
+ * All three share the same canonical preimage
+ * `sha256(JCS(vcWithoutProof))` per RFC 8785 / VC-DI §11.4 — the
+ * proof block is excluded from the hash input.
  *
  * **Spec §9.3 mapping.** `parties[0]` (BAP) is the originator; `parties[1]`
  * (BPP) is the beneficiary. When the audited authority is the BAP, we look
@@ -57,7 +62,7 @@ import {
 } from "./audit-trail.js";
 import {
   NoOpVcSigner,
-  type Ed25519Signature2020Proof,
+  type VcProof,
   type VcSigner,
 } from "./vc-signer.js";
 import {
@@ -363,9 +368,15 @@ export interface TravelRuleReportJsonLd {
   // `string` so an injected `VcSigner` can override the placeholder DID.
   issuer: string;
   issuanceDate: string;
-  /** FN-084: optional Ed25519Signature2020 proof block. Absent when the
-   *  default `NoOpVcSigner` is in use (preserves byte-stable v0 shape). */
-  proof?: Ed25519Signature2020Proof;
+  /** FN-084 / FN-030: optional W3C VC Data Integrity proof block.
+   *  Concrete shape depends on the active suite:
+   *  `Ed25519Signature2020` (legacy default), `JsonWebSignature2020`
+   *  (JOSE detached JWS), or `DataIntegrityProof` with
+   *  `cryptosuite: "cose-2024"`. Suite is selected via the
+   *  `VC_PROOF_SUITE` env var (see `createVcSignerFromEnv`). Absent
+   *  when the default `NoOpVcSigner` is in use, preserving the
+   *  byte-stable v0 unsigned shape. */
+  proof?: VcProof;
   credentialSubject: {
     id: string;
     authority: string;

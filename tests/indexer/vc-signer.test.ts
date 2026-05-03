@@ -5,8 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { sha256 } from "@noble/hashes/sha256";
 import {
+  CoseVcSigner,
   Ed25519VcSigner,
+  JoseVcSigner,
   NoOpVcSigner,
   base64UrlEncode,
   canonicalizeJcs,
@@ -209,6 +212,129 @@ describe("Ed25519VcSigner", () => {
   });
 });
 
+// ---------------------------------------------------------------------
+// FN-030: JOSE / COSE goldens (deterministic; computed once with the
+// in-tree implementations against a fixed all-ones 32-byte seed and
+// fixed clock; do NOT re-derive inside assertions).
+// ---------------------------------------------------------------------
+
+const ONES_SEED = new Uint8Array(32).fill(1);
+const FN030_DID = "did:eto:test:signer";
+const JWS_HEADER_B64 = "eyJhbGciOiJFZERTQSIsImI2NCI6ZmFsc2UsImNyaXQiOlsiYjY0Il19";
+const EXPECTED_JWS_ONES_A1 =
+  `${JWS_HEADER_B64}..3OhMjxZUCTGgls9zUzguHiQehSxAYN3mbDLPMThduxf4iiQykHGLTVs9k3vPgPoJhcXfWhnJ4zZ8R-fP3qBLDQ`;
+const EXPECTED_COSE_ONES_A1 =
+  "0oRDoQEnoFggAVq9f1zFei3ZS3WQ8ErYCEJzkF7jPsXOvq5iJ2qX-GJYQPv0ji8VHJya6KQrIE5bxpjIdRZ5NVwXP2TwGoq_mArn2Atb_q5cEhCmjquBQ4mRvoBgPyY_wuDHArHHHXFeBQk";
+
+function base64UrlDecode(s: string): Uint8Array {
+  const pad = "=".repeat((4 - (s.length % 4)) % 4);
+  const b64 = s.replace(/-/g, "+").replace(/_/g, "/") + pad;
+  return new Uint8Array(Buffer.from(b64, "base64"));
+}
+
+describe("JoseVcSigner", () => {
+  it("produces the golden detached-JWS proof for {a:1} / ones-seed", async () => {
+    const signer = new JoseVcSigner({
+      issuerDid: FN030_DID,
+      secretKey: ONES_SEED,
+      clock: FIXED_CLOCK,
+    });
+    expect(signer.suite).toBe("JsonWebSignature2020");
+    const proof = await signer.sign({ a: 1 });
+    expect(proof.type).toBe("JsonWebSignature2020");
+    expect(proof.created).toBe("2026-01-01T00:00:00.000Z");
+    expect(proof.verificationMethod).toBe(`${FN030_DID}#key-1`);
+    expect(proof.proofPurpose).toBe("assertionMethod");
+    expect(proof.jws).toBe(EXPECTED_JWS_ONES_A1);
+    expect(proof.proofValue).toBe(proof.jws);
+  });
+
+  it("emits a header decoding to the canonical JOSE header object", async () => {
+    const signer = new JoseVcSigner({
+      issuerDid: FN030_DID,
+      secretKey: ONES_SEED,
+      clock: FIXED_CLOCK,
+    });
+    const proof = await signer.sign({ a: 1 });
+    const segments = proof.jws.split(".");
+    expect(segments.length).toBe(3);
+    expect(segments[1]).toBe(""); // detached payload
+    const headerJson = Buffer.from(
+      base64UrlDecode(segments[0] ?? ""),
+    ).toString("utf8");
+    expect(headerJson).toBe('{"alg":"EdDSA","b64":false,"crit":["b64"]}');
+  });
+
+  it("rejects non-32-byte seeds", () => {
+    expect(
+      () =>
+        new JoseVcSigner({
+          issuerDid: FN030_DID,
+          secretKey: new Uint8Array(31),
+        }),
+    ).toThrow(/32-byte/u);
+  });
+});
+
+describe("CoseVcSigner", () => {
+  it("produces the golden COSE_Sign1 proof for {a:1} / ones-seed", async () => {
+    const signer = new CoseVcSigner({
+      issuerDid: FN030_DID,
+      secretKey: ONES_SEED,
+      clock: FIXED_CLOCK,
+    });
+    expect(signer.suite).toBe("DataIntegrityProof.cose-2024");
+    const proof = await signer.sign({ a: 1 });
+    expect(proof.type).toBe("DataIntegrityProof");
+    expect(proof.cryptosuite).toBe("cose-2024");
+    expect(proof.created).toBe("2026-01-01T00:00:00.000Z");
+    expect(proof.verificationMethod).toBe(`${FN030_DID}#key-1`);
+    expect(proof.proofPurpose).toBe("assertionMethod");
+    expect(proof.proofValue).toBe(EXPECTED_COSE_ONES_A1);
+  });
+
+  it("emits a tag-18 CBOR with canonical structure", async () => {
+    const signer = new CoseVcSigner({
+      issuerDid: FN030_DID,
+      secretKey: ONES_SEED,
+      clock: FIXED_CLOCK,
+    });
+    const proof = await signer.sign({ a: 1 });
+    const bytes = base64UrlDecode(proof.proofValue);
+    // Tag 18 = 0xd2 (major 6, value 18).
+    expect(bytes[0]).toBe(0xd2);
+    // Followed by a 4-element array: 0x84.
+    expect(bytes[1]).toBe(0x84);
+    // First element: bstr length 3 (0x43), contents 0xa1 0x01 0x27.
+    expect(bytes[2]).toBe(0x43);
+    expect(bytes[3]).toBe(0xa1);
+    expect(bytes[4]).toBe(0x01);
+    expect(bytes[5]).toBe(0x27);
+    // Second element: empty map 0xa0.
+    expect(bytes[6]).toBe(0xa0);
+    // Third element: bstr length 32 (0x58 0x20).
+    expect(bytes[7]).toBe(0x58);
+    expect(bytes[8]).toBe(0x20);
+    const payload = bytes.slice(9, 9 + 32);
+    const expectedDigest = sha256(new TextEncoder().encode('{"a":1}'));
+    expect(Buffer.from(payload).equals(Buffer.from(expectedDigest))).toBe(true);
+    // Fourth element: bstr length 64 (0x58 0x40).
+    expect(bytes[9 + 32]).toBe(0x58);
+    expect(bytes[9 + 32 + 1]).toBe(0x40);
+    expect(bytes.length).toBe(9 + 32 + 2 + 64);
+  });
+
+  it("rejects non-32-byte seeds", () => {
+    expect(
+      () =>
+        new CoseVcSigner({
+          issuerDid: FN030_DID,
+          secretKey: new Uint8Array(33),
+        }),
+    ).toThrow(/32-byte/u);
+  });
+});
+
 describe("createVcSignerFromEnv", () => {
   it("returns NoOpVcSigner when AUDIT_SIGNING_KEY_PATH is unset", () => {
     const signer = createVcSignerFromEnv({
@@ -239,5 +365,74 @@ describe("createVcSignerFromEnv", () => {
     expect(signer).toBeInstanceOf(Ed25519VcSigner);
     const proof = await signer.sign({ hello: "world", a: [1, 2, 3], n: 42 });
     expect(proof.proofValue).toBe(EXPECTED_PROOF_VALUE);
+  });
+
+  it("VC_PROOF_SUITE=Ed25519Signature2020 returns Ed25519VcSigner", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vc-signer-env-"));
+    const path = join(dir, "seed.bin");
+    writeFileSync(path, ZERO_SEED);
+    const signer = createVcSignerFromEnv({
+      issuerDid: TEST_DID,
+      env: {
+        AUDIT_SIGNING_KEY_PATH: path,
+        VC_PROOF_SUITE: "Ed25519Signature2020",
+      },
+    });
+    expect(signer).toBeInstanceOf(Ed25519VcSigner);
+    expect(signer.suite).toBe("Ed25519Signature2020");
+  });
+
+  it("VC_PROOF_SUITE=JsonWebSignature2020 returns JoseVcSigner with matching jws", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vc-signer-env-"));
+    const path = join(dir, "seed.bin");
+    writeFileSync(path, ONES_SEED);
+    const signer = createVcSignerFromEnv({
+      issuerDid: FN030_DID,
+      env: {
+        AUDIT_SIGNING_KEY_PATH: path,
+        VC_PROOF_SUITE: "JsonWebSignature2020",
+      },
+      clock: FIXED_CLOCK,
+    });
+    expect(signer).toBeInstanceOf(JoseVcSigner);
+    const proof = await signer.sign({ a: 1 });
+    expect(proof.type).toBe("JsonWebSignature2020");
+    if (proof.type === "JsonWebSignature2020") {
+      expect(proof.jws).toBe(EXPECTED_JWS_ONES_A1);
+    }
+  });
+
+  it("VC_PROOF_SUITE=cose-2024 returns CoseVcSigner with matching proofValue", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vc-signer-env-"));
+    const path = join(dir, "seed.bin");
+    writeFileSync(path, ONES_SEED);
+    const signer = createVcSignerFromEnv({
+      issuerDid: FN030_DID,
+      env: {
+        AUDIT_SIGNING_KEY_PATH: path,
+        VC_PROOF_SUITE: "cose-2024",
+      },
+      clock: FIXED_CLOCK,
+    });
+    expect(signer).toBeInstanceOf(CoseVcSigner);
+    const proof = await signer.sign({ a: 1 });
+    expect(proof.proofValue).toBe(EXPECTED_COSE_ONES_A1);
+  });
+
+  it("unknown VC_PROOF_SUITE throws", () => {
+    expect(() =>
+      createVcSignerFromEnv({
+        issuerDid: TEST_DID,
+        env: { VC_PROOF_SUITE: "BogusSuite" },
+      }),
+    ).toThrow(/VC_PROOF_SUITE: unsupported value BogusSuite/u);
+  });
+
+  it("VC_PROOF_SUITE without AUDIT_SIGNING_KEY_PATH still returns NoOp", () => {
+    const signer = createVcSignerFromEnv({
+      issuerDid: TEST_DID,
+      env: { VC_PROOF_SUITE: "JsonWebSignature2020" },
+    });
+    expect(signer).toBeInstanceOf(NoOpVcSigner);
   });
 });
