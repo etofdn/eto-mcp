@@ -169,15 +169,6 @@ export function validateBecknEnvelope(
     const expiresAt = Date.parse(ts) + ttlMs;
     const effectiveNow = now ?? Date.now();
     if (expiresAt < effectiveNow) {
-      // debug for FN-188 flaky PT30S
-      console.error(
-        "[ENVELOPE-EXPIRED]",
-        "ts=", ts,
-        "ttlMs=", ttlMs,
-        "expires=", new Date(expiresAt).toISOString(),
-        "now=", new Date(effectiveNow).toISOString(),
-        "deltaMs=", expiresAt - effectiveNow
-      );
       return {
         ok: false,
         status: 400,
