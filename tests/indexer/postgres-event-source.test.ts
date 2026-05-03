@@ -1,257 +1,251 @@
 // Integration tests for PostgresKytEventSource (FN-083).
+// These tests require a live Postgres instance.
 //
-// These tests require a real Postgres database.  They are gated behind the
-// TEST_PG_URL environment variable and silently skipped when it is not set,
-// so CI never fails due to a missing database.
+// Run with:
+//   TEST_PG_URL=postgres://user:pass@localhost/dbname pnpm test tests/indexer/postgres-event-source.test.ts
 //
-// To run locally:
-//   TEST_PG_URL=postgres://user:pass@localhost/dbname npx vitest run tests/indexer/postgres-event-source.test.ts
+// When TEST_PG_URL is not set the entire suite is silently skipped.
 
-import * as fs from "node:fs";
-import * as path from "node:path";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import fs from "fs";
+import path from "path";
 import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-
-import { AuditTrailIndexerError } from "../../src/services/indexer/audit-trail.js";
 import { PostgresKytEventSource } from "../../src/services/indexer/postgres-event-source.js";
-import type {
-  KytTraceEvent,
-  RevocationRootUpdatedEvent,
-} from "../../src/services/indexer/audit-trail.types.js";
-
-// ---------------------------------------------------------------------------
-// Helpers — fixture factories
-// ---------------------------------------------------------------------------
-
-/** Build a minimal valid KytTraceEvent. */
-function makeTrace(
-  overrides: Partial<KytTraceEvent> & { tx_signature: string } & {
-    bapAuthority?: string;
-    bppAuthority?: string;
-  },
-): KytTraceEvent {
-  const bap = overrides.bapAuthority ?? "BapAuthority1111111111111111111111111111111";
-  const bpp = overrides.bppAuthority ?? "BppAuthority1111111111111111111111111111111";
-  return {
-    stage: "init",
-    tx_signature: overrides.tx_signature,
-    slot: overrides.slot ?? 100,
-    timestamp: overrides.timestamp ?? 1700000000,
-    parties: [
-      { party: "bap", authority: bap, cred_pointers: [] },
-      { party: "bpp", authority: bpp, cred_pointers: [] },
-    ],
-    ...("stage" in overrides ? { stage: overrides.stage as KytTraceEvent["stage"] } : {}),
-  };
-}
-
-/** Build a minimal valid RevocationRootUpdatedEvent. */
-function makeRevocation(
-  overrides: Partial<RevocationRootUpdatedEvent>,
-): RevocationRootUpdatedEvent {
-  return {
-    oracle: overrides.oracle ?? "OracleAuthority111111111111111111111111111",
-    network: overrides.network ?? "testnet",
-    root: overrides.root ?? "a".repeat(64),
-    leaves: overrides.leaves ?? 10,
-    slot: overrides.slot ?? 200,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Suite — gated on TEST_PG_URL
-// ---------------------------------------------------------------------------
+import { AuditTrailIndexerError } from "../../src/services/indexer/audit-trail.js";
+import type { KytTraceEvent, RevocationRootUpdatedEvent } from "../../src/services/indexer/audit-trail.types.js";
 
 const PG_URL = process.env["TEST_PG_URL"];
 
+// ---------------------------------------------------------------------------
+// Fixture helpers
+// ---------------------------------------------------------------------------
+
+/** Generate a deterministic base58-like authority string for tests. */
+function authority(label: string): string {
+  // Use a fixed prefix + label to create base58-alphabet-only strings.
+  const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  const padded = label.padEnd(8, "1");
+  return padded
+    .split("")
+    .map((c, i) => BASE58[((c.charCodeAt(0) + i) % BASE58.length)]!)
+    .join("") + "Authority";
+}
+
+/** Create a valid lowercase 64-char hex cred pointer. */
+function credPointer(seed: number): string {
+  return seed.toString(16).padStart(64, "0");
+}
+
+/** Make a KytTraceEvent fixture. */
+function makeTrace(
+  opts: {
+    txSig: string;
+    slot: number;
+    stage?: KytTraceEvent["stage"];
+    bap?: string;
+    bpp?: string;
+    timestamp?: number;
+  },
+): KytTraceEvent {
+  return {
+    tx_signature: opts.txSig,
+    slot: opts.slot,
+    stage: opts.stage ?? "init",
+    timestamp: opts.timestamp ?? 1_700_000_000 + opts.slot,
+    parties: [
+      {
+        party: "bap",
+        authority: opts.bap ?? authority("Alice"),
+        cred_pointers: [credPointer(1)],
+      },
+      {
+        party: "bpp",
+        authority: opts.bpp ?? authority("Bob"),
+        cred_pointers: [credPointer(2)],
+      },
+    ],
+  };
+}
+
+/** Make a RevocationRootUpdatedEvent fixture. */
+function makeRevocation(
+  opts: {
+    oracle: string;
+    slot: number;
+    root?: string;
+  },
+): RevocationRootUpdatedEvent {
+  return {
+    oracle: opts.oracle,
+    network: "devnet",
+    root: opts.root ?? credPointer(opts.slot),
+    leaves: 100,
+    slot: opts.slot,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Suite
+// ---------------------------------------------------------------------------
+
 describe.skipIf(!PG_URL)("PostgresKytEventSource integration", () => {
   let pool: Pool;
-  let source: PostgresKytEventSource;
-
-  const MIGRATION_PATH = path.resolve(
-    __dirname,
-    "../../scripts/migrations/001_kyt_events.sql",
-  );
+  let src: PostgresKytEventSource;
 
   beforeAll(async () => {
-    pool = new Pool({ connectionString: PG_URL! });
-    source = new PostgresKytEventSource({ pool });
+    pool = new Pool({ connectionString: PG_URL });
+    src = new PostgresKytEventSource({ pool });
 
-    // Apply migration (idempotent) then truncate for a clean slate.
-    const migrationSql = fs.readFileSync(MIGRATION_PATH, "utf8");
-    await pool.query(migrationSql);
+    // Apply the migration (idempotent).
+    const migrationPath = path.resolve(
+      __dirname,
+      "../../scripts/migrations/001_kyt_events.sql",
+    );
+    const sql = fs.readFileSync(migrationPath, "utf-8");
+    await pool.query(sql);
+
+    // Truncate for a clean slate.
     await pool.query("TRUNCATE kyt_events, revocation_events");
   });
 
   afterAll(async () => {
-    try {
-      await pool.query("DROP TABLE IF EXISTS kyt_events");
-      await pool.query("DROP TABLE IF EXISTS revocation_events");
-    } finally {
-      await pool.end();
-    }
+    await pool.query("DROP TABLE IF EXISTS kyt_events, revocation_events");
+    await pool.end();
+    // src does NOT own the pool, so close() is a no-op — but call it
+    // to exercise the code path.
+    await src.close();
   });
 
-  // -------------------------------------------------------------------------
-  // 1. Round-trip: ingest 3 traces, query by authority
-  // -------------------------------------------------------------------------
-  it("round-trip: ingest 3 traces and retrieve by authority", async () => {
-    await pool.query("TRUNCATE kyt_events, revocation_events");
+  // -----------------------------------------------------------------------
+  // Test 1: Round-trip — ingest 3 traces, query by authority
+  // -----------------------------------------------------------------------
+  it("round-trip: ingest 3 traces, tracesForAuthority returns only matching events in (slot, tx_sig) order", async () => {
+    const alice = authority("Alice");
+    const bob = authority("Bob");
+    const carol = authority("Carol");
 
-    const authorityA = "AuthorityAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    const authorityB = "AuthorityBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
-    const authorityC = "AuthorityCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
+    const t1 = makeTrace({ txSig: "RoundTripSig1", slot: 100, bap: alice, bpp: bob });
+    const t2 = makeTrace({ txSig: "RoundTripSig2", slot: 200, bap: carol, bpp: alice });
+    const t3 = makeTrace({ txSig: "RoundTripSig3", slot: 300, bap: carol, bpp: bob });
 
-    const t1 = makeTrace({
-      tx_signature: "Sig1111111111111111111111111111111111111111111111111111111111111111111111111111111111",
-      slot: 10,
-      bapAuthority: authorityA,
-      bppAuthority: authorityB,
-    });
-    const t2 = makeTrace({
-      tx_signature: "Sig2222222222222222222222222222222222222222222222222222222222222222222222222222222222",
-      slot: 20,
-      bapAuthority: authorityA,
-      bppAuthority: authorityC,
-    });
-    const t3 = makeTrace({
-      tx_signature: "Sig3333333333333333333333333333333333333333333333333333333333333333333333333333333333",
-      slot: 30,
-      bapAuthority: authorityB,
-      bppAuthority: authorityC,
-    });
-
-    await source.ingestTrace(t1);
-    await source.ingestTrace(t2);
-    await source.ingestTrace(t3);
+    await src.ingestTrace(t1);
+    await src.ingestTrace(t2);
+    await src.ingestTrace(t3);
 
     const results: KytTraceEvent[] = [];
-    for await (const ev of source.tracesForAuthority(authorityA)) {
+    for await (const ev of src.tracesForAuthority(alice)) {
       results.push(ev);
     }
 
+    // t1 (alice=bap, slot=100) and t2 (alice=bpp, slot=200) involve alice.
+    // t3 does NOT involve alice.
     expect(results).toHaveLength(2);
-    expect(results[0]!.tx_signature).toBe(t1.tx_signature);
-    expect(results[1]!.tx_signature).toBe(t2.tx_signature);
-    // Verify ordering: ascending slot
-    expect(results[0]!.slot).toBeLessThan(results[1]!.slot);
+    expect(results[0]?.tx_signature).toBe("RoundTripSig1");
+    expect(results[1]?.tx_signature).toBe("RoundTripSig2");
+    // Slots are in ascending order.
+    expect(results[0]?.slot).toBe(100);
+    expect(results[1]?.slot).toBe(200);
   });
 
-  // -------------------------------------------------------------------------
-  // 2. Idempotency: duplicate ingest returns inserted: false
-  // -------------------------------------------------------------------------
-  it("idempotency: duplicate trace ingest returns { inserted: false }", async () => {
-    await pool.query("TRUNCATE kyt_events, revocation_events");
+  // -----------------------------------------------------------------------
+  // Test 2: Idempotency — ingest same trace twice
+  // -----------------------------------------------------------------------
+  it("idempotency: duplicate ingestTrace returns { inserted: false }, table has exactly one row", async () => {
+    const trace = makeTrace({ txSig: "IdempotentSig1", slot: 999 });
 
-    const t = makeTrace({
-      tx_signature: "IdempotencySig111111111111111111111111111111111111111111111111111111111111111111111",
-      slot: 50,
-    });
-
-    const first = await source.ingestTrace(t);
-    const second = await source.ingestTrace(t);
+    const first = await src.ingestTrace(trace);
+    const second = await src.ingestTrace(trace);
 
     expect(first.inserted).toBe(true);
     expect(second.inserted).toBe(false);
 
-    // Verify only one row in DB
-    const { rows } = await pool.query<{ count: string }>(
-      "SELECT COUNT(*) AS count FROM kyt_events WHERE tx_signature = $1",
-      [t.tx_signature],
+    const res = await pool.query(
+      "SELECT COUNT(*) AS cnt FROM kyt_events WHERE tx_signature = $1",
+      ["IdempotentSig1"],
     );
-    expect(Number(rows[0]!.count)).toBe(1);
+    expect(Number(res.rows[0]?.cnt)).toBe(1);
   });
 
-  // -------------------------------------------------------------------------
-  // 3. Slot-window filtering
-  // -------------------------------------------------------------------------
-  it("slot-window: sinceSlot inclusive, untilSlot exclusive", async () => {
-    await pool.query("TRUNCATE kyt_events, revocation_events");
+  // -----------------------------------------------------------------------
+  // Test 3: Slot-window filtering (inclusive lower, exclusive upper)
+  // -----------------------------------------------------------------------
+  it("slot-window: sinceSlot=20 untilSlot=40 yields slots 20 and 30 (inclusive lower, exclusive upper)", async () => {
+    const auth = authority("WindowTest");
 
-    const authority = "WindowAuthority1111111111111111111111111111";
-    const slots = [10, 20, 30, 40, 50];
-
-    for (let i = 0; i < slots.length; i++) {
-      await source.ingestTrace(
-        makeTrace({
-          tx_signature: `WindowSig${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}`,
-          slot: slots[i]!,
-          bapAuthority: authority,
-          bppAuthority: "BppWindowAuth1111111111111111111111111111111",
-        }),
-      );
-    }
+    await src.ingestTrace(makeTrace({ txSig: "WinSig10", slot: 10, bap: auth }));
+    await src.ingestTrace(makeTrace({ txSig: "WinSig20", slot: 20, bap: auth }));
+    await src.ingestTrace(makeTrace({ txSig: "WinSig30", slot: 30, bap: auth }));
+    await src.ingestTrace(makeTrace({ txSig: "WinSig40", slot: 40, bap: auth }));
+    await src.ingestTrace(makeTrace({ txSig: "WinSig50", slot: 50, bap: auth }));
 
     const results: KytTraceEvent[] = [];
-    for await (const ev of source.tracesForAuthority(authority, {
+    for await (const ev of src.tracesForAuthority(auth, {
       sinceSlot: 20,
       untilSlot: 40,
     })) {
       results.push(ev);
     }
 
-    // Inclusive lower (20), exclusive upper (40) → slots 20 and 30
-    expect(results).toHaveLength(2);
-    expect(results[0]!.slot).toBe(20);
-    expect(results[1]!.slot).toBe(30);
+    expect(results.map((r) => r.slot)).toEqual([20, 30]);
   });
 
-  // -------------------------------------------------------------------------
-  // 4. Revocation round-trip + idempotency
-  // -------------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // Test 4: Revocation round-trip + idempotency
+  // -----------------------------------------------------------------------
   it("revocation: round-trip and idempotency on (oracle, root, slot)", async () => {
-    await pool.query("TRUNCATE kyt_events, revocation_events");
+    const oracle = authority("Oracle");
+    const rev1 = makeRevocation({ oracle, slot: 500 });
+    const rev2 = makeRevocation({ oracle, slot: 600 });
 
-    const rev = makeRevocation({
-      oracle: "OracleRoundTrip11111111111111111111111111111",
-      root: "b".repeat(64),
-      slot: 500,
-    });
+    const ins1a = await src.ingestRevocation(rev1);
+    const ins1b = await src.ingestRevocation(rev1); // duplicate
+    const ins2 = await src.ingestRevocation(rev2);
 
-    const first = await source.ingestRevocation(rev);
-    const second = await source.ingestRevocation(rev);
-
-    expect(first.inserted).toBe(true);
-    expect(second.inserted).toBe(false);
+    expect(ins1a.inserted).toBe(true);
+    expect(ins1b.inserted).toBe(false); // idempotent
+    expect(ins2.inserted).toBe(true);
 
     const results: RevocationRootUpdatedEvent[] = [];
-    for await (const ev of source.revocationsForCredentialIssuers([rev.oracle])) {
+    for await (const ev of src.revocationsForCredentialIssuers([oracle])) {
       results.push(ev);
     }
 
-    expect(results).toHaveLength(1);
-    expect(results[0]!.oracle).toBe(rev.oracle);
-    expect(results[0]!.root).toBe(rev.root);
-    expect(results[0]!.slot).toBe(rev.slot);
+    // Should get rev1 and rev2 in ascending slot order.
+    expect(results).toHaveLength(2);
+    expect(results[0]?.slot).toBe(500);
+    expect(results[1]?.slot).toBe(600);
+    expect(results[0]?.oracle).toBe(oracle);
   });
 
-  // -------------------------------------------------------------------------
-  // 5. Validation: ingestTrace rejects invalid cred_pointer (uppercase)
-  // -------------------------------------------------------------------------
-  it("validation: ingestTrace with uppercase cred_pointer throws AuditTrailIndexerError", async () => {
-    const invalid: KytTraceEvent = {
+  // -----------------------------------------------------------------------
+  // Test 5: Validation — ingestTrace with invalid cred_pointer (uppercase)
+  // -----------------------------------------------------------------------
+  it("validation: ingestTrace with uppercase cred_pointer throws AuditTrailIndexerError(INVALID_KYT_EVENT)", async () => {
+    const bad: KytTraceEvent = {
+      tx_signature: "ValidSigButBadCreds",
+      slot: 1,
       stage: "init",
-      tx_signature: "ValidationSig11111111111111111111111111111111111111111111111111111111111111111111111",
-      slot: 999,
-      timestamp: 1700000001,
+      timestamp: 1_700_000_001,
       parties: [
         {
           party: "bap",
-          authority: "BapAuthority1111111111111111111111111111111",
-          // uppercase hex — must be rejected by credPointerHex validator
-          cred_pointers: ["A".repeat(64) as string],
+          authority: authority("BadAlice"),
+          // Uppercase hex — should fail the credPointerHex validator.
+          cred_pointers: ["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
         },
         {
           party: "bpp",
-          authority: "BppAuthority1111111111111111111111111111111",
-          cred_pointers: [],
+          authority: authority("BadBob"),
+          cred_pointers: [credPointer(99)],
         },
       ],
     };
 
-    await expect(source.ingestTrace(invalid)).rejects.toSatisfy(
-      (err: unknown) =>
-        err instanceof AuditTrailIndexerError && err.code === "INVALID_KYT_EVENT",
-    );
+    await expect(src.ingestTrace(bad)).rejects.toSatisfy((err: unknown) => {
+      return (
+        err instanceof AuditTrailIndexerError &&
+        err.code === "INVALID_KYT_EVENT"
+      );
+    });
   });
 });
