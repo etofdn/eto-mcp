@@ -1,259 +1,310 @@
-# Agent Identity Model: human × model × environment
+# ETO Agent Identity Model — `human × model × environment`
 
 > Tracking issue: [etofdn/eto-mcp#11](https://github.com/etofdn/eto-mcp/issues/11)
-> Status: **specification** — landed by FN-058. Wiring is split across:
-> FN-059 (authority inheritance enforcement), FN-060 (A2A coordination),
-> FN-061 (model attestation research / OAuth-for-AI-agents).
+> Upstream task: **FN-058** (this spec).
+> Downstream: **FN-059** (authority-inheritance enforcement), **FN-060** (A2A coordination), **FN-061** (model-attestation research). Part of the **FN-054** A2A milestone.
 >
-> This document is the canonical reference for the `AgentIdentity` shape
-> exported from `src/models/agent-identity.ts`. The TypeScript module is
-> reference-only until FN-059; nothing in production code imports it yet.
+> Status: **normative spec, no runtime wiring yet.** A reference TypeScript shape lives at [`src/models/agent-identity.ts`](../src/models/agent-identity.ts); no MCP tool currently emits or consumes it. FN-059 is the first task that will wire it into a request handler.
 
-## §1 — Overview
+---
 
-ETO MCP today authenticates **sessions** — a thirdweb-issued (or dev/stdio)
-HMAC-signed bearer token whose `sub` identifies a wallet-controlling human.
-That single axis is sufficient when the only actor is a human-driven CLI.
+## §1 — Why a multi-axis identity
 
-It is *not* sufficient once two AI agents need to cooperate (A2A — see FN-054
-/ FN-060). Trust between agents requires answering three orthogonal questions
-that the current `SessionClaims` shape collapses into one:
+Today's session model in `src/gateway/session.ts` answers a single question:
+*"Is this caller's bearer token validly signed for some `sub`?"* That binds a
+request to a **human authority** (the user behind `sub`) and to a bounded
+**session scope** (`exp`, `caps`, `wallet_id`). It is silent on two questions
+that A2A coordination ([FN-054](#)) forces us to answer:
 
-1. **Whose authority does the agent act under?** (the human-in-the-loop)
-2. **Which model produced the agent's actions?** (the AI provider)
-3. **Where is the agent running?** (the MCP server + cryptographic anchor)
+1. **Which AI model produced this action?** Two MCP sessions can share the same
+   `sub` while running on completely different model providers (Claude, GPT,
+   self-hosted Llama). Trust decisions about *autonomous-agent* behavior — rate
+   limits, capability gating, audit logs — need to attribute actions to a
+   model, not just a person.
+2. **Where is the agent executing?** "The same human" running ETO from the
+   stdio CLI on their laptop, from a hosted SSE deployment, and from a CI
+   runner is three different *execution surfaces*. The cryptographic anchor
+   (the wallet keys actually doing the signing) and the network-reachable
+   endpoint are surface-specific.
 
-The fourth field — `session_scope` — narrows those answers to a single bounded
-MCP session so a leaked or expired token can't be replayed under a stale
-identity.
-
-This spec defines:
+The agent identity model therefore tuples four orthogonal axes:
 
 ```
 AgentIdentity = {
-  human_authority,
-  model_attestation,
-  environment,
-  session_scope,
+  human_authority,    // who authorized this agent
+  model_attestation,  // what AI is steering it
+  environment,        // where it's running + crypto anchor
+  session_scope,      // bounded MCP session window
 }
 ```
 
-…the rules for **authority inheritance** between agents that share a
-`human_authority`, the eventual **verification roadmap** for
-`model_attestation`, and the **interim path** that builds an `AgentIdentity`
-from today's `session_info` MCP tool with no provider integration.
+Each axis has its own source-of-truth, its own threat model, and its own
+verification roadmap. They compose: an A2A counterpart that wants to trust an
+incoming message MUST evaluate all four, and MAY make different trust
+decisions on each.
+
+---
 
 ## §2 — The four fields
 
-Each field below documents:
-- **Type** — the canonical TypeScript shape (see `src/models/agent-identity.ts`).
-- **Source of truth** — what tool / module produces it today.
-- **Threat model** — what an attacker would need to forge it.
+### §2.1 — `human_authority`
 
-### §2.1 `human_authority`
+| | |
+|---|---|
+| **Definition** | The human (or human-controlled service account) that consented to this agent acting on their behalf. |
+| **Type (TS)** | `HumanAuthority` |
+| **Source-of-truth (today)** | `SessionPayload.sub` + `SessionPayload.auth_strategy` from `src/gateway/session.ts`, surfaced via `authenticate()` in `src/gateway/auth.ts`. |
+| **Concrete values today** | `sub` = thirdweb-issued wallet address (SIWE / inapp_email / inapp_oauth strategies), the literal `"dev-user"` (dev-bypass), or the synthetic `"__stdio__"` scope when running over stdio without auth. |
+| **Trust assumption** | The session token's HMAC signature attests that *some* trusted auth backend issued this `sub`. The strength of that attestation is a function of `auth_strategy`: `siwe` ≥ `inapp_oauth` ≥ `inapp_email` ≫ `dev`. `__stdio__` carries no human attestation at all and MUST be treated as local-only. |
+| **Threat model** | Compromise of `SESSION_SIGNING_KEY` lets an attacker forge any `sub`. Compromise of an upstream IdP (thirdweb) lets an attacker take over a single user's `sub`. Cross-tenant impersonation is out of scope for this spec (see [§7 Non-goals](#7-non-goals)). |
 
-The verified human principal whose authority the agent borrows.
+### §2.2 — `model_attestation`
 
-```ts
-interface HumanAuthority {
-  sub: string;                   // SessionClaims.sub — thirdweb wallet, "dev-user", or stdio principal
-  auth_strategy:                  // SessionClaims.auth_strategy
-    | "siwe" | "inapp_email" | "inapp_oauth"
-    | "dev" | "__stdio__";
-  verified: boolean;             // false for "dev" / "__stdio__" trust modes
-}
-```
+| | |
+|---|---|
+| **Definition** | A claim about which AI model/provider produced the agent's tool calls, and whether that claim is cryptographically verified. |
+| **Type (TS)** | `ModelAttestation` with discriminator `attestation_status: "verified" \| "self_declared" \| "absent"`. |
+| **Source-of-truth (forward)** | A provider-signed JWT/JWS attesting `{ model_id, provider, issued_at, audience }`, verified against the provider's published JWKS. Tracked by **FN-061**. |
+| **Source-of-truth (today)** | None. The MCP server cannot today verify what model is on the other end of the protocol; the field is `attestation_status: "self_declared"` carrying whatever the agent advertises in a `User-Agent`-style header, or `attestation_status: "absent"` if nothing was sent. |
+| **Trust assumption** | When `attestation_status === "verified"`: trust the provider's JWKS. When `"self_declared"`: treat the model claim as a **hint for telemetry only**, never for capability gating. When `"absent"`: do not branch on model identity at all. |
+| **Threat model** | Self-declared values can be spoofed trivially. Verified values inherit the provider's KMS posture; signature replay across audiences is mitigated by `aud` binding to the MCP server's origin. |
 
-- **Source of truth:** `src/gateway/session.ts::SessionPayload.sub` plus
-  `auth_strategy`, surfaced via `src/gateway/auth.ts::authenticate()`.
-- **Threat model:** forging requires the HMAC signing key
-  (`SESSION_SIGNING_KEY` / `PASETO_SIGNING_KEY`). `dev` and `__stdio__`
-  strategies are explicitly **unverified** and MUST be reported as
-  `verified: false` so downstream policy can refuse cross-agent trust under
-  them.
+This is the axis that explicitly *does not work today*. The interim path
+(see [§5](#5-interim-implementation-works-today)) is to record the
+self-declared claim and propagate `attestation_status: "self_declared"` so
+downstream code can refuse to trust it.
 
-### §2.2 `model_attestation`
+### §2.3 — `environment`
 
-Which AI model / provider issued the agent's actions. This is a **forward-
-looking** field — there is no provider-signature ecosystem to verify against
-today. The interim path declares it self-reported.
+| | |
+|---|---|
+| **Definition** | The execution surface the agent is running on, plus the cryptographic wallet anchor it controls. |
+| **Type (TS)** | `Environment` |
+| **Source-of-truth** | `currentScope()` from `src/signing/session-context.ts` (`__stdio__` / `__dev__` / thirdweb sub) for the surface; `localSignerFactory` (`src/signing/local-signer.ts`) for the SVM (Ed25519 base58) and EVM (secp256k1 0x-hex) addresses derived from the active wallet. |
+| **Concrete values** | `surface ∈ { "stdio", "sse", "dev" }`, `server_instance` = `last_restart_iso` from `session_info`, `wallet_anchor = { id, svm, evm }` from the active wallet. |
+| **Trust assumption** | The wallet anchor is the **strongest** signal in this entire model: anyone presenting a signature over a fresh challenge from `wallet_anchor.svm` or `wallet_anchor.evm` proves possession of the corresponding private key. A2A trust SHOULD prefer wallet-anchor proofs over `human_authority` claims when they disagree. |
+| **Threat model** | A surface label (`"sse"`) is unauthenticated metadata. A wallet address is authenticated metadata only after a fresh signature challenge — never trust a wallet address presented in a payload alone. |
 
-```ts
-interface ModelAttestation {
-  attestation_status: "verified" | "self_declared" | "absent";
-  provider?: string;             // e.g. "anthropic", "openai", "google"
-  model?: string;                // e.g. "claude-sonnet-4-5", "gpt-4o"
-  // Reserved for FN-061: signature, signed_at, key_id, claims envelope.
-  signature?: string;
-  signed_at?: string;            // ISO-8601
-  key_id?: string;
-}
-```
+### §2.4 — `session_scope`
 
-- **Source of truth (eventual):** an OAuth-for-AI-agents-style attestation
-  endpoint operated by the model provider, returning a JWS over a fixed
-  claims envelope. See FN-061.
-- **Source of truth (interim):** the calling agent self-declares `provider` /
-  `model` (e.g. via an MCP client header or A2A handshake). The MCP server
-  does not verify it; the field MUST carry `attestation_status:
-  "self_declared"`.
-- **Threat model:** until FN-061 lands, `model_attestation` is **trusted
-  metadata, not a security claim**. Policy code MUST treat
-  `attestation_status !== "verified"` as "unknown model" for any decision
-  whose blast radius depends on the model identity.
+| | |
+|---|---|
+| **Definition** | The bounded MCP session window inside which this identity is valid. |
+| **Type (TS)** | `SessionScope` |
+| **Source-of-truth** | `SessionPayload.{ jti, exp, caps }` plus the persistence-key `scope` string from `currentScope()`. |
+| **Concrete values** | `{ scope, jti, expires_at_iso, capabilities[] }`. |
+| **Trust assumption** | A token with `exp < now` is invalid regardless of how strong every other axis is. Capabilities (`caps[]`) are the authoritative authorization list; identity in this spec does NOT confer capability — it only attributes. |
+| **Threat model** | Token replay before `exp` is mitigated by HMAC binding + the `revoked_jtis` denylist in `src/gateway/session.ts`. Capability escalation is gated by `requireCapability()`, not by anything in this spec. |
 
-### §2.3 `environment`
-
-The execution surface the agent runs on, anchored cryptographically.
-
-```ts
-interface Environment {
-  mcp_server: string;            // stable identifier for this MCP instance
-  network: "mainnet" | "testnet" | "devnet";
-  wallet_anchor: {
-    wallet_id: string;           // SessionClaims.wallet_id / active wallet
-    svm: string | null;          // base58 Ed25519 pubkey
-    evm: string | null;          // 0x-prefixed hex
-  };
-  last_restart_iso: string;      // session_info.last_restart_iso
-}
-```
-
-- **Source of truth:** `session_info` (`wallets`, `active_wallet_id`,
-  `last_restart_iso`) plus the local-signer-derived SVM/EVM addresses
-  (`src/signing/local-signer.ts`). The wallet's keypair is the **cryptographic
-  anchor** — two MCP instances with the same `wallet_id` but different
-  derived addresses are different `environment`s.
-- **Threat model:** the wallet anchor is non-forgeable up to the strength of
-  the local-signer key store. `mcp_server` and `last_restart_iso` are
-  advisory and MUST NOT be relied on for trust decisions on their own.
-
-### §2.4 `session_scope`
-
-Bounds the identity to a single MCP session.
-
-```ts
-interface SessionScope {
-  scope: string;                 // currentScope() — sub / "__stdio__" / "__dev__"
-  token_expires_at: string | null;  // ISO-8601 from SessionPayload.exp
-  token_expires_in_seconds: number | null;
-  jti?: string;                  // SessionPayload.jti — for revocation correlation
-}
-```
-
-- **Source of truth:** `src/signing/session-context.ts::currentScope()` plus
-  `SessionPayload.exp` / `jti`.
-- **Threat model:** an `AgentIdentity` whose `token_expires_at` is in the
-  past MUST be rejected. Revocation goes through the existing JTI denylist
-  in `src/gateway/session.ts`.
+---
 
 ## §3 — Authority inheritance rule
 
-> Two agents that present `AgentIdentity`s with the **same verified
-> `human_authority.sub`** are mutually trusted for actions that human has
-> authorized, *up to the intersection of their `session_scope` capabilities
-> and within their respective `environment`s*.
+> **Rule.** Two `AgentIdentity` values `A` and `B` MAY transitively trust each
+> other for the *intersection* of `A.session_scope.capabilities` and
+> `B.session_scope.capabilities`, **iff** all of the following hold:
+>
+> 1. `A.human_authority.sub === B.human_authority.sub`, AND
+> 2. Both `A.human_authority` and `B.human_authority` carry an
+>    `auth_strategy` other than `"dev"` and a scope other than `"__stdio__"`
+>    (i.e. both are anchored to a real human-authenticated backend), AND
+> 3. Neither `session_scope` is expired.
+>
+> The rule is **silent on `model_attestation`**: two agents inherit authority
+> across model providers, because the human is the same human. The rule is
+> **silent on `environment`**: a user can fan out work from their laptop to a
+> hosted runner under the same `sub`, and inheritance still holds.
 
-Concretely:
+### §3.1 — Worked example
 
-- Agent A holds session `Sₐ` with `sub = 0xAlice`, `auth_strategy = "siwe"`,
-  `caps = ["transfer:write", "a2a:write"]`.
-- Agent B holds session `S_b` with `sub = 0xAlice`, `auth_strategy =
-  "inapp_oauth"`, `caps = ["transfer:write"]`.
-- A initiates an A2A message to B. B's identity check matches
-  `human_authority.sub` and `human_authority.verified === true` on both
-  sides → A is treated as acting under Alice's authority.
-- The trusted-action set is the **intersection** of `caps`:
-  `{transfer:write}`. B MUST NOT honor A's `a2a:write`-only requests just
-  because they share a human.
+Alice signs in with thirdweb SIWE on her laptop. The MCP server issues
+session token `T_laptop` with `sub = 0xAlice`, `auth_strategy = "siwe"`,
+`caps = [a2a:write, transfer:write, …]`. Her IDE runs Claude.
 
-Inheritance is **not** transitive across humans, **not** valid when either
-side reports `human_authority.verified === false`, and **not** a substitute
-for capability checks (`requireCapability`). It is a *gating condition* that
-permits cross-agent capability checks to succeed at all; the capability
-check itself still runs.
+Alice also has a hosted runner that authenticated as `0xAlice` through the
+same thirdweb provider; it holds session token `T_runner` with the same `sub`
+but `caps = [a2a:write, a2a:read]` only (narrowed by capability scoping at
+issuance). It runs GPT.
 
-The enforcement implementation is FN-059's job. This spec only fixes the
-predicate.
+A2A message flow: the runner agent (GPT) sends an A2A message to a counterpart
+that holds `T_laptop` (Claude). The receiver evaluates inheritance:
+
+- `sub` matches (`0xAlice` ↔ `0xAlice`) ✓
+- both `auth_strategy = "siwe"` ✓
+- both unexpired ✓
+
+→ The receiver MAY treat the message as Alice-authorized. The action it can
+ultimately *perform* is gated by **its own** `capabilities[]`, not the
+sender's: inheritance attributes intent, it does not lend caps. If the
+receiver only has `a2a:read`, it cannot turn an inherited request into a
+`transfer:write`.
+
+### §3.2 — When inheritance does NOT apply
+
+- `__stdio__` ↔ anything: stdio carries no human attestation, so it cannot
+  inherit from or to an authenticated session. Stdio agents are local trust
+  only.
+- `__dev__` / `auth_strategy = "dev"`: dev-bypass MUST NOT inherit into
+  production-strategy sessions even on a `sub` collision.
+- `model_attestation`-based gating: a counterpart MAY *additionally* require
+  `model_attestation.attestation_status === "verified"` for a specific
+  capability. That check is layered ON TOP of the rule above; it does not
+  weaken it.
+
+---
 
 ## §4 — Verification roadmap for `model_attestation`
 
-Tracked end-to-end in **FN-061**. The target shape:
+The eventual flow ([FN-061](#) tracks the research):
 
-1. Provider operates an attestation endpoint (OAuth-for-AI-agents direction
-   currently being formalized in the broader ecosystem; exact RFC TBD).
-2. The agent obtains a short-lived JWS whose claims include at minimum:
-   - `iss` — provider identifier (`https://api.anthropic.com`, etc.)
-   - `model` — model identifier with version
-   - `agent_session` — opaque ID binding this attestation to a model session
-   - `aud` — the MCP server identifier (matches `Environment.mcp_server`)
-   - `exp`, `iat`, `jti`
-3. Signature algorithm: EdDSA (Ed25519) or ES256, keyed by a published JWKS.
-4. The MCP server resolves `iss` → JWKS (cached), verifies the signature,
-   verifies `aud` against its own identifier, and only then sets
-   `attestation_status: "verified"`.
+1. The agent runtime obtains a short-lived JWT from its model provider with
+   payload approximately:
+   ```json
+   {
+     "iss": "https://provider.example/v1",
+     "sub": "model:claude-3-7-sonnet-20250219",
+     "aud": "https://mcp.eto.example",
+     "iat": 1735689600,
+     "exp": 1735690200,
+     "model_id": "claude-3-7-sonnet-20250219",
+     "provider": "anthropic"
+   }
+   ```
+2. The agent attaches the JWT in an `X-Model-Attestation` header (or MCP
+   transport equivalent) on each outbound MCP request.
+3. The MCP server verifies the JWT against the provider's published JWKS
+   (cached, with rotation). `aud` MUST equal the server's canonical origin.
+4. On success: emit `ModelAttestation` with `attestation_status: "verified"`,
+   carrying `provider`, `model_id`, and the signature's `kid`.
+5. On any failure (signature, `aud`, `exp`, unknown provider): emit
+   `attestation_status: "absent"`. Do NOT downgrade to `"self_declared"` —
+   self-declared is for the case where there was *no* attestation attempted.
 
-Until that ecosystem exists, the field is `"self_declared"` or `"absent"`.
+**Open design questions** flagged for FN-061:
+
+- Signature algorithm — RFC 9458/9461 / JWS `EdDSA` vs. `ES256`.
+- Key discovery — direct JWKS URL vs. a registry like
+  [`oauth-for-ai-agents`](https://github.com/etofdn/eto-mcp/issues/11)-style
+  IdP federation.
+- Revocation — short `exp` (≤ 60 s) is the working assumption; explicit
+  revocation lists are deferred.
+- Tenant binding — whether `aud` alone is enough, or a per-deployment nonce
+  is required to defeat replay across ETO instances.
+
+---
 
 ## §5 — Interim implementation (works today)
 
-`buildInterimAgentIdentity(input)` in `src/models/agent-identity.ts` accepts a
-`session_info`-shaped payload and produces a structurally valid
-`AgentIdentity` with:
+Until FN-061 lands, every `AgentIdentity` we can construct has
+`model_attestation.attestation_status` of `"self_declared"` or `"absent"`.
+Construction reuses the existing `session_info` MCP tool's response shape
+*as data input only* — no new tool, no change to `session_info` itself
+(that's FN-059's job).
 
-- `human_authority.verified` derived from `auth_strategy` —
-  `siwe`/`inapp_email`/`inapp_oauth` → `true`; `dev`/`__stdio__`/missing →
-  `false`.
-- `model_attestation = { attestation_status: "self_declared" }` if the caller
-  supplies `provider`/`model`; otherwise `{ attestation_status: "absent" }`.
-- `environment.wallet_anchor` populated from the active wallet entry in
-  `wallets[]`.
-- `session_scope` from `scope` / `token_expires_at` /
-  `token_expires_in_seconds`.
+A pure builder is exported as
+[`buildInterimAgentIdentity`](../src/models/agent-identity.ts) with this
+contract:
 
-The function performs **no I/O** and does **not** import from
-`src/tools/session.ts` — it is a pure mapper so FN-059 can wire it from any
-context (request handler, A2A bridge, test fixture) without coupling.
+```ts
+buildInterimAgentIdentity({
+  // session_info-shaped payload:
+  scope,                       // currentScope()
+  active_wallet_id,            // wallet.ts
+  wallets: [{ id, label, svm, evm }, ...],
+  auth_strategy,               // SessionPayload.auth_strategy | null
+  token_expires_at,            // ISO string | null
+  last_restart_iso,            // server boot ISO
+  // optional caller-provided hints:
+  declared_model?: { provider, model_id }, // becomes self_declared attestation
+  capabilities?: string[],     // SessionPayload.caps | undefined
+  jti?: string,                // SessionPayload.jti | undefined
+}): AgentIdentity
+```
 
-**Trust degradation under the interim path:**
+The builder:
 
-- `model_attestation` is meaningless for security; treat as advisory log
-  metadata only.
-- Any `human_authority` whose `auth_strategy` is `dev` or `__stdio__` carries
-  `verified: false` and MUST NOT participate in authority inheritance
-  (§3).
+1. Maps `scope` + `auth_strategy` into `human_authority`, computing
+   `human_authority.kind` as `"thirdweb"` (real `sub`),
+   `"stdio"` (`scope === "__stdio__"`), `"dev"` (`auth_strategy === "dev"`
+   or `scope === "__dev__"`), or `"unknown"`.
+2. Maps the active wallet's `{svm, evm}` into `environment.wallet_anchor`,
+   and `last_restart_iso` into `environment.server_instance`. Surface is
+   inferred from `scope` (`"__stdio__"` → `"stdio"`, `"__dev__"` → `"dev"`,
+   anything else → `"sse"`).
+3. If `declared_model` is provided, emits
+   `attestation_status: "self_declared"` carrying it. Otherwise emits
+   `attestation_status: "absent"`.
+4. Maps `token_expires_at`, `capabilities`, `jti`, and `scope` into
+   `session_scope`.
 
-## §6 — Non-goals
+**The builder MUST throw** if `scope` is missing — there is no meaningful
+identity without a session-scope persistence key.
 
-- **Revocation transport** — JTI denylist already exists in
-  `src/gateway/session.ts`; this spec does not extend it.
-- **Attestation transport** — how the provider's JWS reaches the MCP server
-  (header? A2A frame? out-of-band?) is FN-061's design space.
-- **Cross-tenant delegation** — granting Bob's agent authority under Alice's
-  `sub`. Out of scope; would require an explicit delegation credential.
-- **On-chain identity binding** — linking `AgentIdentity` to an on-chain
-  agent record (cf. `agent:write`/`agent:read` capabilities). Tracked
-  separately.
+**Trust degradation.** Any consumer of an interim `AgentIdentity` MUST
+treat `model_attestation` as untrusted telemetry. Specifically:
 
-## §7 — Open questions
+- Authority inheritance ([§3](#3--authority-inheritance-rule)) is permitted
+  on `human_authority` alone, since that field is HMAC-attested today.
+- Capability gating MUST NOT branch on `model_attestation` until `verified`
+  is reachable.
 
-| # | Question | Resolves in |
+---
+
+## §6 — Type reference
+
+The canonical TS surface is in [`src/models/agent-identity.ts`](../src/models/agent-identity.ts).
+Field-level JSDoc cites the section numbers in this document.
+
+```ts
+interface AgentIdentity {
+  human_authority: HumanAuthority;     // §2.1
+  model_attestation: ModelAttestation; // §2.2
+  environment: Environment;            // §2.3
+  session_scope: SessionScope;         // §2.4
+}
+```
+
+---
+
+## §7 — Non-goals
+
+This spec deliberately does NOT cover:
+
+- **Revocation transport.** Token revocation lives in
+  `src/gateway/session.ts`'s `revokeJti` denylist and is independent of
+  this identity shape.
+- **Attestation transport.** How `X-Model-Attestation` arrives at the server
+  (HTTP header vs. MCP-protocol extension) is FN-061's call.
+- **Cross-tenant delegation.** "Alice's agent acts on behalf of Bob" is not a
+  case of authority inheritance; it requires a delegation credential and is
+  out of scope.
+- **A2A wire format.** How an `AgentIdentity` is serialized into an A2A
+  envelope is FN-060's call.
+- **MCP tool changes.** `session_info` and `SessionPayload` are unchanged.
+  FN-059 is the first task that will wire `AgentIdentity` into a handler.
+
+---
+
+## §8 — Open questions
+
+| # | Question | Resolved by |
 |---|---|---|
-| Q1 | Should `human_authority.verified` distinguish "verified weak" (e.g. `inapp_email` without 2FA) from "verified strong" (`siwe`)? | FN-059 |
-| Q2 | What is the canonical `mcp_server` identifier — env var, derived from a server-instance keypair, or fly app name? | FN-059 |
-| Q3 | Where does the self-declared `provider`/`model` enter the system — MCP client capability negotiation, custom header, or A2A handshake field? | FN-060 |
-| Q4 | Which JWS algorithm and JWKS resolution rules do we mandate? | FN-061 |
-| Q5 | Do we expose `AgentIdentity` over an MCP tool (e.g. `agent_identity`) or only as an internal struct? | FN-059 |
+| Q1 | Should `human_authority.kind === "stdio"` ever participate in inheritance with another stdio session on the same host? | FN-059 |
+| Q2 | What is the exact JWS algorithm and JWKS discovery story for `model_attestation`? | FN-061 |
+| Q3 | Does `environment.surface` need a fourth value (`"http-bridge"`) for the SSE-bridge variant? | FN-060 |
+| Q4 | Should `session_scope.capabilities` be re-projected into a coarser A2A capability vocabulary, or carried verbatim? | FN-060 |
+| Q5 | Is `wallet_anchor` allowed to carry multiple wallets (the user's full set), or must it be the single active wallet at issuance? | FN-059 |
 
-## §8 — References
+---
 
-- Issue [#11](https://github.com/etofdn/eto-mcp/issues/11) — upstream framing.
-- FN-054 — A2A coordination milestone.
-- FN-059 — authority inheritance enforcement (consumes this spec).
-- FN-060 — A2A coordination implementation.
-- FN-061 — `model_attestation` verification research.
-- `src/tools/session.ts` — `session_info` MCP tool.
-- `src/gateway/session.ts` — `SessionPayload` / HMAC token format.
-- `src/gateway/auth.ts` — `authenticate()` and auth strategies.
-- `src/signing/session-context.ts` — `currentScope()`.
-- `src/signing/local-signer.ts` — wallet keypair anchor.
+## §9 — Cross-references
+
+- Upstream tracking issue: [etofdn/eto-mcp#11](https://github.com/etofdn/eto-mcp/issues/11)
+- A2A milestone: **FN-054**
+- Authority-inheritance enforcement: **FN-059** (consumes this spec)
+- A2A coordination wire format: **FN-060**
+- Model-attestation research: **FN-061**
+- Session and capability primitives: [`src/gateway/session.ts`](../src/gateway/session.ts), [`src/gateway/auth.ts`](../src/gateway/auth.ts)
+- Scope context: [`src/signing/session-context.ts`](../src/signing/session-context.ts)
+- Wallet anchor: [`src/signing/local-signer.ts`](../src/signing/local-signer.ts)
+- Today's identity-adjacent tool: [`src/tools/session.ts`](../src/tools/session.ts) (`session_info`)
