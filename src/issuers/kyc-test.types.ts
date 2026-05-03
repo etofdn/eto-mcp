@@ -121,6 +121,11 @@ export interface KycTestIssuerDeps {
   readonly minDwellSeconds?: number;
   /** Wall-clock — defaults to `Date.now()/1000`. */
   readonly nowUnix?: () => number;
+  /**
+   * Optional CSPRNG hook for `claimCommitments` salt generation
+   * (§10.3.1). Defaults to `globalThis.crypto.getRandomValues`.
+   */
+  readonly randomBytes?: (len: number) => Uint8Array;
 }
 
 export interface KycTestIssueRequest {

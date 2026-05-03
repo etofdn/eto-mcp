@@ -84,7 +84,7 @@ function sbox(x: bigint): bigint {
 function fromLeBytesModOrder(bytes: Uint8Array): bigint {
   let val = 0n;
   for (let i = 0; i < bytes.length; i++) {
-    val |= BigInt(bytes[i]) << BigInt(8 * i);
+    val |= BigInt(bytes[i]!) << BigInt(8 * i);
   }
   return val % P;
 }
@@ -96,7 +96,7 @@ function fromLeBytesModOrder(bytes: Uint8Array): bigint {
 function fromBeBytesModOrder(bytes: Uint8Array): bigint {
   let val = 0n;
   for (let i = 0; i < bytes.length; i++) {
-    val = (val << 8n) | BigInt(bytes[i]);
+    val = (val << 8n) | BigInt(bytes[i]!);
   }
   return val % P;
 }
@@ -118,7 +118,7 @@ function fromBeBytesModOrder(bytes: Uint8Array): bigint {
  * State bit layout after initialization (before warm-up):
  *   [0]     = 0
  *   [1]     = 1   (prime field indicator)
- *   [2..5]  = S-box bits (state[5]=1 iff inverse S-box; else all 0)
+ *   [2..5]  = S-box bits (state[5] =1 iff inverse S-box; else all 0)
  *   [6..17] = n (prime_num_bits) in 12 bits, LSB at index 17
  *   [18..29]= t (state_len) in 12 bits, LSB at index 29
  *   [30..39]= R_F in 10 bits, LSB at index 39
@@ -207,12 +207,12 @@ class GrainLFSR {
   private _update(): number {
     const h = this.head;
     const newBit =
-      this.state[h] ^
-      this.state[(h + 13) % 80] ^
-      this.state[(h + 23) % 80] ^
-      this.state[(h + 38) % 80] ^
-      this.state[(h + 51) % 80] ^
-      this.state[(h + 62) % 80];
+      this.state[h]! ^
+      this.state[(h + 13) % 80]! ^
+      this.state[(h + 23) % 80]! ^
+      this.state[(h + 38) % 80]! ^
+      this.state[(h + 51) % 80]! ^
+      this.state[(h + 62) % 80]!;
     this.state[h] = newBit;
     this.head = (h + 1) % 80;
     return newBit;
@@ -260,10 +260,10 @@ class GrainLFSR {
     while (res.length < numElems) {
       const bits = this.getBits(this.primeNumBits);
       bits.reverse(); // match arkworks bits.reverse() before from_bits_le
-      // from_bits_le semantics: bits[0] is coefficient of 2^0 (LSB)
+      // from_bits_le semantics: bits[0]! is coefficient of 2^0 (LSB)
       let val = 0n;
       for (let i = 0; i < bits.length; i++) {
-        if (bits[i]) val |= 1n << BigInt(i);
+        if (bits[i]!!) val |= 1n << BigInt(i);
       }
       if (val < P) {
         res.push(val);
@@ -290,11 +290,11 @@ class GrainLFSR {
     for (let k = 0; k < numElems; k++) {
       const bits = this.getBits(this.primeNumBits);
       bits.reverse(); // MSB-first (matches arkworks)
-      // Pack into bytes: bits[i] → byte[i>>3] bit (i&7)
+      // Pack into bytes: bits[i]! → byte[i>>3] bit (i&7)
       const bytes = new Uint8Array(Math.ceil(this.primeNumBits / 8));
       for (let i = 0; i < bits.length; i++) {
-        if (bits[i]) {
-          bytes[i >> 3] |= 1 << (i & 7);
+        if (bits[i]!) {
+          bytes[i >> 3]! |= 1 << (i & 7);
         }
       }
       res.push(fromLeBytesModOrder(bytes));
@@ -346,12 +346,12 @@ function buildParams(): PoseidonParams {
   const xs = lfsr.getFieldElementsModP(T);
   const ys = lfsr.getFieldElementsModP(T);
 
-  // Cauchy matrix: mds[i][j] = (xs[i] + ys[j])^{-1}
+  // Cauchy matrix: mds[i][j] = (xs[i]! + ys[j]!)^{-1}
   const mds: bigint[][] = [];
   for (let i = 0; i < T; i++) {
     const row: bigint[] = [];
     for (let j = 0; j < T; j++) {
-      const sum = addMod(xs[i], ys[j]);
+      const sum = addMod(xs[i]!!, ys[j]!!);
       row.push(modInv(sum));
     }
     mds.push(row);
@@ -379,11 +379,11 @@ function getParams(): PoseidonParams {
  *
  * Round structure (matches `PoseidonSponge::permute` in arkworks 0.5.0):
  *   - 4 full rounds  (all 3 elements get S-box)
- *   - 56 partial rounds (only state[0] gets S-box)
+ *   - 56 partial rounds (only state[0]! gets S-box)
  *   - 4 full rounds
  *
  * The permutation acts on ALL t=3 state elements including the capacity
- * element at state[0].
+ * element at state[0]!.
  */
 function poseidonPermute(state: bigint[]): void {
   const { ark, mds } = getParams();
@@ -396,39 +396,39 @@ function poseidonPermute(state: bigint[]): void {
   // First half: full rounds
   for (let r = 0; r < FULL_HALF; r++, roundIdx++) {
     // ARK
-    for (let j = 0; j < T; j++) state[j] = addMod(state[j], ark[roundIdx][j]);
+    for (let j = 0; j < T; j++) state[j] = addMod(state[j]!, ark[roundIdx]![j]!);
     // S-box (all elements)
-    for (let j = 0; j < T; j++) state[j] = sbox(state[j]);
-    // MDS: new_state[i] = sum_j mds[i][j] * state[j]
-    const tmp0 = addMod(addMod(mulMod(mds[0][0], state[0]), mulMod(mds[0][1], state[1])), mulMod(mds[0][2], state[2]));
-    const tmp1 = addMod(addMod(mulMod(mds[1][0], state[0]), mulMod(mds[1][1], state[1])), mulMod(mds[1][2], state[2]));
-    const tmp2 = addMod(addMod(mulMod(mds[2][0], state[0]), mulMod(mds[2][1], state[1])), mulMod(mds[2][2], state[2]));
+    for (let j = 0; j < T; j++) state[j] = sbox(state[j]!);
+    // MDS: new_state[i] = sum_j mds[i][j] * state[j]!
+    const tmp0 = addMod(addMod(mulMod(mds[0]![0]!, state[0]!), mulMod(mds[0]![1]!, state[1]!)), mulMod(mds[0]![2]!, state[2]!));
+    const tmp1 = addMod(addMod(mulMod(mds[1]![0]!, state[0]!), mulMod(mds[1]![1]!, state[1]!)), mulMod(mds[1]![2]!, state[2]!));
+    const tmp2 = addMod(addMod(mulMod(mds[2]![0]!, state[0]!), mulMod(mds[2]![1]!, state[1]!)), mulMod(mds[2]![2]!, state[2]!));
     state[0] = tmp0; state[1] = tmp1; state[2] = tmp2;
   }
 
   // Partial rounds
   for (let r = 0; r < PARTIAL; r++, roundIdx++) {
     // ARK
-    for (let j = 0; j < T; j++) state[j] = addMod(state[j], ark[roundIdx][j]);
+    for (let j = 0; j < T; j++) state[j] = addMod(state[j]!, ark[roundIdx]![j]!);
     // S-box (first element only)
-    state[0] = sbox(state[0]);
+    state[0] = sbox(state[0]!);
     // MDS
-    const tmp0 = addMod(addMod(mulMod(mds[0][0], state[0]), mulMod(mds[0][1], state[1])), mulMod(mds[0][2], state[2]));
-    const tmp1 = addMod(addMod(mulMod(mds[1][0], state[0]), mulMod(mds[1][1], state[1])), mulMod(mds[1][2], state[2]));
-    const tmp2 = addMod(addMod(mulMod(mds[2][0], state[0]), mulMod(mds[2][1], state[1])), mulMod(mds[2][2], state[2]));
+    const tmp0 = addMod(addMod(mulMod(mds[0]![0]!, state[0]!), mulMod(mds[0]![1]!, state[1]!)), mulMod(mds[0]![2]!, state[2]!));
+    const tmp1 = addMod(addMod(mulMod(mds[1]![0]!, state[0]!), mulMod(mds[1]![1]!, state[1]!)), mulMod(mds[1]![2]!, state[2]!));
+    const tmp2 = addMod(addMod(mulMod(mds[2]![0]!, state[0]!), mulMod(mds[2]![1]!, state[1]!)), mulMod(mds[2]![2]!, state[2]!));
     state[0] = tmp0; state[1] = tmp1; state[2] = tmp2;
   }
 
   // Second half: full rounds
   for (let r = 0; r < FULL_HALF; r++, roundIdx++) {
     // ARK
-    for (let j = 0; j < T; j++) state[j] = addMod(state[j], ark[roundIdx][j]);
+    for (let j = 0; j < T; j++) state[j] = addMod(state[j]!, ark[roundIdx]![j]!);
     // S-box (all elements)
-    for (let j = 0; j < T; j++) state[j] = sbox(state[j]);
+    for (let j = 0; j < T; j++) state[j] = sbox(state[j]!);
     // MDS
-    const tmp0 = addMod(addMod(mulMod(mds[0][0], state[0]), mulMod(mds[0][1], state[1])), mulMod(mds[0][2], state[2]));
-    const tmp1 = addMod(addMod(mulMod(mds[1][0], state[0]), mulMod(mds[1][1], state[1])), mulMod(mds[1][2], state[2]));
-    const tmp2 = addMod(addMod(mulMod(mds[2][0], state[0]), mulMod(mds[2][1], state[1])), mulMod(mds[2][2], state[2]));
+    const tmp0 = addMod(addMod(mulMod(mds[0]![0]!, state[0]!), mulMod(mds[0]![1]!, state[1]!)), mulMod(mds[0]![2]!, state[2]!));
+    const tmp1 = addMod(addMod(mulMod(mds[1]![0]!, state[0]!), mulMod(mds[1]![1]!, state[1]!)), mulMod(mds[1]![2]!, state[2]!));
+    const tmp2 = addMod(addMod(mulMod(mds[2]![0]!, state[0]!), mulMod(mds[2]![1]!, state[1]!)), mulMod(mds[2]![2]!, state[2]!));
     state[0] = tmp0; state[1] = tmp1; state[2] = tmp2;
   }
 }
@@ -443,15 +443,15 @@ function poseidonPermute(state: bigint[]): void {
  * Absorbs three field elements and returns the first squeezed element.
  * Matches `hash_t3` in `crates/eto-zk/src/poseidon.rs`.
  *
- * State layout: [capacity(state[0]), rate_0(state[1]), rate_1(state[2])]
+ * State layout: [capacity(state[0]!), rate_0(state[1]!), rate_1(state[2]!)]
  *
  * Sponge construction (rate=2, capacity=1):
  *  1. state = [0, 0, 0]
- *  2. state[1] += inputs[0]; state[2] += inputs[1]  (absorb to rate portion)
+ *  2. state[1]! += inputs[0]!; state[2]! += inputs[1]!  (absorb to rate portion)
  *  3. Permute                                         (rate full)
- *  4. state[1] += inputs[2]                          (absorb remainder)
+ *  4. state[1]! += inputs[2]!                          (absorb remainder)
  *  5. Permute                                         (before squeeze)
- *  6. return state[1]                                 (first rate element)
+ *  6. return state[1]!                                 (first rate element)
  *
  * @param inputs Three BN254 Fr field elements (bigints in [0, P)).
  * @returns First output field element of the sponge.
@@ -461,23 +461,23 @@ export function poseidon2(inputs: [bigint, bigint, bigint]): bigint {
     if (x < 0n || x >= P) throw new RangeError(`poseidon2: input out of range: ${x}`);
   }
 
-  // State layout: [capacity=state[0], rate_0=state[1], rate_1=state[2]]
+  // State layout: [capacity=state[0]!, rate_0=state[1]!, rate_1=state[2]!]
   const state: bigint[] = [0n, 0n, 0n];
 
   // Absorb rate elements: state[capacity + i] += inputs[i]
-  // capacity=1, so state[1] and state[2] are the rate portion
-  state[1] = addMod(state[1], inputs[0]); // state[capacity + 0]
-  state[2] = addMod(state[2], inputs[1]); // state[capacity + 1]
+  // capacity=1, so state[1]! and state[2]! are the rate portion
+  state[1] = addMod(state[1]!, inputs[0]!); // state[capacity + 0]
+  state[2] = addMod(state[2]!, inputs[1]!); // state[capacity + 1]
   // Rate is now full → permute
   poseidonPermute(state);
 
   // Absorb remaining input
-  state[1] = addMod(state[1], inputs[2]); // state[capacity + 0]
+  state[1] = addMod(state[1]!, inputs[2]!); // state[capacity + 0]
 
-  // Squeeze: permute, then return state[capacity + 0] = state[1]
+  // Squeeze: permute, then return state[capacity + 0] = state[1]!
   poseidonPermute(state);
 
-  return state[1];
+  return state[1]!;
 }
 
 // ---------------------------------------------------------------------------

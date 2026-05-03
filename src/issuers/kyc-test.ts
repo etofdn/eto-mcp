@@ -33,6 +33,7 @@
 
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
+import { computeClaimCommitments } from "./claim-commitments.js";
 import {
   KYC_TEST_MIN_DWELL_SECONDS,
   KycTestFormSubmission,
@@ -169,7 +170,7 @@ export async function issueKycTest(
   // Step 5 — build VC, pin, submit on-chain IssueCredential.
   const slot = await deps.clock.currentSlot();
 
-  const vc = buildKycTestVc({
+  const baseVc = buildKycTestVc({
     agentCardPubkey,
     issuerAuthorityPubkey: deps.issuerAuthorityPubkey,
     fullName: normalized.normName,
@@ -177,6 +178,13 @@ export async function issueKycTest(
     nullifier,
     issuanceDate: new Date(nowUnix * 1000).toISOString(),
   });
+  // §10.3.1: per-leaf Poseidon-2 commitments, embedded BEFORE
+  // canonicalisation so `claim_hash` binds them.
+  const claimCommitments = computeClaimCommitments(
+    baseVc.credentialSubject as Record<string, unknown>,
+    { randomBytes: deps.randomBytes },
+  );
+  const vc = { ...baseVc, claimCommitments };
   const claimJcs = jcsCanonicalize(vc);
   const claimHashHex = sha256Hex(claimJcs);
 

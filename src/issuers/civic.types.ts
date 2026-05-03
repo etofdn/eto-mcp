@@ -241,4 +241,9 @@ export interface CivicIssuerDeps {
   readonly issuerAuthorityPubkey: string;
   /** Wall-clock for VC `issuanceDate`. Defaults to `Date.now()`. */
   readonly nowUnix?: () => number;
+  /**
+   * Optional CSPRNG hook for `claimCommitments` salt generation
+   * (§10.3.1). Defaults to `globalThis.crypto.getRandomValues`.
+   */
+  readonly randomBytes?: (len: number) => Uint8Array;
 }
