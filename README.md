@@ -271,6 +271,29 @@ lines via Solana JSON-RPC `logsSubscribe`. Consumed downstream by the
 1099 issuer (FN-132) and travel-rule generator (FN-133). Tests use the
 shipped `InMemoryKytEventSource` reference implementation.
 
+#### Audit-trail persistence (FN-083)
+
+A Postgres-backed `PostgresKytEventSource` is available as a drop-in
+replacement for `InMemoryKytEventSource`. Configure it via the
+`AUDIT_DB_URL` environment variable (a standard `postgres://…` connection
+string). When `AUDIT_DB_URL` is unset the `createKytEventSourceFromEnv`
+factory returns an empty `InMemoryKytEventSource` as a safe fallback.
+
+**Migration** (run once against the target database):
+
+```sh
+psql "$AUDIT_DB_URL" -f scripts/migrations/001_kyt_events.sql
+```
+
+The migration is idempotent (`CREATE TABLE IF NOT EXISTS`) and creates
+two tables — `kyt_events` and `revocation_events` — that together hold
+every `KytTrace` and `RevocationRootUpdated` event observed on-chain.
+
+**FATF R.11 retention.** FATF Recommendation 11 requires virtual-asset
+service providers to retain transfer records for at least **five years**.
+These tables satisfy that requirement. Do not DELETE or TRUNCATE them in
+production.
+
 ### 1099 issuance flow sketch (`@eto/mcp` → `keeper/bpps/bank/handlers/tax-1099-sketch.ts`)
 
 T-3.13.1.3 / FN-132. Manually-triggered bank-as-BPP flow that, given a
