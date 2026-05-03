@@ -252,6 +252,11 @@ export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
       });
       return;
     }
+    const fresh = validateBecknEnvelopeFreshness((req.body as Record<string, unknown> | undefined)?.context);
+    if (!fresh.ok) {
+      res.status(fresh.status).json(fresh.body);
+      return;
+    }
     try {
       const onchain_args = becknSearchToOnChainArgs(req.body);
       const { tx_signature } = await deps.submitOnChain("search", onchain_args);
@@ -275,6 +280,11 @@ export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
     const v = validateBecknRequest("select", req.body);
     if (!v.ok) {
       res.status(400).json({ error: "beckn_validation_failed", details: v.errors });
+      return;
+    }
+    const fresh = validateBecknEnvelopeFreshness((req.body as Record<string, unknown> | undefined)?.context);
+    if (!fresh.ok) {
+      res.status(fresh.status).json(fresh.body);
       return;
     }
     try {
