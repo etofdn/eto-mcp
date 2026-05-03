@@ -119,20 +119,34 @@ export class LocalSignerFactory implements SignerFactory {
         // ensureLoaded()s wait on the same promise.
         s.beginLoad(loaded => {
           const bucket = this.walletsForScope(scope);
+          let needsResave = false;
           for (const [id, w] of loaded) {
+            // Migration path (FN-016): old wallet files don't store evmAddress.
+            // Re-derive it from the private key so the registry is fully populated
+            // on cold start without requiring manual re-import.
+            let evmAddress = w.evmAddress;
+            if (!evmAddress) {
+              const signer = new LocalSigner(w.privateKey);
+              evmAddress = signer.getEvmSigningAddress();
+              needsResave = true;
+            }
             const entry: WalletEntry = {
               label: w.label,
               privateKey: w.privateKey,
               publicKey: w.publicKey,
-              evmAddress: w.evmAddress,
+              evmAddress,
             };
             bucket.set(id, entry);
-            // Restore registry entries for wallets that have evmAddress stored
-            // (FN-016). Wallets without evmAddress (pre-FN-016 files) remain
-            // unmapped until re-saved; the operator should re-import or recreate.
-            if (w.evmAddress) {
-              s.recordCrossVmMapping(bs58.encode(w.publicKey), w.evmAddress);
-            }
+            // Restore SVM↔EVM registry so resolve_cross_vm_address works
+            // immediately after load (FN-016).
+            s.recordCrossVmMapping(bs58.encode(w.publicKey), evmAddress);
+          }
+          // Re-save to persist the migrated evmAddress fields so next load
+          // is instantaneous (no private-key derivation required).
+          if (needsResave && this.configured) {
+            void this.persistScope(scope).catch(err =>
+              console.error("[eto-mcp] FN-016 migration re-save failed:", err),
+            );
           }
         });
       }
