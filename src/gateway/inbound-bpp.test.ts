@@ -12,6 +12,12 @@
  *  - unknown bpp_id rejected with 403 when expectedBpps is set
  *  - duplicate transaction_id rejected with 409 (replay dedup, always on)
  *  - missing Authorization header rejected with 401 when requireSignature=true
+ *
+ * FN-075: Caller pubkey plumbing
+ *  - happy path: valid signature → callerPubkey present in on-chain args
+ *  - bad signature → 401, submitOnChain NOT called
+ *  - body fields differ from signer: callerPubkey reflects signer, body unchanged
+ *  - dev-bypass (no verifyBapSignature): callerPubkey absent, no pubkey forged
  */
 
 import { randomUUID } from 'node:crypto';
@@ -408,5 +414,118 @@ describe('FN-036: Signature gate (requireSignature)', () => {
     expect(res.status).toBe(200);
     const json = await res.json() as any;
     expect(json.message.ack.status).toBe('ACK');
+  });
+});
+
+// ---------- FN-075: Caller pubkey plumbing ----------
+
+describe('FN-075: verifyBapSignature — callerPubkey plumbing on /on_confirm', () => {
+  const SIGNER_PUBKEY = 'a'.repeat(64); // canonical lowercase hex
+
+  function buildServer(deps: Partial<InboundBppDeps>) {
+    const app = express();
+    app.use(express.json());
+    mountOnConfirmCallback(app, makeDeps(deps));
+    return new Promise<{ server: Server; url: string }>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => {
+        const addr = s.address() as AddressInfo;
+        resolve({ server: s, url: `http://127.0.0.1:${addr.port}` });
+      });
+    });
+  }
+
+  it('happy path: valid signature → callerPubkey in on-chain args, submitOnChain called', async () => {
+    const submitMock = vi.fn(async () => ({ tx_signature: 'stub_sig' }));
+    const { server, url } = await buildServer({
+      verifyBapSignature: () => SIGNER_PUBKEY,
+      submitOnChain: submitMock,
+    });
+
+    const body = buildOnConfirmBody('COMPLETED');
+    const res = await fetch(`${url}/on_confirm`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Signature keyId="${SIGNER_PUBKEY}",signature="valid"`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(200);
+    expect(submitMock).toHaveBeenCalledOnce();
+    const [, args] = submitMock.mock.calls[0] as [string, any];
+    expect(args.caller_pubkey).toBe(SIGNER_PUBKEY);
+
+    await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
+  });
+
+  it('bad signature → 401, submitOnChain NOT called', async () => {
+    const submitMock = vi.fn(async () => ({ tx_signature: 'stub_sig' }));
+    const { server, url } = await buildServer({
+      verifyBapSignature: () => null, // verification always fails
+      submitOnChain: submitMock,
+    });
+
+    const body = buildOnConfirmBody('COMPLETED');
+    const res = await fetch(`${url}/on_confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(401);
+    const json = await res.json() as any;
+    expect(json.error).toBe('invalid_signature');
+    expect(submitMock).not.toHaveBeenCalled();
+
+    await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
+  });
+
+  it('body bap_id differs from signer: callerPubkey reflects signer, body unchanged', async () => {
+    const submitMock = vi.fn(async () => ({ tx_signature: 'stub_sig' }));
+    const { server, url } = await buildServer({
+      verifyBapSignature: () => SIGNER_PUBKEY,
+      submitOnChain: submitMock,
+    });
+
+    const body = buildOnConfirmBody('COMPLETED', {}, { bap_id: 'different-bap.example.com' });
+    const res = await fetch(`${url}/on_confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(200);
+    expect(submitMock).toHaveBeenCalledOnce();
+    const [, args] = submitMock.mock.calls[0] as [string, any];
+    // callerPubkey is the signer — not the body bap_id
+    expect(args.caller_pubkey).toBe(SIGNER_PUBKEY);
+    // bap_id from body is passed through unchanged (handler enforces equality)
+    expect(args.bap_id).toBe('different-bap.example.com');
+
+    await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
+  });
+
+  it('dev-bypass (no verifyBapSignature): caller_pubkey absent, no pubkey forged', async () => {
+    const submitMock = vi.fn(async () => ({ tx_signature: 'stub_sig' }));
+    const { server, url } = await buildServer({
+      // verifyBapSignature intentionally absent — simulates dev/no-sig mode
+      submitOnChain: submitMock,
+    });
+
+    const body = buildOnConfirmBody('COMPLETED');
+    const res = await fetch(`${url}/on_confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(200);
+    expect(submitMock).toHaveBeenCalledOnce();
+    const [, args] = submitMock.mock.calls[0] as [string, any];
+    // Must NOT have a forged pubkey — undefined means no verification ran
+    expect(args.caller_pubkey).toBeUndefined();
+
+    await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
   });
 });

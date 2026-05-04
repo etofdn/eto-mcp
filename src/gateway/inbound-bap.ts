@@ -23,6 +23,23 @@
  *
  * The existing `beckn_validation_failed` path (Ajv errors) is unchanged; the
  * NACK shape is used only for the four envelope codes above.
+ *
+ * ## Caller pubkey plumbing (FN-075)
+ *
+ * `callerPubkey` is the verified BAP signing key extracted by the
+ * deps-injected `verifyBapSignature` function and threaded into on-chain
+ * args so downstream bank BPP handlers can enforce caller-message-authorship.
+ *
+ * Canonical encoding: lowercase hex (matches `assertCallerEquals` in
+ * `keeper/bpps/bank/auth.ts`).
+ *
+ * Dev-bypass (fail-closed): when no `verifyBapSignature` is injected,
+ * `callerPubkey` is omitted from on-chain args. Handlers calling
+ * `assertCallerEquals(undefined, …)` reject with `unauthorized_caller`.
+ * The gateway MUST NOT forge a `callerPubkey` in any code path.
+ *
+ * When `verifyBapSignature` is present and returns `null`, the request is
+ * rejected with HTTP 401 before schema validation and on-chain submission.
  */
 
 import { createHash } from "crypto";
@@ -248,6 +265,23 @@ export interface InboundBapDeps {
   chainClient?: import("./chain-client.js").ChainClient;
   /** Resolve catalog responses for a SearchIntent. STUBBED today. */
   pollCatalogResponses?: (intent_hash: string, max: number) => Promise<unknown[]>;
+
+  // ---- FN-075: Caller pubkey plumbing ----
+
+  /**
+   * Extract the verified BAP signing pubkey from the inbound HTTP request.
+   *
+   * Implementations SHOULD inspect the `Authorization: Signature …` header,
+   * verify the Beckn Ed25519 signature, and return the signer's lowercase hex
+   * pubkey on success, or `null` when verification fails.
+   *
+   * When absent (default), `callerPubkey` is omitted from on-chain args —
+   * the gateway does NOT forge a pubkey (fail-closed).
+   *
+   * When present and returns `null`, the request is rejected with HTTP 401
+   * before schema validation or on-chain submission.
+   */
+  verifyBapSignature?: (req: Request) => string | null;
 }
 
 export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
@@ -266,6 +300,18 @@ export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
   deps = { ...deps, submitOnChain: resolvedSubmit };
 
   app.post("/search", async (req: Request, res: Response) => {
+    // FN-075: extract caller pubkey before any validation or submission.
+    // Bad signature → 401, no handler invocation.
+    let callerPubkey: string | undefined;
+    if (deps.verifyBapSignature !== undefined) {
+      const verified = deps.verifyBapSignature(req);
+      if (verified === null) {
+        res.status(401).json({ error: "invalid_signature", details: "BAP signature verification failed" });
+        return;
+      }
+      callerPubkey = verified.toLowerCase();
+    }
+
     const now = Date.now();
     const envResult = validateBecknEnvelope((req.body as Record<string, unknown> | undefined)?.context, now);
     if (!envResult.ok) {
@@ -286,7 +332,7 @@ export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
       return;
     }
     try {
-      const onchain_args = becknSearchToOnChainArgs(req.body);
+      const onchain_args = becknSearchToOnChainArgs(req.body, callerPubkey);
       const { tx_signature } = await deps.submitOnChain("search", onchain_args);
       // ACK is async per Beckn spec — return 202 with the in-flight transaction id
       res.status(202).json({
@@ -300,6 +346,18 @@ export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
   });
 
   app.post("/select", async (req: Request, res: Response) => {
+    // FN-075: extract caller pubkey before any validation or submission.
+    // Bad signature → 401, no handler invocation.
+    let callerPubkey: string | undefined;
+    if (deps.verifyBapSignature !== undefined) {
+      const verified = deps.verifyBapSignature(req);
+      if (verified === null) {
+        res.status(401).json({ error: "invalid_signature", details: "BAP signature verification failed" });
+        return;
+      }
+      callerPubkey = verified.toLowerCase();
+    }
+
     const now = Date.now();
     const envResult = validateBecknEnvelope((req.body as Record<string, unknown> | undefined)?.context, now);
     if (!envResult.ok) {
@@ -317,7 +375,7 @@ export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
       return;
     }
     try {
-      const onchain_args = becknSelectToOnChainArgs(req.body);
+      const onchain_args = becknSelectToOnChainArgs(req.body, callerPubkey);
       const { tx_signature } = await deps.submitOnChain("select", onchain_args);
       res.status(202).json({
         message: { ack: { status: "ACK" } },
@@ -330,8 +388,14 @@ export function mountInboundBap(app: Express, deps: InboundBapDeps): void {
   });
 }
 
-/** Translate Beckn /search payload → on-chain Search instruction args. */
-export function becknSearchToOnChainArgs(body: unknown): Record<string, unknown> {
+/**
+ * Translate Beckn /search payload → on-chain Search instruction args.
+ *
+ * `callerPubkey` (FN-075) is the verified BAP signing key extracted by the
+ * gateway; it is threaded into the on-chain args so the program can bind
+ * the search intent to the verified caller.
+ */
+export function becknSearchToOnChainArgs(body: unknown, callerPubkey?: string): Record<string, unknown> {
   // The on-chain `BecknProgram::Search` (FN-050) takes:
   //   { network_id, bap_id, intent_hash, tag_filter, max_responses, deadline_slot }
   // We derive intent_hash = sha256(canonical_json(message.intent)), use the
@@ -349,10 +413,12 @@ export function becknSearchToOnChainArgs(body: unknown): Record<string, unknown>
     tag_filter: extractTags(intent),
     max_responses: typeof intent.max_responses === "number" ? intent.max_responses : 10,
     deadline_slot: typeof ctx.ttl_slot === "number" ? ctx.ttl_slot : 0,
+    // FN-075: verified BAP signing key — undefined when no verifier injected
+    caller_pubkey: callerPubkey,
   };
 }
 
-export function becknSelectToOnChainArgs(body: unknown): Record<string, unknown> {
+export function becknSelectToOnChainArgs(body: unknown, callerPubkey?: string): Record<string, unknown> {
   const b = body as Record<string, unknown>;
   const ctx = (b.context ?? {}) as Record<string, unknown>;
   const msg = (b.message ?? {}) as Record<string, unknown>;
@@ -363,6 +429,8 @@ export function becknSelectToOnChainArgs(body: unknown): Record<string, unknown>
     // bridge's responsibility to map provider.id → CatalogResponse PDA
     catalog_response_pda: provider.id,
     network: deriveNetworkId(typeof ctx.domain === "string" ? ctx.domain : undefined),
+    // FN-075: verified BAP signing key — undefined when no verifier injected
+    caller_pubkey: callerPubkey,
   };
 }
 
