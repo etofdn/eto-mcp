@@ -37,6 +37,7 @@
 - Add Marqeta integration v0.5 placeholder + swap-surface checklist ([`a7dc246`](a7dc24602e5f7cb586d95681a0ed1cddcd837b77))
 - Audit cast_call vs read_contract — document return-format difference ([#23](https://github.com/etofdn/eto-mcp/issues/23)) ([`62fc53a`](62fc53aeec203b3b0935cb03ab3954516b471672))
 - Land schema-registry at docs/schema-registry.md ([`1a42ad8`](1a42ad897d721e8f4673be5b8f9e47146512e3b2))
+- Land schema-registry at docs/schema-registry.md ([#72](https://github.com/etofdn/eto-mcp/issues/72)) ([`e89654f`](e89654f0d4fad37c31037a52cf66fea564093e5a))
 
 ### Features
 
@@ -74,6 +75,7 @@
 - Collapse per-BPP SigningRuntimeChain imports to template barrel ([#69](https://github.com/etofdn/eto-mcp/issues/69)) ([`ce4e75c`](ce4e75cf0967b96f9d0ee397a9b4ab0dc6e1431b))
 - Add Poseidon-2 BN254 t=3 helper at src/crypto/poseidon2.ts ([#54](https://github.com/etofdn/eto-mcp/issues/54)) ([`1c207a2`](1c207a2cd0ba0c09bbf3847b54dc7a2f0f6377b0))
 - Merge fusion/fn-086 ([`be86797`](be867976d43929e940250ec83e07ed818156e0a8))
+- Wire Beckn gateway to swappable ChainClient ([#73](https://github.com/etofdn/eto-mcp/issues/73)) ([`ec2acba`](ec2acbafa80f94f68b3abe97c954650c6c91112f))
 
 ### Refactor
 
