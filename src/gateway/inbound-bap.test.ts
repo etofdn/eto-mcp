@@ -324,7 +324,9 @@ describe("validateBecknEnvelope + freshness (four defect cases)", () => {
     app.use(express.json());
     const mock = vi.fn().mockResolvedValue({ tx_signature: "dead".repeat(16) });
     mountInboundBap(app, { submitOnChain: mock });
-    const localServer = app.listen(0, "127.0.0.1");
+    const localServer = await new Promise<http.Server>((resolve) => {
+      const s = app.listen(0, "127.0.0.1", () => resolve(s));
+    });
     const addr = localServer.address() as { port: number };
     try {
       const bad = { ...base, context: { ...base.context, version: "1.0.0" } };

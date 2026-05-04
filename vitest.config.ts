@@ -2,7 +2,14 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    include: ["test/**/*.test.ts", "tests/**/*.test.ts", "keeper/bpps/__tests__/**/*.test.ts", "keeper/bpps/bank/handlers/**/*.test.ts"],
+    include: [
+      "test/**/*.test.ts",
+      "tests/**/*.test.ts",
+      "keeper/bpps/__tests__/**/*.test.ts",
+      "keeper/bpps/bank/handlers/**/*.test.ts",
+      // FN-055: gateway role unit tests live alongside source under src/gateway/.
+      "src/gateway/**/*.test.ts",
+    ],
     // Exclude bun:test-only suites that vitest cannot transform.
     // These suites import from "bun:test" and are pre-existing.
     exclude: [

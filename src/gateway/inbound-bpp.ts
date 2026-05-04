@@ -11,6 +11,7 @@
 import { createHash } from 'node:crypto';
 import type { Express, Request, Response } from 'express';
 import { validateBecknRequest } from './beckn-schemas.js';
+import { validateBecknEnvelope, validateBecknEnvelopeFreshness } from './inbound-bap.js';
 
 export interface ConfirmTrigger {
   kind: 'Confirm';
@@ -79,9 +80,24 @@ export function mountOnConfirmCallback(app: Express, deps: InboundBppDeps): void
     });
 
   app.post('/on_confirm', async (req: Request, res: Response) => {
+    // FN-055 / FN-074 parity: envelope hardening BEFORE Ajv schema validation.
+    // Order per gateway rules: (signature →) envelope validate → schema validate
+    //   → (idempotency →) handler. Signature/idempotency are not yet wired in
+    //   this gateway (see MEMORY.md FN-086 compliance gap); ordering is
+    //   preserved here so they can be slotted in without code churn.
+    const now = Date.now();
+    const ctx = (req.body as Record<string, unknown> | undefined)?.context;
+    const env = validateBecknEnvelope(ctx, now);
+    if (!env.ok) {
+      return res.status(env.status).json(env.body);
+    }
     const v = validateBecknRequest('on_confirm', req.body);
     if (!v.ok) {
       return res.status(400).json({ error: 'beckn_validation_failed', details: (v as { ok: false; errors: unknown }).errors });
+    }
+    const fresh = validateBecknEnvelopeFreshness(ctx, now);
+    if (!fresh.ok) {
+      return res.status(fresh.status).json(fresh.body);
     }
     try {
       const order = req.body.message?.order;

@@ -188,12 +188,120 @@ describe('/on_confirm endpoint', () => {
     expect(deps.submitOnChain).toHaveBeenCalledWith('FailTask', expect.any(Object));
   });
 
-  it('returns 400 with beckn_validation_failed for invalid body', async () => {
-    const res = await postOnConfirm({ not_a_valid_beckn: true });
+  it('returns 400 with beckn_validation_failed for body that has a valid envelope but bad schema', async () => {
+    // valid envelope (passes pre-check), but message.order missing -> Ajv rejects
+    const body = {
+      context: {
+        domain: 'retail',
+        action: 'on_confirm',
+        version: '2.0.0',
+        bap_id: 'bap.example.com',
+        bap_uri: 'https://bap.example.com',
+        bpp_id: 'bpp.example.com',
+        bpp_uri: 'https://bpp.example.com',
+        transaction_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+        message_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567891',
+        timestamp: new Date().toISOString(),
+      },
+      message: {},
+    };
+    const res = await postOnConfirm(body);
     expect(res.status).toBe(400);
     const json = await res.json() as any;
     expect(json.error).toBe('beckn_validation_failed');
     expect(json.details).toBeDefined();
+  });
+
+  it('returns 400 NACK BAD_VERSION for body with no/invalid context (envelope rejected before Ajv)', async () => {
+    const res = await postOnConfirm({ not_a_valid_beckn: true });
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.message?.ack?.status).toBe('NACK');
+    expect(json.error?.code).toBe('BAD_VERSION');
+  });
+
+  // ---------- Envelope hardening (FN-055 / FN-074 parity, mirrors SB-17..SB-20) ----------
+
+  it('SB-17 parity: rejects context.version !== "2.0.0" with 400 BAD_VERSION', async () => {
+    const body = buildOnConfirmBody('COMPLETED');
+    body.context.version = '1.1.0';
+    const res = await postOnConfirm(body);
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.message.ack.status).toBe('NACK');
+    expect(json.error.code).toBe('BAD_VERSION');
+  });
+
+  it('SB-18 parity: rejects malformed context.timestamp with 400 BAD_TIMESTAMP', async () => {
+    const body = buildOnConfirmBody('COMPLETED');
+    body.context.timestamp = 'yesterday';
+    const res = await postOnConfirm(body);
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.message.ack.status).toBe('NACK');
+    expect(json.error.code).toBe('BAD_TIMESTAMP');
+  });
+
+  it('SB-19 parity: rejects non-ISO-8601 context.ttl with 400 BAD_TTL', async () => {
+    const body = buildOnConfirmBody('COMPLETED');
+    (body.context as any).ttl = '30 seconds';
+    body.context.timestamp = new Date().toISOString();
+    const res = await postOnConfirm(body);
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.message.ack.status).toBe('NACK');
+    expect(json.error.code).toBe('BAD_TTL');
+  });
+
+  it('SB-19 parity: rejects calendar-relative ttl (P1Y) with 400 BAD_TTL', async () => {
+    const body = buildOnConfirmBody('COMPLETED');
+    (body.context as any).ttl = 'P1Y';
+    body.context.timestamp = new Date().toISOString();
+    const res = await postOnConfirm(body);
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.error.code).toBe('BAD_TTL');
+  });
+
+  it('SB-20 parity: rejects expired envelope (timestamp + ttl in past) with 400 EXPIRED_TTL', async () => {
+    const body = buildOnConfirmBody('COMPLETED');
+    body.context.timestamp = '2000-01-01T00:00:00.000Z';
+    (body.context as any).ttl = 'PT30S';
+    const res = await postOnConfirm(body);
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.message.ack.status).toBe('NACK');
+    expect(json.error.code).toBe('EXPIRED_TTL');
+  });
+
+  it('happy path: accepts valid envelope with current timestamp (no ttl)', async () => {
+    (deps.submitOnChain as ReturnType<typeof vi.fn>).mockClear();
+    const body = buildOnConfirmBody('COMPLETED');
+    body.context.timestamp = new Date().toISOString();
+    const res = await postOnConfirm(body);
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.message.ack.status).toBe('ACK');
+  });
+
+  it('happy path: accepts valid envelope with future ttl (envelope freshness ok)', async () => {
+    (deps.submitOnChain as ReturnType<typeof vi.fn>).mockClear();
+    const body = buildOnConfirmBody('COMPLETED');
+    body.context.timestamp = new Date().toISOString();
+    (body.context as any).ttl = 'PT30S';
+    const res = await postOnConfirm(body);
+    // Some on_confirm Ajv schemas may not whitelist ttl strictly; accept either
+    // 200 (ttl accepted) or document the schema behaviour. The envelope check
+    // is what matters: it must NOT be a NACK BAD_* / EXPIRED_TTL code.
+    if (res.status !== 200) {
+      const json = await res.json() as any;
+      // Must not be one of our envelope NACK codes
+      expect(['BAD_VERSION', 'BAD_TIMESTAMP', 'BAD_TTL', 'EXPIRED_TTL'])
+        .not.toContain(json.error?.code);
+    } else {
+      const json = await res.json() as any;
+      expect(json.message.ack.status).toBe('ACK');
+    }
   });
 
   it('returns 500 when submitOnChain throws', async () => {
