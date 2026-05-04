@@ -31,9 +31,43 @@
  *  - `ETO_BECKN_ALLOW_PRIVATE_CALLBACKS=1` — bypass SSRF guard (test/dev only)
  */
 import { isIP } from "node:net";
+import { lookup as dnsLookup } from "node:dns/promises";
 import { randomUUID as nodeRandomUUID } from "node:crypto";
 import { z } from "zod";
 import type { BecknContext } from "./beckn.js";
+
+/**
+ * FN-079: DNS-aware SSRF guard. The string-only `isPrivateOrLoopbackHost`
+ * is bypassable via DNS rebinding (`attacker.com` resolving to 127.0.0.1
+ * at request time passes the string check). This async helper resolves the
+ * hostname and checks the resolved IP against the same private/reserved
+ * ranges, closing the rebinding hole.
+ *
+ * `lookup` is injectable for tests so they don't hit real DNS.
+ */
+export type DnsLookupFn = (hostname: string) => Promise<{ address: string; family: number }>;
+
+export async function isPrivateOrLoopbackHostResolved(
+  hostname: string,
+  lookup: DnsLookupFn = (h) => dnsLookup(h),
+): Promise<boolean> {
+  // First, the synchronous IP-literal / localhost / .local check still applies
+  // — these never need DNS resolution.
+  if (isPrivateOrLoopbackHost(hostname)) return true;
+  // If hostname is already a literal IP that the sync check ruled "public",
+  // we're done — no DNS resolution needed.
+  const stripped = hostname.startsWith("[") ? hostname.slice(1, -1) : hostname;
+  if (isIP(stripped) !== 0) return false;
+  // Otherwise the hostname is a DNS name; resolve it and re-check.
+  let resolved: { address: string; family: number };
+  try {
+    resolved = await lookup(hostname);
+  } catch {
+    // Refuse to ship to a host we cannot resolve — fail closed.
+    return true;
+  }
+  return isPrivateOrLoopbackHost(resolved.address);
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -145,6 +179,13 @@ export interface OutboundBppDeps {
    * @default false
    */
   allowPrivateCallbacks?: boolean;
+
+  /**
+   * FN-079: injectable DNS lookup for the SSRF guard. Defaults to
+   * `node:dns/promises.lookup`. Tests pass a stub so they don't hit
+   * real DNS.
+   */
+  dnsLookup?: DnsLookupFn;
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +455,7 @@ export async function postBppOnSearch(
     deps.allowPrivateCallbacks === true ||
     process.env["ETO_BECKN_ALLOW_PRIVATE_CALLBACKS"] === "1";
 
-  if (!allowPrivate && isPrivateOrLoopbackHost(parsed.hostname)) {
+  if (!allowPrivate && (await isPrivateOrLoopbackHostResolved(parsed.hostname, deps.dnsLookup))) {
     return { status: 0, ok: false, attempts: 0, reason: "ssrf_blocked" };
   }
 
