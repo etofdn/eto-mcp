@@ -5,7 +5,7 @@
  *   [{ id: 'onramp-eusd', ... }].
  * Outbound: signs CompleteTask with the minted eUSD amount in the
  *   fulfillment_uri, having verified the USD pull and submitted an
- *   on-chain Mint instruction (FN-103).
+ *   on-chain Mint instruction.
  *
  * 2-phase flow:
  *   Phase 1 — verify USD pull cleared (mocked in v0: always succeeds).
@@ -55,7 +55,7 @@ export interface OnrampOutcome {
 export interface OnrampDeps {
   /** Verify the USD pull cleared. STUB always returns true in v0. */
   verifyUsdPull: (method: OnrampRequest['funding_method'], ref: string, cents: number) => Promise<boolean>;
-  /** Submit on-chain Mint instruction (FN-103). STUBBED. */
+  /** Submit on-chain Mint instruction. STUBBED. */
   mintOnChain: (args: { recipient_token_pda: string; amount: number }) => Promise<{ tx_signature: string }>;
   /**
    * 1-pip fee per FN-109 (0.01% = 1 bp). Defaults to `oneBipFee` from fee.ts.

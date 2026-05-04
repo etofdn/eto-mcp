@@ -80,12 +80,14 @@ export {
   KycTestIssueError,
   buildKycTestVc,
   deriveNullifier as deriveKycTestNullifier,
+  ed25519KycTestSignatureVerifier,
   issueKycTest,
   jcsCanonicalize as jcsCanonicalizeKycTest,
   normalizeName as normalizeKycTestName,
   renderKycTestFormHtml,
 } from "./issuers/kyc-test.js";
 export type {
+  KycTestAgentCardSignatureVerifier,
   KycTestDedupeRow,
   KycTestDedupeStore,
   KycTestFormSubmission,

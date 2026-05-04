@@ -32,6 +32,24 @@ export interface SkillCertIssueRequest {
   readonly skill: SkillId;
   /** Subject AgentCard pubkey the credential will be issued to. */
   readonly subjectAgentCard: AgentCardPubkey;
+  /**
+   * Caller-binding signature: Ed25519 signature by `subjectAgentCard`
+   * over `sha256("eto:skill-cert:v1" || skill || subjectAgentCard ||
+   * issuanceNonce)`. Encoded as base64. Without this, an attacker who
+   * learns a whitelisted `(skill, subject)` tuple can front-run the
+   * legitimate owner. See FN-058 / convention mirror in
+   * `src/issuers/civic.ts:169-185`.
+   */
+  readonly agentCardSignature: string;
+  /**
+   * Caller-supplied freshness nonce mixed into the signature preimage.
+   * Must be a non-empty string. Re-using a nonce on a fresh
+   * (skill, subject) pair is permitted (the binding store still serves
+   * the idempotent path); the nonce exists to bind a *specific*
+   * issuance attempt and let a wallet replace its signed payload
+   * without rotating its keypair.
+   */
+  readonly issuanceNonce: string;
 }
 
 /** Wire-level response body for a successful issuance. */
@@ -119,12 +137,36 @@ export interface SkillWhitelist {
 }
 
 /**
+ * Verifier for the caller-binding signature on a skill-cert request.
+ * Returns `true` iff `signature` is a valid Ed25519 signature by
+ * `subjectAgentCard` over the canonical preimage
+ * `sha256("eto:skill-cert:v1" || skill || subjectAgentCard || issuanceNonce)`.
+ *
+ * Implementations MUST resolve `false` (not throw) on cryptographic /
+ * decoding failure so the issuer can map the outcome to a single typed
+ * `INVALID_AGENT_CARD_SIGNATURE` error.
+ *
+ * Mirrors `AgentCardSignatureVerifier` in `civic.types.ts` and
+ * `worldcoin.types.ts` — see FN-058 fix and the
+ * "Issuer caller-binding convention" project memory entry.
+ */
+export interface AgentCardSignatureVerifier {
+  verify(input: {
+    readonly skill: SkillId;
+    readonly subjectAgentCard: AgentCardPubkey;
+    readonly issuanceNonce: string;
+    readonly signature: string; // base64
+  }): Promise<boolean>;
+}
+
+/**
  * Strongly-typed errors surfaced to the HTTP handler so it can map to
  * status codes without string-matching.
  */
 export type SkillCertIssuerErrorCode =
   | "INVALID_SKILL"
   | "INVALID_SUBJECT"
+  | "INVALID_AGENT_CARD_SIGNATURE"
   | "NOT_WHITELISTED"
   | "CHAIN_TX_FAILED";
 
