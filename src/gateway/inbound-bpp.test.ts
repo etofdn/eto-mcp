@@ -16,6 +16,7 @@ import express from 'express';
 
 import {
   handleConfirmTrigger,
+  mountInboundBppCallbacks,
   mountOnConfirmCallback,
   type ConfirmTrigger,
   type InboundBppDeps,
@@ -343,5 +344,136 @@ describe('fulfillment_uri extraction', () => {
     await postOnConfirm(body);
     const [, args] = (deps.submitOnChain as ReturnType<typeof vi.fn>).mock.calls[0] as [string, any];
     expect(args.fulfillment_uri).toBe('');
+  });
+});
+
+// ---------- /on_select endpoint (FN-055 envelope+schema gate) ----------
+
+let onSelectServer: Server;
+let onSelectBaseUrl: string;
+
+beforeAll(async () => {
+  const app = express();
+  app.use(express.json());
+  mountInboundBppCallbacks(app, makeDeps());
+  await new Promise<void>((resolve) => {
+    onSelectServer = app.listen(0, '127.0.0.1', () => resolve());
+  });
+  const addr = onSelectServer.address() as AddressInfo;
+  onSelectBaseUrl = `http://127.0.0.1:${addr.port}`;
+});
+
+afterAll(async () => {
+  await new Promise<void>((resolve, reject) => {
+    onSelectServer.close((err) => (err ? reject(err) : resolve()));
+  });
+});
+
+function buildOnSelectBody(): any {
+  return {
+    context: {
+      domain: 'retail',
+      action: 'on_select',
+      version: '2.0.0',
+      bap_id: 'bap.example.com',
+      bap_uri: 'https://bap.example.com',
+      bpp_id: 'bpp.example.com',
+      bpp_uri: 'https://bpp.example.com',
+      transaction_id: '550e8400-e29b-41d4-a716-446655440000',
+      message_id: '550e8400-e29b-41d4-a716-446655440002',
+      timestamp: new Date().toISOString(),
+    },
+    message: {
+      order: {
+        provider: { id: 'prov-1' },
+        items: [{ id: 'item-1' }],
+        quote: {
+          price: { currency: 'INR', value: '100.00' },
+        },
+      },
+    },
+  };
+}
+
+async function postOnSelect(body: unknown): Promise<Response> {
+  return fetch(`${onSelectBaseUrl}/on_select`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+describe('/on_select endpoint (FN-055 envelope hardening)', () => {
+  it('happy path: accepts a valid /on_select envelope and returns 200 ACK', async () => {
+    const res = await postOnSelect(buildOnSelectBody());
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.message.ack.status).toBe('ACK');
+  });
+
+  it('SB-17 parity: rejects context.version !== "2.0.0" with 400 BAD_VERSION', async () => {
+    const body = buildOnSelectBody();
+    body.context.version = '1.1.0';
+    const res = await postOnSelect(body);
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.message.ack.status).toBe('NACK');
+    expect(json.error.code).toBe('BAD_VERSION');
+  });
+
+  it('SB-18 parity: rejects malformed context.timestamp with 400 BAD_TIMESTAMP', async () => {
+    const body = buildOnSelectBody();
+    body.context.timestamp = 'yesterday';
+    const res = await postOnSelect(body);
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.error.code).toBe('BAD_TIMESTAMP');
+  });
+
+  it('SB-19 parity: rejects non-ISO-8601 ttl with 400 BAD_TTL', async () => {
+    const body = buildOnSelectBody();
+    body.context.ttl = '30 seconds';
+    const res = await postOnSelect(body);
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.error.code).toBe('BAD_TTL');
+  });
+
+  it('SB-19 parity: rejects calendar-relative ttl (P1Y) with 400 BAD_TTL', async () => {
+    const body = buildOnSelectBody();
+    body.context.ttl = 'P1Y';
+    const res = await postOnSelect(body);
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.error.code).toBe('BAD_TTL');
+  });
+
+  it('SB-20 parity: rejects expired envelope with 400 EXPIRED_TTL', async () => {
+    const body = buildOnSelectBody();
+    body.context.timestamp = '2000-01-01T00:00:00.000Z';
+    body.context.ttl = 'PT30S';
+    const res = await postOnSelect(body);
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.error.code).toBe('EXPIRED_TTL');
+  });
+
+  it('returns 400 beckn_validation_failed for envelope-OK body with bad schema', async () => {
+    const body = buildOnSelectBody();
+    // valid envelope but missing message.order → Ajv rejects
+    body.message = {};
+    const res = await postOnSelect(body);
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.error).toBe('beckn_validation_failed');
+    expect(json.details).toBeDefined();
+  });
+
+  it('returns 400 NACK BAD_VERSION when context is entirely missing (envelope rejected before Ajv)', async () => {
+    const res = await postOnSelect({ message: {} });
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.message?.ack?.status).toBe('NACK');
+    expect(json.error?.code).toBe('BAD_VERSION');
   });
 });

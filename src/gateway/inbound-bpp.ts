@@ -111,6 +111,57 @@ export function mountOnConfirmCallback(app: Express, deps: InboundBppDeps): void
   });
 }
 
+/**
+ * FN-055: mount additional BPP→BAP callback receivers with the same FN-074
+ * envelope hardening applied to `/on_confirm` above.
+ *
+ * Currently wires `/on_select` (the BPP’s quoted-order callback). Other
+ * BPP-origin callbacks (`/on_init`, `/on_status`, `/on_cancel`, `/on_rating`,
+ * `/on_support`) can be added here following the same shape once their
+ * on-chain handlers are defined; until then the envelope+schema gate is the
+ * critical hardening surface.
+ *
+ * NOTE: `/on_search` is owned by `outbound-bap.ts` (the BAP role that issued
+ * the original `/search` is the legitimate receiver of the catalog callback);
+ * envelope hardening for that route lives there. This function is only for
+ * BPP-origin callbacks that do not already have a home.
+ *
+ * Pipeline order (mirrors `/on_confirm` and `inbound-bap.ts` `/search`,
+ * `/select`):
+ *   1. validateBecknEnvelope            → 400 NACK on BAD_VERSION/TIMESTAMP/TTL/EXPIRED_TTL
+ *   2. validateBecknRequest (Ajv)       → 400 beckn_validation_failed
+ *   3. validateBecknEnvelopeFreshness   → 400 NACK on EXPIRED_TTL (re-check)
+ *   4. handler
+ */
+export function mountInboundBppCallbacks(app: Express, _deps: InboundBppDeps): void {
+  app.post('/on_select', async (req: Request, res: Response) => {
+    const now = Date.now();
+    const ctx = (req.body as Record<string, unknown> | undefined)?.context;
+    const env = validateBecknEnvelope(ctx, now);
+    if (!env.ok) {
+      return res.status(env.status).json(env.body);
+    }
+    const v = validateBecknRequest('on_select', req.body);
+    if (!v.ok) {
+      return res.status(400).json({
+        error: 'beckn_validation_failed',
+        details: (v as { ok: false; errors: unknown }).errors,
+      });
+    }
+    const fresh = validateBecknEnvelopeFreshness(ctx, now);
+    if (!fresh.ok) {
+      return res.status(fresh.status).json(fresh.body);
+    }
+    // No on-chain handler defined yet for `/on_select`; return a stable ACK so
+    // the envelope+schema gate can be exercised by integration tests and BPPs
+    // can complete the protocol handshake without a chain submission.
+    res.status(200).json({
+      message: { ack: { status: 'ACK' } },
+      context: ctx,
+    });
+  });
+}
+
 function becknOnConfirmToTaskOutcome(body: any) {
   const order = body.message?.order ?? {};
   const fulfillment_uri = order?.fulfillment?.tracking?.url

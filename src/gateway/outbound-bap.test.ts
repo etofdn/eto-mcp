@@ -169,7 +169,7 @@ describe('POST /on_search callback receiver', () => {
     expect(body.tx_signature).toHaveLength(64);
   });
 
-  it('returns 400 with errors for an invalid body (missing context)', async () => {
+  it('returns 400 NACK BAD_VERSION for an invalid body (missing context — envelope rejected before Ajv)', async () => {
     const res = await fetch(`${baseUrl}/on_search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -177,12 +177,13 @@ describe('POST /on_search callback receiver', () => {
     });
     expect(res.status).toBe(400);
     const body = await res.json() as any;
-    expect(body.error).toBe('beckn_validation_failed');
-    expect(Array.isArray(body.details)).toBe(true);
-    expect(body.details.length).toBeGreaterThan(0);
+    // FN-055: envelope check runs first, so missing context yields a NACK
+    // BAD_VERSION rather than the Ajv-level beckn_validation_failed shape.
+    expect(body.message?.ack?.status).toBe('NACK');
+    expect(body.error.code).toBe('BAD_VERSION');
   });
 
-  it('returns 400 for empty body', async () => {
+  it('returns 400 NACK BAD_VERSION for empty body (envelope rejected before Ajv)', async () => {
     const res = await fetch(`${baseUrl}/on_search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -190,7 +191,23 @@ describe('POST /on_search callback receiver', () => {
     });
     expect(res.status).toBe(400);
     const body = await res.json() as any;
-    expect(body.error).toBe('beckn_validation_failed');
+    expect(body.error.code).toBe('BAD_VERSION');
+  });
+
+  it('returns 400 beckn_validation_failed for envelope-OK body that fails the schema', async () => {
+    // Valid envelope (passes pre-check) but message.catalog.providers missing → Ajv rejects.
+    const body = validOnSearchBody();
+    (body.message as any).catalog = {};
+    const res = await fetch(`${baseUrl}/on_search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.error).toBe('beckn_validation_failed');
+    expect(Array.isArray(json.details)).toBe(true);
+    expect(json.details.length).toBeGreaterThan(0);
   });
 
   it('extracts providers correctly from the catalog', async () => {
@@ -228,5 +245,89 @@ describe('POST /on_search callback receiver', () => {
     expect(args.providers[0].id).toBe('prov-1');
     expect(args.transaction_id).toBe('550e8400-e29b-41d4-a716-446655440000');
     expect(args.bpp_id).toBe('bpp.example.com');
+  });
+
+  // --- FN-055 / FN-074 envelope hardening (parity with SB-17..SB-20) ---
+
+  it('SB-17 parity: rejects /on_search with context.version !== "2.0.0" → 400 BAD_VERSION', async () => {
+    const body = validOnSearchBody();
+    (body.context as any).version = '1.1.0';
+    const res = await fetch(`${baseUrl}/on_search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.message.ack.status).toBe('NACK');
+    expect(json.error.code).toBe('BAD_VERSION');
+  });
+
+  it('SB-18 parity: rejects /on_search with malformed context.timestamp → 400 BAD_TIMESTAMP', async () => {
+    const body = validOnSearchBody();
+    (body.context as any).timestamp = 'yesterday';
+    const res = await fetch(`${baseUrl}/on_search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.error.code).toBe('BAD_TIMESTAMP');
+  });
+
+  it('SB-19 parity: rejects /on_search with non-ISO-8601 ttl → 400 BAD_TTL', async () => {
+    const body = validOnSearchBody();
+    (body.context as any).timestamp = new Date().toISOString();
+    (body.context as any).ttl = '30 seconds';
+    const res = await fetch(`${baseUrl}/on_search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.error.code).toBe('BAD_TTL');
+  });
+
+  it('SB-19 parity: rejects /on_search with calendar-relative ttl (P1Y) → 400 BAD_TTL', async () => {
+    const body = validOnSearchBody();
+    (body.context as any).timestamp = new Date().toISOString();
+    (body.context as any).ttl = 'P1Y';
+    const res = await fetch(`${baseUrl}/on_search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.error.code).toBe('BAD_TTL');
+  });
+
+  it('SB-20 parity: rejects /on_search with expired timestamp+ttl → 400 EXPIRED_TTL', async () => {
+    const body = validOnSearchBody();
+    (body.context as any).timestamp = '2000-01-01T00:00:00.000Z';
+    (body.context as any).ttl = 'PT30S';
+    const res = await fetch(`${baseUrl}/on_search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(400);
+    const json = await res.json() as any;
+    expect(json.error.code).toBe('EXPIRED_TTL');
+  });
+
+  it('happy path: accepts a valid /on_search envelope with current timestamp', async () => {
+    const body = validOnSearchBody();
+    (body.context as any).timestamp = new Date().toISOString();
+    const res = await fetch(`${baseUrl}/on_search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.message.ack.status).toBe('ACK');
   });
 });
