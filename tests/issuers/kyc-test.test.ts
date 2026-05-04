@@ -322,29 +322,28 @@ describe("kyc.us-test issuer — boundary suite (FN-018)", () => {
   });
 
   it("VC envelope shape: locks the kyc.us-test fields (mock-issuer self-disclosure)", async () => {
-    // The kyc.us-test mock embeds `legalName` and `dateOfBirth` *by
-    // design* (it has only name+DOB to work with) and labels itself
-    // `kycLevel: "mock-test"` so a relying party cannot mistake it
-    // for real KYC. We pin the exact field set so any future change
-    // either flows through this test (and the spec) or tightens the
-    // contract on purpose. See FN-018 follow-up FN-072 for the
-    // hash-the-PII upgrade path.
+    // FN-072: raw PII replaced with sha256 hashes. The credential
+    // still carries `kycLevel: "mock-test"` so a relying party cannot
+    // mistake it for real KYC, but `legalName`/`dateOfBirth` are gone
+    // in favour of `name_hash`/`dob_hash` (sha256 hex of utf8 value).
+    const normName = normalizeName("Test User");
+    const dobIso = "1990-01-01";
     const vc = buildKycTestVc({
       agentCardPubkey: CARD_A,
       issuerAuthorityPubkey: ISSUER,
-      fullName: normalizeName("Test User"),
-      dobIso: "1990-01-01",
+      name_hash: createHash("sha256").update(normName, "utf8").digest("hex"),
+      dob_hash: createHash("sha256").update(dobIso, "utf8").digest("hex"),
       nullifier: "00".repeat(32),
       issuanceDate: "2026-04-29T00:00:00.000Z",
     });
     const subj = vc["credentialSubject"] as Record<string, unknown>;
     expect(Object.keys(subj).sort()).toEqual([
       "bridgeNullifier",
-      "dateOfBirth",
+      "dob_hash",
       "id",
       "kycJurisdiction",
       "kycLevel",
-      "legalName",
+      "name_hash",
     ]);
     // The "this is a mock" self-disclosure that downstream relying
     // parties pin on:
@@ -353,6 +352,16 @@ describe("kyc.us-test issuer — boundary suite (FN-018)", () => {
     // `id` is derived from caller-supplied AgentCardPubkey, not the
     // dedupe store — defends against a regression in subject derivation.
     expect(subj["id"]).toBe(`did:eto:agentcard:${CARD_A}`);
+    // Verify hash values are 64-char hex (sha256).
+    expect(subj["name_hash"]).toMatch(/^[0-9a-f]{64}$/);
+    expect(subj["dob_hash"]).toMatch(/^[0-9a-f]{64}$/);
+    // Verify hash values match sha256(utf8 of original values).
+    expect(subj["name_hash"]).toBe(
+      createHash("sha256").update(normName, "utf8").digest("hex"),
+    );
+    expect(subj["dob_hash"]).toBe(
+      createHash("sha256").update(dobIso, "utf8").digest("hex"),
+    );
   });
 
   it("emits unique credentials across two independent issuances", async () => {

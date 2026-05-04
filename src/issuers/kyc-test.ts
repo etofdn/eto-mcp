@@ -213,8 +213,8 @@ export async function issueKycTest(
   const vc = buildKycTestVc({
     agentCardPubkey,
     issuerAuthorityPubkey: deps.issuerAuthorityPubkey,
-    fullName: normalized.normName,
-    dobIso: normalized.dobIso,
+    name_hash: sha256Hex(normalized.normName),
+    dob_hash: sha256Hex(normalized.dobIso),
     nullifier,
     issuanceDate: new Date(nowUnix * 1000).toISOString(),
   });
@@ -646,8 +646,8 @@ export function deriveNullifier(normName: string, dobIso: string): string {
 interface VcInput {
   agentCardPubkey: string;
   issuerAuthorityPubkey: string;
-  fullName: string;
-  dobIso: string;
+  name_hash: string;
+  dob_hash: string;
   nullifier: string;
   issuanceDate: string;
 }
@@ -670,8 +670,8 @@ export function buildKycTestVc(input: VcInput): Record<string, unknown> {
       id: `did:eto:agentcard:${input.agentCardPubkey}`,
       kycLevel: "mock-test",
       kycJurisdiction: "us-test",
-      legalName: input.fullName,
-      dateOfBirth: input.dobIso,
+      name_hash: input.name_hash,
+      dob_hash: input.dob_hash,
       bridgeNullifier: input.nullifier,
     },
     issuerAuthority: input.issuerAuthorityPubkey,
