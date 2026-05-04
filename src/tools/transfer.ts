@@ -130,6 +130,7 @@ export function registerTransferTools(server: McpServer): void {
           to: z.string().describe("Recipient address (base58 or 0x)"),
           amount: z.string().describe("Amount in SOL"),
           memo: z.string().optional(),
+          idempotency_key: z.string().optional().describe("Optional caller-supplied idempotency key for this transfer. Defaults to batch-{i}-{from}-{to}-{lamports}."),
         })
       ).max(20).describe("List of transfers to execute (max 20)"),
       from_wallet: z.string().optional().describe("Wallet ID to send from; defaults to active wallet"),
@@ -159,7 +160,7 @@ export function registerTransferTools(server: McpServer): void {
         let lastBlockhash: string | null = null;
 
         for (let i = 0; i < transfers.length; i++) {
-          const { to, amount, memo } = transfers[i];
+          const { to, amount, memo, idempotency_key } = transfers[i];
 
           try {
             const registry = localSignerFactory.getRegistryForCurrentScope();
@@ -192,10 +193,11 @@ export function registerTransferTools(server: McpServer): void {
             const signedBase64 = Buffer.from(signedBytes).toString("base64");
 
             const memoSuffix = memo ? `-m:${memo}` : "";
+            const effectiveKey = idempotency_key ?? `batch-${i}-${fromSvm}-${toSvm}-${lamports}`;
             const result = await submitter.submitAndConfirm({
               signedTxBase64: signedBase64,
               vm: "svm",
-              idempotencyKey: `batch-${i}-${fromSvm}-${toSvm}-${lamports}-${blockhash}${memoSuffix}`,
+              idempotencyKey: `${effectiveKey}-${blockhash}${memoSuffix}`,
             });
 
             if (result.status === "confirmed" || result.status === "finalized") {
