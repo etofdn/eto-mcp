@@ -200,6 +200,9 @@ async function dispatchOne<TInput, TOutput>(
     networkPubkey: event.networkPubkey,
     action: event.action,
     input: event.input,
+    // FN-073: thread gateway-verified caller pubkey through to the handler.
+    // Absent when the gateway could not verify a BAP signature.
+    ...(event.callerPubkey != null ? { callerPubkey: event.callerPubkey } : {}),
   };
   let result: TaskResult<TOutput>;
   try {

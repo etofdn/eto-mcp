@@ -133,6 +133,19 @@ export interface BeckonInitEvent<TInput = unknown> {
   readonly input: TInput;
   /** Unix seconds at which the event was observed. */
   readonly observedAt: number;
+  /**
+   * Gateway-verified BAP caller pubkey (FN-073).
+   *
+   * Set by the gateway layer when it has successfully verified the
+   * BAP-signature on the inbound Beckn request (Ed25519 over the request
+   * body, presented in the `Authorization` header). Absent / undefined when
+   * the gateway could not verify a signature — handlers MUST treat absence
+   * as `unauthorized_caller` for any money-binding capability.
+   *
+   * The value is the lowercase hex-encoded ed25519 public key of the BAP
+   * whose signature was verified.
+   */
+  readonly callerPubkey?: string;
 }
 
 /** Inbound task (mirror of BeckonInitEvent at the handler layer). */
@@ -143,6 +156,17 @@ export interface TaskRequest<TInput = unknown> {
   readonly networkPubkey: Pubkey;
   readonly action: string;
   readonly input: TInput;
+  /**
+   * Gateway-verified BAP caller pubkey (FN-073).
+   *
+   * Threaded from `BeckonInitEvent.callerPubkey` by the BPP runtime.
+   * Per-capability handlers use {@link extractCallerPubkey} (from
+   * `keeper/bpps/bank/handler.ts`) to read this field and `assertCallerEquals`
+   * (from `keeper/bpps/bank/auth.ts`) to bind it to the request subject.
+   * Absent / undefined means the gateway did not verify a caller — handlers
+   * MUST fail-closed with `unauthorized_caller` for any money-binding action.
+   */
+  readonly callerPubkey?: string;
 }
 
 /**
