@@ -45,10 +45,15 @@
  *    devnet point at an `InMemoryChainClient` if desired.
  */
 
-import { createHash } from "node:crypto";
+import {
+  createHash,
+  createPublicKey,
+  verify as cryptoVerify,
+} from "node:crypto";
 
 import {
   type AgentCardPubkey,
+  type AgentCardSignatureVerifier,
   type ChainClient,
   type ClaimHasher,
   type Hex32,
@@ -72,6 +77,13 @@ export * from "./skill-cert.types.js";
 /** Schema-id namespace prefix. The full tag is `${PREFIX}${skill}.v1`. */
 export const SKILL_CERT_SCHEMA_PREFIX = "eto.beckn.schema.skill-cert.";
 
+/**
+ * Domain-separation tag for the caller-binding signature preimage.
+ * Verifiers MUST use this exact byte sequence — changing it is a
+ * breaking wire change.
+ */
+export const SKILL_CERT_SIG_DOMAIN = "eto:skill-cert:v1";
+
 /** Schema-id namespace suffix (version pin). */
 export const SKILL_CERT_SCHEMA_SUFFIX = ".v1";
 
@@ -83,6 +95,113 @@ export const SKILL_CERT_VC_CONTEXT: readonly string[] = [
 
 /** Slug pattern: lowercase letters, digits, single hyphens. */
 const SKILL_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/* -------------------------------------------------------------------------- */
+/* Caller-binding signature                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Build the canonical preimage hash for a skill-cert
+ * `agentCardSignature`:
+ *
+ *   sha256(SKILL_CERT_SIG_DOMAIN || skill || subjectAgentCard || issuanceNonce)
+ *
+ * Returns the 32-byte digest (NOT hex) that callers actually feed to
+ * Ed25519. Field separators are intentionally omitted because each
+ * field is range-validated upstream (skill slug regex, non-empty
+ * subject, non-empty nonce) and Ed25519 signs the digest, not the
+ * preimage — length-extension games are irrelevant.
+ */
+export function skillCertSignaturePreimage(args: {
+  readonly skill: SkillId;
+  readonly subjectAgentCard: AgentCardPubkey;
+  readonly issuanceNonce: string;
+}): Buffer {
+  return createHash("sha256")
+    .update(
+      SKILL_CERT_SIG_DOMAIN +
+        args.skill +
+        args.subjectAgentCard +
+        args.issuanceNonce,
+      "utf8",
+    )
+    .digest();
+}
+
+/** Base58 alphabet — Solana / AgentCard pubkey decoding. */
+const BASE58_ALPHABET =
+  "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const BASE58_LOOKUP: Record<string, number> = (() => {
+  const m: Record<string, number> = {};
+  for (let i = 0; i < BASE58_ALPHABET.length; i += 1) {
+    m[BASE58_ALPHABET[i]!] = i;
+  }
+  return m;
+})();
+
+/** Decode a base58 string into raw bytes. Throws on invalid input. */
+function base58Decode(s: string): Uint8Array {
+  if (s.length === 0) return new Uint8Array(0);
+  let zeros = 0;
+  while (zeros < s.length && s[zeros] === "1") zeros += 1;
+
+  const bytes: number[] = [];
+  for (let i = zeros; i < s.length; i += 1) {
+    const c = s[i]!;
+    const v = BASE58_LOOKUP[c];
+    if (v === undefined) {
+      throw new Error(`base58: invalid character ${JSON.stringify(c)}`);
+    }
+    let carry = v;
+    for (let j = 0; j < bytes.length; j += 1) {
+      carry += bytes[j]! * 58;
+      bytes[j] = carry & 0xff;
+      carry >>= 8;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>= 8;
+    }
+  }
+  const out = new Uint8Array(zeros + bytes.length);
+  for (let i = 0; i < bytes.length; i += 1) {
+    out[zeros + i] = bytes[bytes.length - 1 - i]!;
+  }
+  return out;
+}
+
+/**
+ * Default `AgentCardSignatureVerifier` for skill-cert: Ed25519
+ * verification of `signature` (base64) against the 32-byte preimage
+ * digest, using `subjectAgentCard` (base58, 32 bytes) as the public
+ * key. Returns `false` on any decoding / cryptographic failure.
+ *
+ * Mirrors the convention in `civic.ts:ed25519SignatureVerifier`.
+ */
+export const ed25519SkillCertSignatureVerifier: AgentCardSignatureVerifier = {
+  async verify({ skill, subjectAgentCard, issuanceNonce, signature }) {
+    try {
+      const cardBytes = base58Decode(subjectAgentCard);
+      if (cardBytes.length !== 32) return false;
+      const sigBytes = Buffer.from(signature, "base64");
+      if (sigBytes.length !== 64) return false;
+      const message = skillCertSignaturePreimage({
+        skill,
+        subjectAgentCard,
+        issuanceNonce,
+      });
+      // RFC 8410 Ed25519 SubjectPublicKeyInfo prefix.
+      const spki = Buffer.concat([
+        Buffer.from("302a300506032b6570032100", "hex"),
+        Buffer.from(cardBytes),
+      ]);
+      const key = createPublicKey({ key: spki, format: "der", type: "spki" });
+      return cryptoVerify(null, message, key, sigBytes);
+    } catch {
+      return false;
+    }
+  },
+};
 
 /* -------------------------------------------------------------------------- */
 /* Hashing utilities                                                           */
@@ -216,6 +335,14 @@ export interface SkillCertIssuerDeps {
   readonly bindingStore: SkillBindingStore;
   readonly chain: ChainClient;
   readonly ipfs: IpfsPinner;
+  /**
+   * Verifies the caller-binding Ed25519 signature on every request
+   * BEFORE the binding-store lookup, whitelist check, or chain call.
+   * REQUIRED — omitting it (or wiring an always-true stub in
+   * production) re-introduces FN-058. Defaults to
+   * `ed25519SkillCertSignatureVerifier` when the dep is not provided.
+   */
+  readonly signatureVerifier?: AgentCardSignatureVerifier;
   readonly claimHasher?: ClaimHasher;
   /** Clock injection for deterministic tests. Defaults to `Date.now`. */
   readonly now?: () => number;
@@ -229,12 +356,15 @@ export class SkillCertIssuer {
   private readonly cfg: SkillCertIssuerConfig;
   private readonly deps: SkillCertIssuerDeps;
   private readonly hasher: ClaimHasher;
+  private readonly signatureVerifier: AgentCardSignatureVerifier;
   private readonly now: () => number;
 
   public constructor(cfg: SkillCertIssuerConfig, deps: SkillCertIssuerDeps) {
     this.cfg = cfg;
     this.deps = deps;
     this.hasher = deps.claimHasher ?? defaultClaimHasher;
+    this.signatureVerifier =
+      deps.signatureVerifier ?? ed25519SkillCertSignatureVerifier;
     this.now = deps.now ?? Date.now;
   }
 
@@ -264,8 +394,50 @@ export class SkillCertIssuer {
         400,
       );
     }
+    if (
+      typeof req.agentCardSignature !== "string" ||
+      req.agentCardSignature.length === 0
+    ) {
+      throw new SkillCertIssuerError(
+        "INVALID_AGENT_CARD_SIGNATURE",
+        "agentCardSignature must be a non-empty base64 string",
+        401,
+      );
+    }
+    if (
+      typeof req.issuanceNonce !== "string" ||
+      req.issuanceNonce.length === 0
+    ) {
+      throw new SkillCertIssuerError(
+        "INVALID_AGENT_CARD_SIGNATURE",
+        "issuanceNonce must be a non-empty string",
+        401,
+      );
+    }
 
     const schema = schemaIdForSkill(req.skill);
+
+    /* 1b. Caller-binding signature check. ------------------------------- *
+     *     Runs BEFORE the idempotency lookup, whitelist gate, and chain
+     *     call so an attacker who learns a whitelisted (skill, subject)
+     *     tuple cannot front-run the legitimate AgentCard owner
+     *     (FN-058). Mirrors `civic.ts` step 3 — see the
+     *     "Issuer caller-binding convention" project memory entry.
+     */
+    const sigOk = await this.signatureVerifier.verify({
+      skill: req.skill,
+      subjectAgentCard: req.subjectAgentCard,
+      issuanceNonce: req.issuanceNonce,
+      signature: req.agentCardSignature,
+    });
+    if (!sigOk) {
+      throw new SkillCertIssuerError(
+        "INVALID_AGENT_CARD_SIGNATURE",
+        "agentCardSignature does not validate over sha256(" +
+          `${SKILL_CERT_SIG_DOMAIN} || skill || subjectAgentCard || issuanceNonce)`,
+        401,
+      );
+    }
 
     /* 2. Idempotency pre-check. ----------------------------------------- *
      *    We check the binding store BEFORE the whitelist so a previously

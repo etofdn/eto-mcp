@@ -25,13 +25,33 @@ import {
   sha256Hex,
 } from "../../src/issuers/skill-cert.js";
 import type {
+  AgentCardSignatureVerifier,
   ChainClient,
   IpfsPinner,
   IssueCredentialArgs,
   IssueCredentialResult,
   SkillBinding,
   SkillBindingStore,
+  SkillCertIssueRequest,
 } from "../../src/issuers/skill-cert.types.js";
+
+const acceptAllSignatureVerifier: AgentCardSignatureVerifier = {
+  async verify() {
+    return true;
+  },
+};
+
+function req(
+  skill: string,
+  subjectAgentCard: string,
+): SkillCertIssueRequest {
+  return {
+    skill,
+    subjectAgentCard,
+    agentCardSignature: "AA",
+    issuanceNonce: "nonce",
+  };
+}
 
 /* -------------------------------------------------------------------------- */
 /* Fakes                                                                       */
@@ -103,7 +123,14 @@ function buildIssuer(opts?: {
   const now = opts?.now ?? (() => Date.UTC(2026, 3, 29, 12, 0, 0));
   const issuer = new SkillCertIssuer(
     { issuerDid: ISSUER_DID },
-    { whitelist, bindingStore, chain, ipfs, now },
+    {
+      whitelist,
+      bindingStore,
+      chain,
+      ipfs,
+      signatureVerifier: acceptAllSignatureVerifier,
+      now,
+    },
   );
   return { issuer, whitelist, bindingStore, chain, ipfs };
 }
@@ -115,10 +142,7 @@ function buildIssuer(opts?: {
 describe("skill-cert issuer — boundary suite (FN-018)", () => {
   it("happy issuance: schema=schemaIdForSkill(skill), idempotent=false, VC type set", async () => {
     const { issuer, chain, ipfs } = buildIssuer();
-    const out = await issuer.issue({
-      skill: "solidity-audit",
-      subjectAgentCard: SUBJECT_A,
-    });
+    const out = await issuer.issue(req("solidity-audit", SUBJECT_A));
 
     expect(out.idempotent).toBe(false);
     expect(out.schema).toBe(schemaIdForSkill("solidity-audit"));
@@ -139,14 +163,8 @@ describe("skill-cert issuer — boundary suite (FN-018)", () => {
 
   it("replay (same skill+subject): second issue() returns idempotent with same PDA", async () => {
     const { issuer, chain } = buildIssuer();
-    const r1 = await issuer.issue({
-      skill: "solidity-audit",
-      subjectAgentCard: SUBJECT_A,
-    });
-    const r2 = await issuer.issue({
-      skill: "solidity-audit",
-      subjectAgentCard: SUBJECT_A,
-    });
+    const r1 = await issuer.issue(req("solidity-audit", SUBJECT_A));
+    const r2 = await issuer.issue(req("solidity-audit", SUBJECT_A));
     expect(r1.idempotent).toBe(false);
     expect(r2.idempotent).toBe(true);
     expect(r2.credentialPda).toBe(r1.credentialPda);
@@ -155,14 +173,8 @@ describe("skill-cert issuer — boundary suite (FN-018)", () => {
 
   it("replay (same skill, DIFFERENT subject): independent fresh issuance, new PDA", async () => {
     const { issuer, chain } = buildIssuer();
-    const r1 = await issuer.issue({
-      skill: "solidity-audit",
-      subjectAgentCard: SUBJECT_A,
-    });
-    const r2 = await issuer.issue({
-      skill: "solidity-audit",
-      subjectAgentCard: SUBJECT_B,
-    });
+    const r1 = await issuer.issue(req("solidity-audit", SUBJECT_A));
+    const r2 = await issuer.issue(req("solidity-audit", SUBJECT_B));
     expect(r1.idempotent).toBe(false);
     expect(r2.idempotent).toBe(false);
     expect(r1.credentialPda).not.toBe(r2.credentialPda);
@@ -202,10 +214,7 @@ describe("skill-cert issuer — boundary suite (FN-018)", () => {
       },
     };
     const { issuer, chain } = buildIssuer({ bindingStore: racingStore });
-    const out = await issuer.issue({
-      skill: "solidity-audit",
-      subjectAgentCard: SUBJECT_A,
-    });
+    const out = await issuer.issue(req("solidity-audit", SUBJECT_A));
     expect(out.idempotent).toBe(true);
     expect(out.credentialPda).toBe(canonical.credentialPda);
     expect(out.claimHash).toBe(canonical.claimHash);
@@ -219,10 +228,7 @@ describe("skill-cert issuer — boundary suite (FN-018)", () => {
     // over the pinned envelope MUST equal the on-chain claim_hash. A
     // mutation breaks the equality.
     const { issuer, ipfs, chain } = buildIssuer();
-    const out = await issuer.issue({
-      skill: "solidity-audit",
-      subjectAgentCard: SUBJECT_A,
-    });
+    const out = await issuer.issue(req("solidity-audit", SUBJECT_A));
     const vc = ipfs.fetch(out.claimUri) as Record<string, unknown>;
     expect(out.claimHash).toBe(sha256Hex(canonicalJson(vc)));
     expect(chain.accounts.get(out.credentialPda)?.claimHash).toBe(
@@ -241,10 +247,7 @@ describe("skill-cert issuer — boundary suite (FN-018)", () => {
     const { issuer, chain } = buildIssuer();
     let caught: unknown;
     try {
-      await issuer.issue({
-        skill: "solidity-audit",
-        subjectAgentCard: "AgentCardForbiddenZZZZZZZZZZZZZZZZZZZZZZZZZZ",
-      });
+      await issuer.issue(req("solidity-audit", "AgentCardForbiddenZZZZZZZZZZZZZZZZZZZZZZZZZZ"));
     } catch (err) {
       caught = err;
     }
@@ -258,10 +261,7 @@ describe("skill-cert issuer — boundary suite (FN-018)", () => {
     const { issuer, chain } = buildIssuer();
     let caught: unknown;
     try {
-      await issuer.issue({
-        skill: "Bad Slug!",
-        subjectAgentCard: SUBJECT_A,
-      });
+      await issuer.issue(req("Bad Slug!", SUBJECT_A));
     } catch (err) {
       caught = err;
     }
@@ -275,7 +275,7 @@ describe("skill-cert issuer — boundary suite (FN-018)", () => {
     const { issuer, chain } = buildIssuer();
     let caught: unknown;
     try {
-      await issuer.issue({ skill: "solidity-audit", subjectAgentCard: "" });
+      await issuer.issue(req("solidity-audit", "" ));
     } catch (err) {
       caught = err;
     }
@@ -287,15 +287,9 @@ describe("skill-cert issuer — boundary suite (FN-018)", () => {
   it("emits unique credentials across two independent issuances", async () => {
     let now = Date.UTC(2026, 3, 29, 12, 0, 0);
     const { issuer, chain, ipfs } = buildIssuer({ now: () => now });
-    const r1 = await issuer.issue({
-      skill: "solidity-audit",
-      subjectAgentCard: SUBJECT_A,
-    });
+    const r1 = await issuer.issue(req("solidity-audit", SUBJECT_A));
     now += 60_000;
-    const r2 = await issuer.issue({
-      skill: "data-analyze",
-      subjectAgentCard: SUBJECT_A,
-    });
+    const r2 = await issuer.issue(req("data-analyze", SUBJECT_A));
     expect(r1.credentialPda).not.toBe(r2.credentialPda);
     expect(chain.calls).toHaveLength(2);
     const vc1 = ipfs.fetch(r1.claimUri) as Record<string, unknown>;

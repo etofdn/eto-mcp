@@ -1,26 +1,56 @@
+import {
+  generateKeyPairSync,
+  sign as cryptoSign,
+} from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   buildSkillCertClaim,
   canonicalJson,
   defaultClaimHasher,
+  ed25519SkillCertSignatureVerifier,
   InMemorySkillBindingStore,
   schemaIdForSkill,
   sha256Hex,
   SKILL_CERT_SCHEMA_PREFIX,
   SKILL_CERT_SCHEMA_SUFFIX,
+  skillCertSignaturePreimage,
   SkillCertIssuer,
   SkillCertIssuerError,
   StaticSkillWhitelist,
 } from "../src/issuers/skill-cert.js";
 import type {
+  AgentCardSignatureVerifier,
   ChainClient,
   IpfsPinner,
   IssueCredentialArgs,
   IssueCredentialResult,
+  SkillCertIssueRequest,
   SkillCertIssuerConfig,
   SkillCertIssuerDeps,
 } from "../src/issuers/skill-cert.js";
+
+/** Stub that accepts any signature — used by tests focused on other paths. */
+const acceptAllSignatureVerifier: AgentCardSignatureVerifier = {
+  async verify() {
+    return true;
+  },
+};
+
+/** Helper: tack a stub signature/nonce onto a (skill, subject) request. */
+function req(
+  skill: string,
+  subjectAgentCard: string,
+  overrides: Partial<SkillCertIssueRequest> = {},
+): SkillCertIssueRequest {
+  return {
+    skill,
+    subjectAgentCard,
+    agentCardSignature: "AA",
+    issuanceNonce: "nonce-1",
+    ...overrides,
+  } as SkillCertIssueRequest;
+}
 
 const SUBJECT_A = "AgentCardPubkeyAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const SUBJECT_B = "AgentCardPubkeyBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
@@ -69,6 +99,7 @@ function makeIssuer(opts: {
   chain?: FakeChain;
   ipfs?: FakePinner;
   now?: () => number;
+  signatureVerifier?: AgentCardSignatureVerifier;
 } = {}): { issuer: SkillCertIssuer; deps: MakeIssuerDeps } {
   const whitelist =
     opts.whitelist ??
@@ -83,6 +114,7 @@ function makeIssuer(opts: {
     bindingStore,
     chain,
     ipfs,
+    signatureVerifier: opts.signatureVerifier ?? acceptAllSignatureVerifier,
     now,
   };
   return {
@@ -214,10 +246,7 @@ describe("buildSkillCertClaim", () => {
 describe("SkillCertIssuer.issue — happy path (AC: whitelist + per-(subject,skill))", () => {
   it("issues a credential for a whitelisted (skill, subject) pair", async () => {
     const { issuer, deps } = makeIssuer();
-    const res = await issuer.issue({
-      skill: SKILL,
-      subjectAgentCard: SUBJECT_A,
-    });
+    const res = await issuer.issue(req(SKILL, SUBJECT_A));
     expect(res.idempotent).toBe(false);
     expect(res.schema).toBe(schemaIdForSkill(SKILL));
     expect(res.claimUri.startsWith("ipfs://")).toBe(true);
@@ -237,10 +266,7 @@ describe("SkillCertIssuer.issue — happy path (AC: whitelist + per-(subject,ski
 
   it("claim_hash matches sha256(JCS(envelope))", async () => {
     const { issuer, deps } = makeIssuer({ now: () => 1_700_000_000_000 });
-    const res = await issuer.issue({
-      skill: SKILL,
-      subjectAgentCard: SUBJECT_A,
-    });
+    const res = await issuer.issue(req(SKILL, SUBJECT_A));
     const expectedClaim = buildSkillCertClaim({
       issuerDid: ISSUER_DID,
       skill: SKILL,
@@ -256,7 +282,7 @@ describe("SkillCertIssuer.issue — AC1: whitelist enforcement", () => {
   it("rejects (skill, subject) not on the whitelist", async () => {
     const { issuer, deps } = makeIssuer();
     await expect(
-      issuer.issue({ skill: SKILL, subjectAgentCard: SUBJECT_C }),
+      issuer.issue(req(SKILL, SUBJECT_C )),
     ).rejects.toMatchObject({
       name: "SkillCertIssuerError",
       code: "NOT_WHITELISTED",
@@ -270,7 +296,7 @@ describe("SkillCertIssuer.issue — AC1: whitelist enforcement", () => {
   it("rejects unknown skill (no whitelist entries)", async () => {
     const { issuer } = makeIssuer();
     await expect(
-      issuer.issue({ skill: "rust-audit", subjectAgentCard: SUBJECT_A }),
+      issuer.issue(req("rust-audit", SUBJECT_A )),
     ).rejects.toMatchObject({ code: "NOT_WHITELISTED" });
   });
 
@@ -289,13 +315,14 @@ describe("SkillCertIssuer.issue — AC1: whitelist enforcement", () => {
         bindingStore: new InMemorySkillBindingStore(),
         chain: new FakeChain(),
         ipfs: new FakePinner(),
+        signatureVerifier: acceptAllSignatureVerifier,
       },
     );
     await expect(
-      issuer.issue({ skill: SKILL, subjectAgentCard: SUBJECT_A }),
+      issuer.issue(req(SKILL, SUBJECT_A )),
     ).resolves.toMatchObject({ idempotent: false });
     await expect(
-      issuer.issue({ skill: SKILL, subjectAgentCard: SUBJECT_B }),
+      issuer.issue(req(SKILL, SUBJECT_B )),
     ).rejects.toMatchObject({ code: "NOT_WHITELISTED" });
     expect(asyncWhitelist.isAllowed).toHaveBeenCalled();
   });
@@ -304,14 +331,8 @@ describe("SkillCertIssuer.issue — AC1: whitelist enforcement", () => {
 describe("SkillCertIssuer.issue — AC2: one credential per (subject, skill)", () => {
   it("returns the cached binding on the second call (idempotent)", async () => {
     const { issuer, deps } = makeIssuer();
-    const first = await issuer.issue({
-      skill: SKILL,
-      subjectAgentCard: SUBJECT_A,
-    });
-    const second = await issuer.issue({
-      skill: SKILL,
-      subjectAgentCard: SUBJECT_A,
-    });
+    const first = await issuer.issue(req(SKILL, SUBJECT_A));
+    const second = await issuer.issue(req(SKILL, SUBJECT_A));
     expect(first.idempotent).toBe(false);
     expect(second.idempotent).toBe(true);
     expect(second.credentialPda).toBe(first.credentialPda);
@@ -325,14 +346,8 @@ describe("SkillCertIssuer.issue — AC2: one credential per (subject, skill)", (
 
   it("issues separate credentials for different subjects on the same skill", async () => {
     const { issuer, deps } = makeIssuer();
-    const a = await issuer.issue({
-      skill: SKILL,
-      subjectAgentCard: SUBJECT_A,
-    });
-    const b = await issuer.issue({
-      skill: SKILL,
-      subjectAgentCard: SUBJECT_B,
-    });
+    const a = await issuer.issue(req(SKILL, SUBJECT_A));
+    const b = await issuer.issue(req(SKILL, SUBJECT_B));
     expect(a.credentialPda).not.toBe(b.credentialPda);
     expect(deps.chain.calls).toHaveLength(2);
   });
@@ -343,14 +358,8 @@ describe("SkillCertIssuer.issue — AC2: one credential per (subject, skill)", (
       "rust-audit": [SUBJECT_A],
     });
     const { issuer, deps } = makeIssuer({ whitelist: wl });
-    const s1 = await issuer.issue({
-      skill: "solidity-audit",
-      subjectAgentCard: SUBJECT_A,
-    });
-    const s2 = await issuer.issue({
-      skill: "rust-audit",
-      subjectAgentCard: SUBJECT_A,
-    });
+    const s1 = await issuer.issue(req("solidity-audit", SUBJECT_A));
+    const s2 = await issuer.issue(req("rust-audit", SUBJECT_A));
     expect(s1.schema).not.toBe(s2.schema);
     expect(s1.credentialPda).not.toBe(s2.credentialPda);
     expect(deps.chain.calls).toHaveLength(2);
@@ -359,19 +368,13 @@ describe("SkillCertIssuer.issue — AC2: one credential per (subject, skill)", (
   it("idempotent re-hit serves even if subject is later removed from whitelist", async () => {
     const wl = new StaticSkillWhitelist({ [SKILL]: [SUBJECT_A] });
     const { issuer, deps } = makeIssuer({ whitelist: wl });
-    const first = await issuer.issue({
-      skill: SKILL,
-      subjectAgentCard: SUBJECT_A,
-    });
+    const first = await issuer.issue(req(SKILL, SUBJECT_A));
     // The deps object inside the issuer is the original one — but we're
     // testing the contract: a previously-bound subject should still get
     // the cached row because the bridge consults the binding store
     // BEFORE the whitelist (cached row wins).
     void deps;
-    const second = await issuer.issue({
-      skill: SKILL,
-      subjectAgentCard: SUBJECT_A,
-    });
+    const second = await issuer.issue(req(SKILL, SUBJECT_A));
     expect(second.idempotent).toBe(true);
     expect(second.credentialPda).toBe(first.credentialPda);
   });
@@ -382,7 +385,7 @@ describe("SkillCertIssuer.issue — request validation", () => {
     const { issuer } = makeIssuer();
     for (const bad of ["", "Solidity-Audit", "x_y", "x y", "x--y", "-x", "x-"]) {
       await expect(
-        issuer.issue({ skill: bad, subjectAgentCard: SUBJECT_A }),
+        issuer.issue(req(bad, SUBJECT_A )),
       ).rejects.toMatchObject({ code: "INVALID_SKILL", status: 400 });
     }
   });
@@ -390,7 +393,7 @@ describe("SkillCertIssuer.issue — request validation", () => {
   it("rejects empty subjectAgentCard", async () => {
     const { issuer } = makeIssuer();
     await expect(
-      issuer.issue({ skill: SKILL, subjectAgentCard: "" }),
+      issuer.issue(req(SKILL, "" )),
     ).rejects.toMatchObject({ code: "INVALID_SUBJECT", status: 400 });
   });
 });
@@ -401,7 +404,7 @@ describe("SkillCertIssuer.issue — failure modes", () => {
     chain.failures = 1;
     const { issuer, deps } = makeIssuer({ chain });
     await expect(
-      issuer.issue({ skill: SKILL, subjectAgentCard: SUBJECT_A }),
+      issuer.issue(req(SKILL, SUBJECT_A )),
     ).rejects.toMatchObject({ code: "CHAIN_TX_FAILED", status: 502 });
     expect(await deps.bindingStore.get(SKILL, SUBJECT_A)).toBeUndefined();
   });
@@ -412,7 +415,7 @@ describe("SkillCertIssuer.issue — failure modes", () => {
     };
     const { issuer } = makeIssuer({ ipfs: ipfs as unknown as FakePinner });
     await expect(
-      issuer.issue({ skill: SKILL, subjectAgentCard: SUBJECT_A }),
+      issuer.issue(req(SKILL, SUBJECT_A )),
     ).rejects.toMatchObject({ code: "CHAIN_TX_FAILED", status: 500 });
   });
 
@@ -444,10 +447,7 @@ describe("SkillCertIssuer.issue — failure modes", () => {
     racingStore.get = async () => (getCalls++ === 0 ? undefined : canonical);
 
     const { issuer, deps } = makeIssuer({ store: racingStore });
-    const res = await issuer.issue({
-      skill: SKILL,
-      subjectAgentCard: SUBJECT_A,
-    });
+    const res = await issuer.issue(req(SKILL, SUBJECT_A));
     expect(res.idempotent).toBe(true);
     expect(res.credentialPda).toBe("PDA-canonical");
     expect(res.txSignature).toBe("tx-canonical");
@@ -464,8 +464,204 @@ describe("SkillCertIssuer.issue — failure modes", () => {
     };
     const { issuer } = makeIssuer({ store: racingStore });
     await expect(
-      issuer.issue({ skill: SKILL, subjectAgentCard: SUBJECT_A }),
+      issuer.issue(req(SKILL, SUBJECT_A )),
     ).rejects.toMatchObject({ code: "CHAIN_TX_FAILED", status: 500 });
+  });
+});
+
+describe("SkillCertIssuer.issue — caller-binding signature (FN-058)", () => {
+  // Generate a stable Ed25519 keypair for tests; the wallet pubkey is
+  // the raw 32-byte public key encoded as base58 — the AgentCard wire
+  // format used elsewhere in this codebase. We rebuild the base58
+  // string locally so tests do not pull in extra deps.
+  const BASE58_ALPHABET =
+    "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  function base58Encode(bytes: Uint8Array): string {
+    let zeros = 0;
+    while (zeros < bytes.length && bytes[zeros] === 0) zeros += 1;
+    const digits: number[] = [];
+    for (let i = zeros; i < bytes.length; i += 1) {
+      let carry = bytes[i]!;
+      for (let j = 0; j < digits.length; j += 1) {
+        carry += digits[j]! << 8;
+        digits[j] = carry % 58;
+        carry = (carry / 58) | 0;
+      }
+      while (carry > 0) {
+        digits.push(carry % 58);
+        carry = (carry / 58) | 0;
+      }
+    }
+    let out = "";
+    for (let i = 0; i < zeros; i += 1) out += "1";
+    for (let i = digits.length - 1; i >= 0; i -= 1) out += BASE58_ALPHABET[digits[i]!];
+    return out;
+  }
+
+  function makeKeypair(): {
+    pubBase58: string;
+    sign: (msg: Buffer) => string;
+  } {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    // Strip RFC 8410 SPKI prefix (12 bytes) to get raw 32-byte pubkey.
+    const spki = publicKey.export({ format: "der", type: "spki" });
+    const raw = spki.subarray(spki.length - 32);
+    return {
+      pubBase58: base58Encode(new Uint8Array(raw)),
+      sign: (msg) => cryptoSign(null, msg, privateKey).toString("base64"),
+    };
+  }
+
+  it("happy path: valid signature by subjectAgentCard issues credential", async () => {
+    const kp = makeKeypair();
+    const wl = new StaticSkillWhitelist({ [SKILL]: [kp.pubBase58] });
+    const { issuer, deps } = makeIssuer({
+      whitelist: wl,
+      signatureVerifier: ed25519SkillCertSignatureVerifier,
+    });
+    const nonce = "nonce-happy-1";
+    const sig = kp.sign(
+      skillCertSignaturePreimage({
+        skill: SKILL,
+        subjectAgentCard: kp.pubBase58,
+        issuanceNonce: nonce,
+      }),
+    );
+    const out = await issuer.issue({
+      skill: SKILL,
+      subjectAgentCard: kp.pubBase58,
+      agentCardSignature: sig,
+      issuanceNonce: nonce,
+    });
+    expect(out.idempotent).toBe(false);
+    expect(deps.chain.calls).toHaveLength(1);
+    expect(deps.chain.calls[0]?.subjectAgentCard).toBe(kp.pubBase58);
+  });
+
+  it("rejects 401 when subjectAgentCard != signer (front-run defence) BEFORE binding-store / whitelist / chain", async () => {
+    const victim = makeKeypair();
+    const attacker = makeKeypair();
+    // Victim is whitelisted for SKILL; attacker is not.
+    const wl = new StaticSkillWhitelist({
+      [SKILL]: [victim.pubBase58],
+    });
+    // Track that the binding-store, whitelist, and chain are NOT consulted.
+    const bindingStore: InMemorySkillBindingStore = Object.create(
+      InMemorySkillBindingStore.prototype,
+    );
+    let storeGetCalls = 0;
+    let storePutCalls = 0;
+    bindingStore.get = async () => {
+      storeGetCalls += 1;
+      return undefined;
+    };
+    bindingStore.put = async () => {
+      storePutCalls += 1;
+    };
+    let whitelistCalls = 0;
+    const wlSpy = {
+      isAllowed: (s: string, sub: string) => {
+        whitelistCalls += 1;
+        return wl.isAllowed(s, sub);
+      },
+    };
+    const chain = new FakeChain();
+    const { issuer } = makeIssuer({
+      whitelist: wlSpy as unknown as StaticSkillWhitelist,
+      store: bindingStore,
+      chain,
+      signatureVerifier: ed25519SkillCertSignatureVerifier,
+    });
+
+    // Attacker forges a request claiming the VICTIM's pubkey as subject
+    // but signs with the attacker's own (or some random) key. Since the
+    // signature does not validate against the victim's pubkey, the
+    // request must 401 before any side effect.
+    const nonce = "nonce-attack-1";
+    const attackerSig = attacker.sign(
+      skillCertSignaturePreimage({
+        skill: SKILL,
+        subjectAgentCard: victim.pubBase58,
+        issuanceNonce: nonce,
+      }),
+    );
+    await expect(
+      issuer.issue({
+        skill: SKILL,
+        subjectAgentCard: victim.pubBase58,
+        agentCardSignature: attackerSig,
+        issuanceNonce: nonce,
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_AGENT_CARD_SIGNATURE",
+      status: 401,
+    });
+    expect(storeGetCalls).toBe(0);
+    expect(storePutCalls).toBe(0);
+    expect(whitelistCalls).toBe(0);
+    expect(chain.calls).toHaveLength(0);
+  });
+
+  it("rejects 401 if signature is over a different (skill) preimage", async () => {
+    const kp = makeKeypair();
+    const wl = new StaticSkillWhitelist({ [SKILL]: [kp.pubBase58] });
+    const { issuer, deps } = makeIssuer({
+      whitelist: wl,
+      signatureVerifier: ed25519SkillCertSignatureVerifier,
+    });
+    const nonce = "nonce-bad-skill";
+    // Sign over a different skill name — valid sig but bound to wrong skill.
+    const sig = kp.sign(
+      skillCertSignaturePreimage({
+        skill: "some-other-skill",
+        subjectAgentCard: kp.pubBase58,
+        issuanceNonce: nonce,
+      }),
+    );
+    await expect(
+      issuer.issue({
+        skill: SKILL,
+        subjectAgentCard: kp.pubBase58,
+        agentCardSignature: sig,
+        issuanceNonce: nonce,
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_AGENT_CARD_SIGNATURE",
+      status: 401,
+    });
+    expect(deps.chain.calls).toHaveLength(0);
+  });
+
+  it("rejects empty agentCardSignature with 401", async () => {
+    const { issuer, deps } = makeIssuer();
+    await expect(
+      issuer.issue({
+        skill: SKILL,
+        subjectAgentCard: SUBJECT_A,
+        agentCardSignature: "",
+        issuanceNonce: "n",
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_AGENT_CARD_SIGNATURE",
+      status: 401,
+    });
+    expect(deps.chain.calls).toHaveLength(0);
+  });
+
+  it("rejects empty issuanceNonce with 401", async () => {
+    const { issuer, deps } = makeIssuer();
+    await expect(
+      issuer.issue({
+        skill: SKILL,
+        subjectAgentCard: SUBJECT_A,
+        agentCardSignature: "AA",
+        issuanceNonce: "",
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_AGENT_CARD_SIGNATURE",
+      status: 401,
+    });
+    expect(deps.chain.calls).toHaveLength(0);
   });
 });
 

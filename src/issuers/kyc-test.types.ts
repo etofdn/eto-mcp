@@ -29,6 +29,12 @@ export interface KycTestFormSubmission {
    * HMAC tag over `${fullName}|${dobIso}|${flowStartedAtUnix}` from
    * the form-token signer. Prevents trivial replay of an old
    * `flowStartedAtUnix` without going through a real form render.
+   *
+   * NOTE: the form HMAC does NOT bind `agentCardPubkey` (the form
+   * is rendered before the wallet picks a card). Wallet-binding is
+   * enforced separately by the Ed25519 `agentCardSignature` on the
+   * issue request — see FN-057 and
+   * `KycTestAgentCardSignatureVerifier` below.
    */
   readonly formTokenHmacHex: string;
 }
@@ -80,6 +86,30 @@ export interface KycTestDedupeStore {
 }
 
 /**
+ * Wallet-binding signature verifier (FN-057). Mirrors
+ * `AgentCardSignatureVerifier` in `civic.types.ts` /
+ * `worldcoin.types.ts` so the kyc.us-test issuer enforces the same
+ * "caller proves control of agentCardPubkey" invariant the other
+ * issuers do.
+ *
+ * The verifier checks an Ed25519 signature by `agentCardPubkey` over
+ * `sha256(nullifierBytes || agentCardPubkeyBytes)`. Implementations
+ * MUST resolve `false` on any cryptographic / decoding failure
+ * instead of throwing — the caller surfaces the typed
+ * `invalid_agent_card_signature` error.
+ */
+export interface KycTestAgentCardSignatureVerifier {
+  verify(input: {
+    /** 64-char lowercase hex (the dedupe nullifier). */
+    readonly nullifier: string;
+    /** base58 32-byte AgentCard pubkey. */
+    readonly agentCardPubkey: string;
+    /** base64 64-byte Ed25519 signature. */
+    readonly signature: string;
+  }): Promise<boolean>;
+}
+
+/**
  * Submits an `IssueCredential` instruction. Same contract as the
  * Civic adapter so the gateway can reuse a single chain client.
  */
@@ -111,6 +141,12 @@ export interface KycTestIssuerDeps {
   readonly chain: KycTestIssueCredentialClient;
   readonly pinner: KycTestVcPinner;
   readonly clock: KycTestSlotClock;
+  /**
+   * Wallet-binding signature verifier (FN-057). REQUIRED so a caller
+   * cannot mint a `kyc.us-test` credential to an `agentCardPubkey`
+   * they do not control. See `KycTestAgentCardSignatureVerifier`.
+   */
+  readonly signatureVerifier: KycTestAgentCardSignatureVerifier;
   /** Issuer authority pubkey (base58); recorded inside the off-chain VC. */
   readonly issuerAuthorityPubkey: string;
   /**
@@ -126,6 +162,13 @@ export interface KycTestIssuerDeps {
 export interface KycTestIssueRequest {
   readonly submission: KycTestFormSubmission;
   readonly agentCardPubkey: string;
+  /**
+   * Base64 Ed25519 signature by `agentCardPubkey` over
+   * `sha256(nullifierBytes || agentCardPubkeyBytes)` (FN-057).
+   * Mirrors `CivicIssueRequest.agentCardSignature` so the bridge
+   * enforces wallet-binding for the mock kyc.us-test issuer too.
+   */
+  readonly agentCardSignature: string;
 }
 
 export type KycTestIssueResponse =
@@ -146,12 +189,13 @@ export type KycTestIssueResponse =
     };
 
 /**
- * - `replay_conflict`  → 409 (subject already bound to a different card).
- * - `invalid_form`     → 400 (missing/malformed name or DOB).
- * - `invalid_token`    → 400 (form-token HMAC mismatch).
- * - `dwell_too_short`  → 400 (submission inside the 30-second window).
- * - `dwell_in_future`  → 400 (clock skew / forged future timestamp).
- * - `chain_failed`     → 502 (IssueCredential tx failed).
+ * - `replay_conflict`              → 409 (subject already bound to a different card).
+ * - `invalid_form`                 → 400 (missing/malformed name or DOB).
+ * - `invalid_token`                → 400 (form-token HMAC mismatch).
+ * - `dwell_too_short`              → 400 (submission inside the 30-second window).
+ * - `dwell_in_future`              → 400 (clock skew / forged future timestamp).
+ * - `invalid_agent_card_signature` → 401 (caller does not control `agentCardPubkey`).
+ * - `chain_failed`                 → 502 (IssueCredential tx failed).
  */
 export type KycTestIssueErrorKind =
   | "replay_conflict"
@@ -159,6 +203,7 @@ export type KycTestIssueErrorKind =
   | "invalid_token"
   | "dwell_too_short"
   | "dwell_in_future"
+  | "invalid_agent_card_signature"
   | "chain_failed";
 
 export class KycTestIssueError extends Error {
