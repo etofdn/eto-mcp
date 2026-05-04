@@ -21,6 +21,7 @@ const TOKEN_PDA = 'b'.repeat(64);
 
 function makeRequest(overrides: Partial<OnrampRequest> = {}): OnrampRequest {
   return {
+    caller_pubkey: RECIPIENT, // FN-034: caller MUST equal recipient
     recipient: RECIPIENT,
     recipient_token_account_pda: TOKEN_PDA,
     usd_amount_cents: 10_000,        // $100.00
@@ -137,6 +138,34 @@ describe('executeOnramp — invalid_pubkey', () => {
     const deps = makeDeps();
     await expect(executeOnramp(makeRequest({ recipient_token_account_pda: 'bad' }), deps))
       .rejects.toMatchObject({ reason: 'invalid_pubkey' });
+  });
+});
+
+describe('executeOnramp — caller-binding (FN-034)', () => {
+  it('rejects when caller_pubkey != recipient with caller_mismatch', async () => {
+    const deps = makeDeps();
+    const attacker = 'f'.repeat(64);
+    await expect(
+      executeOnramp(makeRequest({ caller_pubkey: attacker }), deps),
+    ).rejects.toMatchObject({ reason: 'caller_mismatch' });
+  });
+
+  it('rejects without invoking verifyUsdPull / mintOnChain / remitToTreasury', async () => {
+    const deps = makeDeps();
+    const attacker = 'f'.repeat(64);
+    await expect(
+      executeOnramp(makeRequest({ caller_pubkey: attacker }), deps),
+    ).rejects.toBeInstanceOf(OnrampRejected);
+    expect(deps.verifyUsdPull).not.toHaveBeenCalled();
+    expect(deps.mintOnChain).not.toHaveBeenCalled();
+    expect(deps.remitToTreasury).not.toHaveBeenCalled();
+  });
+
+  it('rejects when caller_pubkey is not a valid hex64 with invalid_pubkey', async () => {
+    const deps = makeDeps();
+    await expect(
+      executeOnramp(makeRequest({ caller_pubkey: 'tooshort' }), deps),
+    ).rejects.toMatchObject({ reason: 'invalid_pubkey' });
   });
 });
 

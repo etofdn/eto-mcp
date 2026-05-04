@@ -17,6 +17,13 @@
 import { createHash } from 'node:crypto';
 
 export interface OpenSavingsRequest {
+  /**
+   * FN-034: authenticated caller pubkey (hex). MUST equal `subject` —
+   * any mismatch is rejected with `caller_mismatch` before any side-effect
+   * runs. Without this binding, an unauthenticated caller could mint an
+   * `account.savings.v1` credential to any subject.
+   */
+  caller_pubkey: string;
   /** Subject pubkey (hex) — receives the credential and owns the account. */
   subject: string;
   /** Pubkey of the holder's existing CheckingAccount, required reference. */
@@ -66,16 +73,21 @@ export interface OpenSavingsDeps {
 }
 
 export class OpenSavingsRejected extends Error {
-  constructor(public reason: 'no_checking_credential' | 'invalid_pda' | 'invalid_tier' | 'invalid_apy') {
+  constructor(public reason: 'no_checking_credential' | 'invalid_pda' | 'caller_mismatch' | 'invalid_tier' | 'invalid_apy') {
     super('open-savings rejected: ' + reason);
   }
 }
 
 export async function openSavings(req: OpenSavingsRequest, deps: OpenSavingsDeps): Promise<OpenSavingsResult> {
   // Validate inputs
+  if (!/^[0-9a-fA-F]{64}$/.test(req.caller_pubkey)) throw new OpenSavingsRejected('invalid_pda');
   if (!/^[0-9a-fA-F]{64}$/.test(req.subject)) throw new OpenSavingsRejected('invalid_pda');
   if (!/^[0-9a-fA-F]{64}$/.test(req.linked_checking_account_pda)) throw new OpenSavingsRejected('invalid_pda');
   if (!/^[0-9a-fA-F]{64}$/.test(req.bank_issuer)) throw new OpenSavingsRejected('invalid_pda');
+  // FN-034: caller-binding. Reject before any side-effect when the caller
+  // is not the subject; otherwise an unauth'd caller could mint an
+  // account.savings credential bound to any subject.
+  if (req.caller_pubkey !== req.subject) throw new OpenSavingsRejected('caller_mismatch');
   const tier = req.tier ?? 'standard';
   if (!(['standard', 'premium', 'private'] as const).includes(tier)) throw new OpenSavingsRejected('invalid_tier');
   const apy_bps = req.apy_bps ?? 400;

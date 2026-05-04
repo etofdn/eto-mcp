@@ -33,6 +33,7 @@ const INTL_DEST: OfframpRequest['destination'] = {
 
 function makeRequest(overrides: Partial<OfframpRequest> = {}): OfframpRequest {
   return {
+    caller_pubkey: HOLDER, // FN-034: caller MUST equal holder
     holder: HOLDER,
     holder_token_account_pda: HOLDER_TOKEN_PDA,
     eusd_amount_atomic: 100_000_000,
@@ -151,6 +152,34 @@ describe('executeOfframp — invalid_pubkey', () => {
     const deps = makeDeps();
     await expect(executeOfframp(makeRequest({ holder_token_account_pda: '00' }), deps))
       .rejects.toMatchObject({ reason: 'invalid_pubkey' });
+  });
+});
+
+describe('executeOfframp — caller-binding (FN-034)', () => {
+  it('rejects when caller_pubkey != holder with caller_mismatch', async () => {
+    const deps = makeDeps();
+    const attacker = 'f'.repeat(64);
+    await expect(
+      executeOfframp(makeRequest({ caller_pubkey: attacker }), deps),
+    ).rejects.toMatchObject({ reason: 'caller_mismatch' });
+  });
+
+  it('rejects without invoking burnOnChain / pushUsd / remitToTreasury', async () => {
+    const deps = makeDeps();
+    const attacker = 'f'.repeat(64);
+    await expect(
+      executeOfframp(makeRequest({ caller_pubkey: attacker }), deps),
+    ).rejects.toBeInstanceOf(OfframpRejected);
+    expect(deps.burnOnChain).not.toHaveBeenCalled();
+    expect(deps.pushUsd).not.toHaveBeenCalled();
+    expect(deps.remitToTreasury).not.toHaveBeenCalled();
+  });
+
+  it('rejects when caller_pubkey is not a valid hex64 with invalid_pubkey', async () => {
+    const deps = makeDeps();
+    await expect(
+      executeOfframp(makeRequest({ caller_pubkey: 'tooshort' }), deps),
+    ).rejects.toMatchObject({ reason: 'invalid_pubkey' });
   });
 });
 

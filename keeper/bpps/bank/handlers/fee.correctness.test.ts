@@ -240,6 +240,7 @@ const ONRAMP_TOKEN_PDA = 'b'.repeat(64);
  */
 function makeOnrampRequest(gross_eusd_atomic: number): OnrampRequest {
   return {
+    caller_pubkey: ONRAMP_RECIPIENT, // FN-034: caller MUST equal recipient
     recipient: ONRAMP_RECIPIENT,
     recipient_token_account_pda: ONRAMP_TOKEN_PDA,
     usd_amount_cents: gross_eusd_atomic / 10_000,
@@ -274,6 +275,7 @@ const DOMESTIC_DEST: OfframpRequest['destination'] = {
 
 function makeOfframpRequest(eusd_amount_atomic: number): OfframpRequest {
   return {
+    caller_pubkey: OFFRAMP_HOLDER, // FN-034: caller MUST equal holder
     holder: OFFRAMP_HOLDER,
     holder_token_account_pda: OFFRAMP_HOLDER_TOKEN_PDA,
     eusd_amount_atomic,

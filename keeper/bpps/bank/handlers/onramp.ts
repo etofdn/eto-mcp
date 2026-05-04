@@ -26,6 +26,13 @@ import {
 } from './fee.js';
 
 export interface OnrampRequest {
+  /**
+   * FN-034: authenticated caller pubkey (hex). MUST equal `recipient` —
+   * any mismatch is rejected with `caller_mismatch` before any side-effect
+   * runs. Without this binding, an unauthenticated caller could direct a
+   * mint of eUSD into any subject's TokenAccount.
+   */
+  caller_pubkey: string;
   recipient: string;                     // hex pubkey — receives the eUSD
   recipient_token_account_pda: string;   // hex — TokenAccount PDA
   usd_amount_cents: number;              // amount in USD cents (1000 = $10.00)
@@ -64,7 +71,7 @@ export interface OnrampDeps {
 }
 
 export class OnrampRejected extends Error {
-  constructor(public reason: 'invalid_pubkey' | 'invalid_amount' | 'usd_pull_failed' | 'mint_failed') {
+  constructor(public reason: 'invalid_pubkey' | 'caller_mismatch' | 'invalid_amount' | 'usd_pull_failed' | 'mint_failed') {
     super('onramp rejected: ' + reason);
   }
 }
@@ -78,8 +85,13 @@ function usdCentsToAtomicEusd(cents: number): number {
 }
 
 export async function executeOnramp(req: OnrampRequest, deps: OnrampDeps): Promise<OnrampOutcome> {
+  if (!HEX64.test(req.caller_pubkey)) throw new OnrampRejected('invalid_pubkey');
   if (!HEX64.test(req.recipient)) throw new OnrampRejected('invalid_pubkey');
   if (!HEX64.test(req.recipient_token_account_pda)) throw new OnrampRejected('invalid_pubkey');
+  // FN-034: caller-binding. Reject before any side-effect when the caller
+  // is not the recipient; otherwise an unauth'd caller could direct a
+  // mint into any subject's account.
+  if (req.caller_pubkey !== req.recipient) throw new OnrampRejected('caller_mismatch');
   if (!Number.isInteger(req.usd_amount_cents) || req.usd_amount_cents <= 0) throw new OnrampRejected('invalid_amount');
 
   const eusd_gross = usdCentsToAtomicEusd(req.usd_amount_cents);
