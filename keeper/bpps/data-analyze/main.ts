@@ -14,6 +14,7 @@
  * Run: `bun run keeper/bpps/data-analyze/main.ts`
  */
 
+import { schemaIdForSkill } from "../../../src/issuers/skill-cert.js";
 import {
   defaultCredentialGate,
   InMemoryChain,
@@ -21,7 +22,9 @@ import {
   InMemoryPinner,
   registerBppAgentCard,
   runBpp,
+  type AgentCardSnapshot,
   type BeckonInitEvent,
+  type Hex32,
   type Logger,
 } from "../../templates/bpp/index.js";
 import { config, tags } from "./config.js";
@@ -32,6 +35,16 @@ import {
 import { buildHandlerFromPrimitives } from "./handler.js";
 import type { LlmClient } from "./analyzer.js";
 import type { AnalyzeInput, AnalyzeOutput, AnalysisReport } from "./types.js";
+import {
+  assertSelfSkillCredential,
+  inMemoryAgentCardLoader,
+} from "./self-cred.js";
+
+/* -------------------------------------------------------------------------- */
+/* Skill schema (memoised)                                                    */
+/* -------------------------------------------------------------------------- */
+
+export const DATA_ANALYZE_SCHEMA_ID: Hex32 = schemaIdForSkill("data-analyze");
 
 /* -------------------------------------------------------------------------- */
 /* Fake LLM and fake fetch                                                    */
@@ -110,7 +123,39 @@ export async function main(): Promise<void> {
     idempotent: reg.idempotent,
   });
 
-  // 2. Wire the runtime stack.
+  // 2. Self-credential preflight.
+  const devIssuer = "SkillCertIssuerDevPubkey1111111111111111111";
+  const issuerSet = (process.env.DATA_ANALYZE_SELF_ISSUERS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const resolvedIssuers = issuerSet.length > 0 ? issuerSet : [devIssuer];
+  const seededCard: AgentCardSnapshot = {
+    authority: config.authority,
+    credentials: [
+      {
+        schema: DATA_ANALYZE_SCHEMA_ID,
+        predicateHash: "0".repeat(64),
+        issuer: resolvedIssuers[0]!,
+        validFrom: 0,
+        validUntil: 0,
+        revoked: false,
+      },
+    ],
+  };
+  const ownCardLoader = inMemoryAgentCardLoader(
+    new Map([[config.authority, seededCard]]),
+  );
+  await assertSelfSkillCredential({
+    loadAgentCard: ownCardLoader,
+    ownAuthority: config.authority,
+    issuerSet: resolvedIssuers,
+    schemaId: DATA_ANALYZE_SCHEMA_ID,
+    nowSec: () => Math.floor(Date.now() / 1000),
+  });
+  consoleLogger.info("self-skill credential preflight passed");
+
+  // 3. Wire the runtime stack.
   const events = new InMemoryEventSource<unknown>();
   const inner = new InMemoryChain();
   const chain = new SigningRuntimeChain({
@@ -136,7 +181,7 @@ export async function main(): Promise<void> {
     logger: consoleLogger,
   });
 
-  // 3. Push synthetic events.
+  // 4. Push synthetic events.
   events.push(
     makeEvent("t-csv", {
       source: {
@@ -160,7 +205,7 @@ export async function main(): Promise<void> {
   events.close();
   await done;
 
-  // 4. Report.
+  // 5. Report.
   for (const c of inner.completed) {
     consoleLogger.info("completed", { taskId: c.taskId });
   }
