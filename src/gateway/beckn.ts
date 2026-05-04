@@ -205,5 +205,41 @@ export function createBecknApp(): express.Express {
   });
 
   app.use(becknRouter);
+
+  // FN-092 — Convert express body-parser's PayloadTooLargeError (1 MiB
+  // limit, set on the per-route json parser above) from Express's default
+  // HTML/plain-text 413 into a Beckn NACK envelope. This must be a
+  // 4-arg error-handling middleware so Express dispatches errors here.
+  // Mounted AFTER becknRouter so any 413 thrown during body parsing on
+  // a Beckn route is caught and reshaped before the default handler runs.
+  app.use(
+    (
+      err: { type?: string; status?: number; statusCode?: number; message?: string } | undefined,
+      _req: Request,
+      res: Response,
+      next: (e?: unknown) => void,
+    ): void => {
+      if (!err) {
+        next();
+        return;
+      }
+      const status = err.status ?? err.statusCode ?? 0;
+      const isOversized =
+        err.type === "entity.too.large" || status === 413;
+      if (isOversized) {
+        const { status: nackStatus, body } = becknError(
+          "PAYLOAD_TOO_LARGE",
+          "Request body exceeds 1 MiB limit",
+          413,
+        );
+        if (!res.headersSent) {
+          res.status(nackStatus).json(body);
+        }
+        return;
+      }
+      next(err);
+    },
+  );
+
   return app;
 }
