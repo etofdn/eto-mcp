@@ -399,7 +399,7 @@ export function registerQueryTools(server: McpServer): void {
 
   server.tool(
     "query_memos",
-    "Parse SPL Memo Program v2 records from on-chain transaction logs for an account. Optionally filter by a top-level JSON field equality match; non-JSON memo bytes are returned as raw strings.",
+    "Parse SPL Memo Program v2 records from on-chain transaction logs for an account. Supports cursor-based pagination via before_signature or before_slot so callers can stream long memo histories without re-scanning the prefix. Optionally filter by a top-level JSON field equality match; non-JSON memo bytes are returned as raw strings.",
     {
       address: z.string().describe("Account address (base58 SVM or 0x EVM)"),
       filter_field: z
@@ -424,17 +424,62 @@ export function registerQueryTools(server: McpServer): void {
         .min(0)
         .default(0)
         .optional()
-        .describe("Pagination offset into the account's tx history (default 0)"),
+        .describe("Pagination offset into the account's tx history (default 0, ignored when before_signature or before_slot is set)"),
+      before_signature: z
+        .string()
+        .optional()
+        .describe("Cursor: only return memos from transactions whose signature sorts strictly before this value (base58). Enables forward streaming without re-scanning earlier pages."),
+      before_slot: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Cursor: only return memos from transactions confirmed at a slot strictly less than this value. Use alongside before_signature for precise cursor positioning."),
     },
-    async ({ address, filter_field, filter_value, limit, offset }) => {
+    async ({ address, filter_field, filter_value, limit, offset, before_signature, before_slot }) => {
       try {
+        // Cursor-based pagination: fetch from the RPC using offset=0 when a
+        // cursor is provided, then filter client-side. The RPC's
+        // eto_getAccountTransactions returns txs in reverse-chronological
+        // order (newest first) so "before" cursors trim the head of the list.
+        const effectiveOffset = (before_signature || before_slot != null) ? 0 : (offset ?? 0);
+        const scanLimit = limit ?? 20;
         const txs = await rpc.etoGetAccountTransactions(
           address,
-          limit ?? 20,
-          offset ?? 0
+          // Fetch up to scanLimit + 1 so we can detect whether a next page
+          // exists without a second RPC call.
+          scanLimit + 1,
+          effectiveOffset
         );
 
-        const list = Array.isArray(txs) ? txs : [];
+        let list = Array.isArray(txs) ? txs : [];
+
+        // Apply cursor filters before fetching full tx details.
+        // eto_getAccountTransactions returns txs in reverse-chronological
+        // order (newest first). "before_signature" and "before_slot" trim
+        // entries that are at or after the cursor position.
+        if (before_signature) {
+          const idx = list.findIndex(
+            (tx: any) => (tx?.signature ?? tx?.hash) === before_signature
+          );
+          // If the cursor sig is found, keep only entries after its position
+          // (older txs). If not found, assume the cursor is beyond all entries
+          // in this page and skip all.
+          list = idx >= 0 ? list.slice(idx + 1) : [];
+        }
+        if (before_slot != null) {
+          list = list.filter(
+            (tx: any) => {
+              const slot = tx?.slot ?? tx?.blockTime ?? tx?.timestamp;
+              return slot == null || slot < before_slot;
+            }
+          );
+        }
+
+        // Detect next-page existence: if we fetched scanLimit+1, the extra
+        // entry signals more data is available. Trim to scanLimit.
+        const hasMore = list.length > scanLimit;
+        if (hasMore) list = list.slice(0, scanLimit);
 
         // The list endpoint may not include logs — fetch the full tx in
         // parallel only when the summary entry lacks them.
@@ -487,12 +532,28 @@ export function registerQueryTools(server: McpServer): void {
           }
         }
 
+        // Build next_cursor from the last record so callers can page forward
+        // without re-scanning earlier entries.
+        const lastRecord = records.length > 0 ? records[records.length - 1] : null;
+        const next_cursor: Record<string, unknown> | null =
+          hasMore && lastRecord
+            ? {
+                before_signature: lastRecord.sig || undefined,
+                before_slot: lastRecord.ts != null ? lastRecord.ts + 1 : undefined,
+              }
+            : null;
+
         return {
           content: [
             {
               type: "text",
               text: JSON.stringify(
-                { address, count: records.length, records },
+                {
+                  address,
+                  count: records.length,
+                  records,
+                  ...(next_cursor ? { next_cursor } : {}),
+                },
                 null,
                 2
               ),
