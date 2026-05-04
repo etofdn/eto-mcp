@@ -25,7 +25,8 @@ Or add manually to `~/.claude/claude_desktop_config.json`:
       "env": {
         "ETO_RPC_URL": "http://localhost:8899",
         "NETWORK": "testnet",
-        "AUTH_DEV_BYPASS": "true"
+        "AUTH_DEV_BYPASS": "true",
+        "AUDIT_DB_URL": ""  // optional: postgres://user:pass@host/dbname for durable audit-trail storage (FN-083); omit or leave empty for in-memory fallback
       }
     }
   }

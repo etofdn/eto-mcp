@@ -147,8 +147,10 @@ export {
   AuditTrailIndexer,
   AuditTrailIndexerError,
   InMemoryKytEventSource,
+  PostgresKytEventSource,
   buildAuditFeed,
   counterpartyWireSchema,
+  createKytEventSourceFromEnv,
   kytStageWireSchema,
   kytTraceEventSchema,
   partyTraceWireSchema,
@@ -171,6 +173,7 @@ export type {
   KytStageWire,
   KytTraceEvent,
   PartyTraceWire,
+  PostgresKytEventSourceInit,
   RevocationRootUpdatedEvent,
 } from "./services/indexer/index.js";
 
