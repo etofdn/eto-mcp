@@ -25,6 +25,22 @@ import {
 } from "../../templates/bpp/index.js";
 
 /* -------------------------------------------------------------------------- */
+/* Shared signing chain (FN-112): one import from the template barrel,        */
+/* per-BPP aliases preserved as const so call sites are unchanged.            */
+/* -------------------------------------------------------------------------- */
+import { SigningRuntimeChain, makeStubSigner } from "../../templates/bpp/index.js";
+const TextSigningChain = SigningRuntimeChain;
+const CodeSigningChain = SigningRuntimeChain;
+const WebSigningChain = SigningRuntimeChain;
+const ImageSigningChain = SigningRuntimeChain;
+const DataSigningChain = SigningRuntimeChain;
+const makeTextStub = makeStubSigner;
+const makeCodeStub = makeStubSigner;
+const makeWebStub = makeStubSigner;
+const makeImageStub = makeStubSigner;
+const makeDataStub = makeStubSigner;
+
+/* -------------------------------------------------------------------------- */
 /* text:summarize                                                             */
 /* -------------------------------------------------------------------------- */
 import {
@@ -32,10 +48,6 @@ import {
   DEV_AUTHORITY_PUBKEY as TEXT_AUTHORITY,
 } from "../text-summarize/config.js";
 import { createTextSummarizeHandler } from "../text-summarize/handler.js";
-import {
-  SigningRuntimeChain as TextSigningChain,
-  makeStubSigner as makeTextStub,
-} from "../text-summarize/chain-adapter.js";
 import type { SummarizeResult } from "../text-summarize/summarizer.js";
 
 /* -------------------------------------------------------------------------- */
@@ -46,10 +58,6 @@ import {
   DEV_AUTHORITY_PUBKEY as CODE_AUTHORITY,
 } from "../code-audit-solidity/config.js";
 import { createSolidityAuditHandler } from "../code-audit-solidity/handler.js";
-import {
-  SigningRuntimeChain as CodeSigningChain,
-  makeStubSigner as makeCodeStub,
-} from "../code-audit-solidity/chain-adapter.js";
 
 /* -------------------------------------------------------------------------- */
 /* web:research                                                               */
@@ -59,10 +67,6 @@ import {
   DEV_AUTHORITY_PUBKEY as WEB_AUTHORITY,
 } from "../web-research/config.js";
 import { createWebResearchHandler } from "../web-research/handler.js";
-import {
-  SigningRuntimeChain as WebSigningChain,
-  makeStubSigner as makeWebStub,
-} from "../web-research/chain-adapter.js";
 import { FakeSearchProvider, defaultFakeCorpus } from "../web-research/search-provider.js";
 import type { LlmCompleteRequest } from "../web-research/planner.js";
 import type { FetchedPage } from "../web-research/fetcher.js";
@@ -75,10 +79,6 @@ import {
   DEV_AUTHORITY_PUBKEY as IMAGE_AUTHORITY,
 } from "../image-generate/config.js";
 import { createImageGenerateHandler } from "../image-generate/handler.js";
-import {
-  SigningRuntimeChain as ImageSigningChain,
-  makeStubSigner as makeImageStub,
-} from "../image-generate/chain-adapter.js";
 import type { BppIpfsPinner, PinResult, PinOpts } from "../image-generate/ipfs.js";
 
 /* -------------------------------------------------------------------------- */
@@ -89,10 +89,6 @@ import {
   DEV_AUTHORITY_PUBKEY as DATA_AUTHORITY,
 } from "../data-analyze/config.js";
 import { createDataAnalyzeHandler } from "../data-analyze/handler.js";
-import {
-  SigningRuntimeChain as DataSigningChain,
-  makeStubSigner as makeDataStub,
-} from "../data-analyze/chain-adapter.js";
 import { profileCsv } from "../data-analyze/profiler.js";
 import type { FetchedCsv } from "../data-analyze/fetcher.js";
 import type { AnalyzeResult } from "../data-analyze/analyzer.js";

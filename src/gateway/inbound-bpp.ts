@@ -28,8 +28,15 @@ export interface InboundBppDeps {
   resolveBppEndpoint: (bpp_pubkey: string) => string;
   /** POST a Beckn JSON body to a URL. */
   postBecknRequest: (url: string, body: object) => Promise<{ status: number; body: unknown }>;
-  /** Submit on-chain instruction. STUBBED today. */
-  submitOnChain: (action: 'CompleteTask' | 'FailTask', args: unknown) => Promise<{ tx_signature: string }>;
+  /**
+   * Submit on-chain instruction. Optional — when omitted, the deps default
+   * to the ambient ChainClient (FN-091): real `SvmChainClient` if
+   * `ETO_RPC_ENDPOINT` is set, otherwise `StubChainClient`. Existing
+   * callers that pass an explicit `submitOnChain` continue to work.
+   */
+  submitOnChain?: (action: 'CompleteTask' | 'FailTask', args: unknown) => Promise<{ tx_signature: string }>;
+  /** FN-091: optional chain client; falls back to createDefaultChainClient(). */
+  chainClient?: import("./chain-client.js").ChainClient;
   /** Look up off-chain order details by terms_hash. */
   loadOrderByTermsHash?: (terms_hash: string) => Promise<object | null>;
 }
@@ -62,6 +69,15 @@ export async function handleConfirmTrigger(trigger: ConfirmTrigger, deps: Inboun
 
 /** Mount the /on_confirm callback receiver on the bridge express app. */
 export function mountOnConfirmCallback(app: Express, deps: InboundBppDeps): void {
+  // FN-091: resolve effective submit function once at mount time.
+  const resolvedSubmit: NonNullable<InboundBppDeps['submitOnChain']> =
+    deps.submitOnChain ??
+    (async (action, args) => {
+      const cc = deps.chainClient ?? (await import('./chain-client.js')).createDefaultChainClient();
+      const r = await cc.submit(action, args);
+      return { tx_signature: r.tx_signature };
+    });
+
   app.post('/on_confirm', async (req: Request, res: Response) => {
     const v = validateBecknRequest('on_confirm', req.body);
     if (!v.ok) {
@@ -71,7 +87,7 @@ export function mountOnConfirmCallback(app: Express, deps: InboundBppDeps): void
       const order = req.body.message?.order;
       const success = order?.state === 'COMPLETED' || order?.state === 'FULFILLED';
       const args = becknOnConfirmToTaskOutcome(req.body);
-      const { tx_signature } = await deps.submitOnChain(success ? 'CompleteTask' : 'FailTask', args);
+      const { tx_signature } = await resolvedSubmit(success ? 'CompleteTask' : 'FailTask', args);
       res.status(200).json({ message: { ack: { status: 'ACK' } }, tx_signature });
     } catch (err) {
       res.status(500).json({ error: 'submission_failed', details: String(err) });
