@@ -620,3 +620,51 @@ export async function buildAuditFeed(
 ): Promise<AuditFeedJsonLd> {
   return new AuditTrailIndexer(deps).buildAuditFeed(authority, opts);
 }
+
+// ---------------------------------------------------------------------------
+// JOSE proof suite (FN-030)
+// ---------------------------------------------------------------------------
+//
+// Minimal compact-JWS wrapper for the `jose` proof suite registered in
+// `AuditFeedProofSuite`. Signs any JSON-serialisable payload with an
+// Ed25519 private key and returns a 3-part compact JWS string:
+//
+//   base64url(header) + "." + base64url(payload) + "." + base64url(sig)
+//
+// Header: `{ alg: "EdDSA", typ: "JWT" }` (RFC 7515 / RFC 8037).
+// Signing input: ASCII bytes of `headerPart + "." + payloadPart`.
+//
+// This is dependency-free — it uses the `@noble/ed25519` and `@noble/hashes`
+// packages already in the dependency graph rather than the `jose` npm package.
+
+import * as ed from "@noble/ed25519";
+import { sha512 } from "@noble/hashes/sha512";
+
+// Configure synchronous sha512 required by @noble/ed25519 v2 (idempotent).
+ed.etc.sha512Sync = (...m: Uint8Array[]) => sha512(ed.etc.concatBytes(...m));
+
+function b64url(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64url");
+}
+
+/**
+ * Sign `payload` with an Ed25519 `privateKey` and return a compact JWS.
+ *
+ * Header is `{ alg: "EdDSA", typ: "JWT" }`. To include a `kid` for key
+ * rotation (FN-028), use `signWithKid` from `src/signing/key-rotation.ts`.
+ *
+ * @param payload     Any JSON-serialisable value.
+ * @param privateKey  Raw 32-byte Ed25519 private key (seed).
+ * @returns Compact JWS: `<header>.<payload>.<sig>`, all parts base64url.
+ */
+export async function signWithJose(
+  payload: unknown,
+  privateKey: Uint8Array,
+): Promise<string> {
+  const enc = new TextEncoder();
+  const headerPart = b64url(enc.encode(JSON.stringify({ alg: "EdDSA", typ: "JWT" })));
+  const payloadPart = b64url(enc.encode(JSON.stringify(payload)));
+  const signingInput = enc.encode(`${headerPart}.${payloadPart}`);
+  const sig = await ed.signAsync(signingInput, privateKey);
+  return `${headerPart}.${payloadPart}.${b64url(sig)}`;
+}
