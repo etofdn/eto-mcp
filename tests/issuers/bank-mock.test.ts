@@ -142,6 +142,7 @@ describe("bank-mock issuer — boundary suite (FN-018)", () => {
     const out = await issueBankFiatRampTest(deps, {
       checkingAccountId: "chk-001",
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
     expect(out.status).toBe("issued");
     if (out.status !== "issued") return;
@@ -164,10 +165,12 @@ describe("bank-mock issuer — boundary suite (FN-018)", () => {
     const r1 = await issueBankFiatRampTest(deps, {
       checkingAccountId: "chk-001",
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
     const r2 = await issueBankFiatRampTest(deps, {
       checkingAccountId: "chk-001",
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
     expect(r1.status).toBe("issued");
     expect(r2.status).toBe("idempotent");
@@ -180,12 +183,14 @@ describe("bank-mock issuer — boundary suite (FN-018)", () => {
     await issueBankFiatRampTest(deps, {
       checkingAccountId: "chk-001",
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
     let caught: unknown;
     try {
       await issueBankFiatRampTest(deps, {
         checkingAccountId: "chk-001",
         agentCardPubkey: CARD_B,
+        callerPubkey: CARD_B,
       });
     } catch (err) {
       caught = err;
@@ -200,6 +205,7 @@ describe("bank-mock issuer — boundary suite (FN-018)", () => {
     const out = await issueBankFiatRampTest(deps, {
       checkingAccountId: "chk-001",
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
     if (out.status !== "issued") throw new Error("unexpected status");
     const vc = pinner.fetch(out.claimUri);
@@ -217,6 +223,7 @@ describe("bank-mock issuer — boundary suite (FN-018)", () => {
     await issueBankFiatRampTest(deps, {
       checkingAccountId: "chk-001",
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
     const r1 = await revokeBankFiatRampTest(deps, {
       checkingAccountId: "chk-001",
@@ -250,16 +257,62 @@ describe("bank-mock issuer — boundary suite (FN-018)", () => {
     expect(subj["bankBindingType"]).toBe("checking-account");
   });
 
+  // FN-070: caller-binding security gate
+  it("unauthorized_caller: callerPubkey !== agentCardPubkey → rejects before any side effect", async () => {
+    const { deps, chain, pinner, store } = bankMockDeps();
+    await expect(
+      issueBankFiatRampTest(deps, {
+        checkingAccountId: "chk-unauthorized",
+        agentCardPubkey: CARD_A,
+        callerPubkey: CARD_B, // different caller
+      }),
+    ).rejects.toMatchObject({
+      name: "BankMockIssueError",
+      kind: "unauthorized_caller",
+    });
+    // No side effects must have occurred
+    expect(chain.calls).toHaveLength(0);
+    expect(pinner.pinned).toHaveLength(0);
+    expect(await store.get("chk-unauthorized")).toBeUndefined();
+  });
+
+  it("unauthorized_caller: empty callerPubkey → rejects before any side effect", async () => {
+    const { deps, chain } = bankMockDeps();
+    await expect(
+      issueBankFiatRampTest(deps, {
+        checkingAccountId: "chk-empty-caller",
+        agentCardPubkey: CARD_A,
+        callerPubkey: "",
+      }),
+    ).rejects.toMatchObject({
+      name: "BankMockIssueError",
+      kind: "unauthorized_caller",
+    });
+    expect(chain.calls).toHaveLength(0);
+  });
+
+  it("authorized: callerPubkey matches agentCardPubkey (case-insensitive) → succeeds", async () => {
+    const { deps } = bankMockDeps();
+    const out = await issueBankFiatRampTest(deps, {
+      checkingAccountId: "chk-case",
+      agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A.toUpperCase(),
+    });
+    expect(out.status).toBe("issued");
+  });
+
   it("emits unique credentials across two independent issuances", async () => {
     const { deps, chain, pinner, nowRef } = bankMockDeps();
     const r1 = await issueBankFiatRampTest(deps, {
       checkingAccountId: "chk-aaa",
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
     nowRef.value += 60;
     const r2 = await issueBankFiatRampTest(deps, {
       checkingAccountId: "chk-bbb",
       agentCardPubkey: CARD_B,
+      callerPubkey: CARD_B,
     });
     expect(r1.credentialPda).not.toBe(r2.credentialPda);
     expect(chain.calls).toHaveLength(2);

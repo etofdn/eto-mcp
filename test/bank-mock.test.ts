@@ -124,6 +124,7 @@ describe("issueBankFiatRampTest — happy path", () => {
     const res = await issueBankFiatRampTest(deps, {
       checkingAccountId: ACCT,
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
 
     expect(res.status).toBe("issued");
@@ -165,12 +166,14 @@ describe("issueBankFiatRampTest — idempotency", () => {
     const first = await issueBankFiatRampTest(deps, {
       checkingAccountId: ACCT,
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
     expect(first.status).toBe("issued");
 
     const second = await issueBankFiatRampTest(deps, {
       checkingAccountId: ACCT,
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
     expect(second.status).toBe("idempotent");
     if (second.status !== "idempotent") throw new Error("unreachable");
@@ -191,12 +194,14 @@ describe("issueBankFiatRampTest — binding conflict", () => {
     await issueBankFiatRampTest(deps, {
       checkingAccountId: ACCT,
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
 
     await expect(
       issueBankFiatRampTest(deps, {
         checkingAccountId: ACCT,
         agentCardPubkey: CARD_B,
+        callerPubkey: CARD_B,
       }),
     ).rejects.toMatchObject({
       name: "BankMockIssueError",
@@ -238,6 +243,7 @@ describe("issueBankFiatRampTest — binding conflict", () => {
       issueBankFiatRampTest(deps, {
         checkingAccountId: ACCT,
         agentCardPubkey: CARD_A,
+        callerPubkey: CARD_A,
       }),
     ).rejects.toMatchObject({
       name: "BankMockIssueError",
@@ -252,6 +258,7 @@ describe("issueBankFiatRampTest — invalid input", () => {
       issueBankFiatRampTest(depsWith(), {
         checkingAccountId: "",
         agentCardPubkey: CARD_A,
+        callerPubkey: CARD_A,
       }),
     ).rejects.toMatchObject({
       name: "BankMockIssueError",
@@ -260,16 +267,133 @@ describe("issueBankFiatRampTest — invalid input", () => {
   });
 
   it("rejects empty agentCardPubkey", async () => {
+    // callerPubkey cannot equal empty agentCardPubkey → unauthorized_caller fires first.
+    // This test verifies that an empty agentCardPubkey is always rejected.
     await expect(
       issueBankFiatRampTest(depsWith(), {
         checkingAccountId: ACCT,
         agentCardPubkey: "",
+        callerPubkey: CARD_A,
       }),
     ).rejects.toMatchObject({
       name: "BankMockIssueError",
-      kind: "invalid_request",
+      kind: "unauthorized_caller",
     });
   });
+});
+
+describe("issueBankFiatRampTest — caller binding (FN-070)", () => {
+  it("rejects when callerPubkey != agentCardPubkey (impersonation attempt)", async () => {
+    // Attacker tries to mint a credential whose subject is CARD_A while the
+    // gateway-verified caller principal is CARD_B. This is the core FN-070
+    // attack: prior to the fix, any caller could name an arbitrary subject
+    // pubkey in the request body and have it bound on-chain.
+    const chain = new StubChain();
+    const store = new InMemoryBankMockStore();
+    const deps = depsWith({ chain, store });
+
+    await expect(
+      issueBankFiatRampTest(deps, {
+        checkingAccountId: ACCT,
+        agentCardPubkey: CARD_A,
+        callerPubkey: CARD_B,
+      }),
+    ).rejects.toMatchObject({
+      name: "BankMockIssueError",
+      kind: "unauthorized_caller",
+    });
+
+    // Hard guarantee: zero side effects — no chain tx, no store row.
+    expect(chain.calls).toHaveLength(0);
+    expect(await store.get(ACCT)).toBeUndefined();
+  });
+
+  it("rejects when callerPubkey is missing", async () => {
+    const chain = new StubChain();
+    const store = new InMemoryBankMockStore();
+    const deps = depsWith({ chain, store });
+
+    await expect(
+      issueBankFiatRampTest(deps, {
+        checkingAccountId: ACCT,
+        agentCardPubkey: CARD_A,
+        // @ts-expect-error — exercising runtime guard for a missing field
+        callerPubkey: undefined,
+      }),
+    ).rejects.toMatchObject({
+      name: "BankMockIssueError",
+      kind: "unauthorized_caller",
+    });
+    expect(chain.calls).toHaveLength(0);
+  });
+
+  it("rejects when callerPubkey is an empty string", async () => {
+    const chain = new StubChain();
+    const deps = depsWith({ chain });
+    await expect(
+      issueBankFiatRampTest(deps, {
+        checkingAccountId: ACCT,
+        agentCardPubkey: CARD_A,
+        callerPubkey: "",
+      }),
+    ).rejects.toMatchObject({
+      name: "BankMockIssueError",
+      kind: "unauthorized_caller",
+    });
+    expect(chain.calls).toHaveLength(0);
+  });
+
+  it("accepts case-insensitive hex match between caller and subject", async () => {
+    // Caller pubkey may arrive in a different hex case (some signers emit
+    // upper-case). Constant-time comparison still succeeds after lowering.
+    const deps = depsWith();
+    const res = await issueBankFiatRampTest(deps, {
+      checkingAccountId: ACCT,
+      agentCardPubkey: CARD_A.toLowerCase(),
+      callerPubkey: CARD_A.toUpperCase(),
+    });
+    expect(res.status).toBe("issued");
+  });
+
+  it(
+    "race-attack acceptance criterion: an attacker armed with a valid " +
+      "signature over their own card can still poison a victim acct id, " +
+      "but only with a card they actually control",
+    async () => {
+      // Per FN-070 acceptance criterion #4: caller-auth alone does NOT
+      // close the checkingAccountId-provenance race; that's a separate
+      // task. What it MUST guarantee is that the attacker can only bind
+      // cards they control — they cannot mint a credential whose subject
+      // is the legitimate holder's AgentCard.
+      const chain = new StubChain();
+      const store = new InMemoryBankMockStore();
+      const deps = depsWith({ chain, store });
+
+      // Attacker successfully binds the victim acct id to *their own* card.
+      const attacker = await issueBankFiatRampTest(deps, {
+        checkingAccountId: ACCT,
+        agentCardPubkey: CARD_B,
+        callerPubkey: CARD_B,
+      });
+      expect(attacker.status).toBe("issued");
+
+      // The attacker CANNOT, however, bind the acct id to the victim's
+      // card — even racing the legitimate holder, because the gateway
+      // verifier would never produce callerPubkey=CARD_A for an attacker.
+      // We model that here by simulating the attacker submitting with
+      // CARD_A as the named subject but their own (CARD_B) verified caller.
+      await expect(
+        issueBankFiatRampTest(deps, {
+          checkingAccountId: "any-other-acct",
+          agentCardPubkey: CARD_A,
+          callerPubkey: CARD_B,
+        }),
+      ).rejects.toMatchObject({
+        name: "BankMockIssueError",
+        kind: "unauthorized_caller",
+      });
+    },
+  );
 });
 
 describe("issueBankFiatRampTest — chain failure", () => {
@@ -283,6 +407,7 @@ describe("issueBankFiatRampTest — chain failure", () => {
       issueBankFiatRampTest(deps, {
         checkingAccountId: ACCT,
         agentCardPubkey: CARD_A,
+        callerPubkey: CARD_A,
       }),
     ).rejects.toMatchObject({
       name: "BankMockIssueError",
@@ -295,6 +420,7 @@ describe("issueBankFiatRampTest — chain failure", () => {
     const retry = await issueBankFiatRampTest(deps, {
       checkingAccountId: ACCT,
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
     expect(retry.status).toBe("issued");
   });
@@ -315,6 +441,7 @@ describe("revokeBankFiatRampTest", () => {
     const issued = await issueBankFiatRampTest(deps, {
       checkingAccountId: ACCT,
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
     if (issued.status !== "issued") throw new Error("unreachable");
 
@@ -338,6 +465,7 @@ describe("revokeBankFiatRampTest", () => {
     await issueBankFiatRampTest(deps, {
       checkingAccountId: ACCT,
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
     const first = await revokeBankFiatRampTest(deps, {
       checkingAccountId: ACCT,
@@ -380,6 +508,7 @@ describe("revokeBankFiatRampTest", () => {
     await issueBankFiatRampTest(deps, {
       checkingAccountId: ACCT,
       agentCardPubkey: CARD_A,
+      callerPubkey: CARD_A,
     });
 
     revoker.failNext = true;
