@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eto.fdn/spec/memo-schemas/coordination_log.v1.json",
+  "title": "eto.memo.coordination_log.v1",
+  "description": "Payload schema for an A2A coordination log memo. Validates the `payload` portion of an eto.memo.coordination_log.v1 envelope; envelope shape is defined in docs/memo-schema-registry.md §2.",
+  "type": "object",
+  "required": ["event", "task_id", "actor"],
+  "additionalProperties": false,
+  "properties": {
+    "event": {
+      "type": "string",
+      "enum": ["task_offered", "task_accepted", "task_completed", "task_cancelled"],
+      "description": "Lifecycle event type."
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Stable identifier of the coordinated task."
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Agent emitting the event (DID or address)."
+    },
+    "peer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Optional counterparty agent."
+    },
+    "parent_event": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Optional reference to a prior coordination_log event (e.g. tx signature or content digest) that this event responds to."
+    }
+  }
+}
