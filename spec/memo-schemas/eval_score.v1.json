@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eto.fdn/spec/memo-schemas/eval_score.v1.json",
+  "title": "eto.memo.eval_score.v1",
+  "description": "Evaluation score memo: an evaluator scores a subject on a named metric.",
+  "type": "object",
+  "required": ["subject", "metric", "score", "evaluator"],
+  "additionalProperties": false,
+  "properties": {
+    "subject": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "DID or stable identifier of the agent/object being evaluated."
+    },
+    "metric": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Short metric label, e.g. \"helpfulness\"."
+    },
+    "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Normalized score in [0,1]."
+    },
+    "evaluator": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "DID of the evaluator."
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 280,
+      "description": "Optional human-readable note. Keep short — see byte budget."
+    },
+    "evidence_uri": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 256,
+      "description": "Optional off-chain evidence pointer (ipfs://, https://, etc.)."
+    }
+  }
+}
