@@ -194,6 +194,7 @@ describe("bank account lifecycle (E11)", () => {
 
     const result = await executeWire(
       {
+        caller_pubkey: HOLDER_PUBKEY,
         holder: HOLDER_PUBKEY,
         checking_account_pda: state.checkingPda!,
         amount: Number(WIRE_AMOUNT),
@@ -229,6 +230,7 @@ describe("bank account lifecycle (E11)", () => {
     await expect(
       executeWire(
         {
+          caller_pubkey: HOLDER_PUBKEY,
           holder: HOLDER_PUBKEY,
           checking_account_pda: state.checkingPda!,
           amount: overAmount,
@@ -257,6 +259,7 @@ describe("bank account lifecycle (E11)", () => {
 
     const result = await openSavings(
       {
+        caller_pubkey: HOLDER_PUBKEY,
         subject: HOLDER_PUBKEY,
         linked_checking_account_pda: state.checkingPda!,
         bank_issuer: BANK_ISSUER_PUBKEY,
@@ -283,6 +286,7 @@ describe("bank account lifecycle (E11)", () => {
     await expect(
       openSavings(
         {
+          caller_pubkey: HOLDER_PUBKEY,
           subject: HOLDER_PUBKEY,
           linked_checking_account_pda: state.checkingPda!,
           bank_issuer: BANK_ISSUER_PUBKEY,

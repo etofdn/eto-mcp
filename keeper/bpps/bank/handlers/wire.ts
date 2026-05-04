@@ -14,6 +14,13 @@ import { createHash } from 'node:crypto';
 export type WireKind = 'domestic' | 'international';
 
 export interface WireRequest {
+  /**
+   * FN-034: authenticated caller pubkey (hex). MUST equal `holder` —
+   * any mismatch is rejected with `caller_mismatch` before any side-effect
+   * runs. Without this binding, an unauthenticated caller could move money
+   * for any subject.
+   */
+  caller_pubkey: string;
   /** Holder pubkey (hex). */
   holder: string;
   /** Holder's CheckingAccount PDA (hex). */
@@ -56,7 +63,7 @@ export interface WireDeps {
 }
 
 export class WireRejected extends Error {
-  constructor(public reason: 'invalid_pubkey' | 'invalid_amount' | 'recipient_invalid' | 'lock_failed' | 'release_failed') {
+  constructor(public reason: 'invalid_pubkey' | 'caller_mismatch' | 'invalid_amount' | 'recipient_invalid' | 'lock_failed' | 'release_failed') {
     super('wire rejected: ' + reason);
   }
 }
@@ -65,8 +72,13 @@ const HEX64 = /^[0-9a-fA-F]{64}$/;
 
 export async function executeWire(req: WireRequest, deps: WireDeps): Promise<WireOutcome> {
   // Validation
+  if (!HEX64.test(req.caller_pubkey)) throw new WireRejected('invalid_pubkey');
   if (!HEX64.test(req.holder)) throw new WireRejected('invalid_pubkey');
   if (!HEX64.test(req.checking_account_pda)) throw new WireRejected('invalid_pubkey');
+  // FN-034: caller-binding. Reject before any side-effect when the caller
+  // is not the holder; otherwise an unauth'd caller could move money for
+  // any subject.
+  if (req.caller_pubkey !== req.holder) throw new WireRejected('caller_mismatch');
   if (!Number.isInteger(req.amount) || req.amount <= 0) throw new WireRejected('invalid_amount');
   if (req.kind === 'domestic' && !req.recipient.routing_number) throw new WireRejected('recipient_invalid');
   if (req.kind === 'international' && !req.recipient.swift_bic) throw new WireRejected('recipient_invalid');

@@ -37,6 +37,13 @@ import {
 } from './fee.js';
 
 export interface OfframpRequest {
+  /**
+   * FN-034: authenticated caller pubkey (hex). MUST equal `holder` —
+   * any mismatch is rejected with `caller_mismatch` before any side-effect
+   * runs. Without this binding, an unauthenticated caller could burn eUSD
+   * and push USD on behalf of any subject.
+   */
+  caller_pubkey: string;
   holder: string;                     // hex pubkey burning eUSD
   holder_token_account_pda: string;   // hex — TokenAccount being burned from
   eusd_amount_atomic: number;         // atomic eUSD units (1 eUSD = 1_000_000)
@@ -84,7 +91,7 @@ export interface OfframpDeps {
 }
 
 export class OfframpRejected extends Error {
-  constructor(public reason: 'invalid_pubkey' | 'invalid_amount' | 'destination_invalid' | 'burn_failed' | 'push_failed_post_burn') {
+  constructor(public reason: 'invalid_pubkey' | 'caller_mismatch' | 'invalid_amount' | 'destination_invalid' | 'burn_failed' | 'push_failed_post_burn') {
     super('offramp rejected: ' + reason);
   }
 }
@@ -97,8 +104,13 @@ function atomicEusdToUsdCents(atomic: number): number {
 }
 
 export async function executeOfframp(req: OfframpRequest, deps: OfframpDeps): Promise<OfframpOutcome> {
+  if (!HEX64.test(req.caller_pubkey)) throw new OfframpRejected('invalid_pubkey');
   if (!HEX64.test(req.holder)) throw new OfframpRejected('invalid_pubkey');
   if (!HEX64.test(req.holder_token_account_pda)) throw new OfframpRejected('invalid_pubkey');
+  // FN-034: caller-binding. Reject before any side-effect when the caller
+  // is not the holder; otherwise an unauth'd caller could burn another
+  // subject's eUSD and direct the USD push.
+  if (req.caller_pubkey !== req.holder) throw new OfframpRejected('caller_mismatch');
   if (!Number.isInteger(req.eusd_amount_atomic) || req.eusd_amount_atomic <= 0) throw new OfframpRejected('invalid_amount');
   if (!req.destination.account_holder_name) throw new OfframpRejected('destination_invalid');
   // At least one routing pair must be present
