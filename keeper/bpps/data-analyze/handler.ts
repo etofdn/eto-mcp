@@ -82,7 +82,7 @@ export function createDataAnalyzeHandler(
         profiled.profile.columnCount === 0 ||
         profiled.profile.rowCount === 0
       ) {
-        return { status: "failure", reason: "empty_dataset" };
+        return { status: "failure", reason: "data-analyze:planner:empty-dataset" };
       }
 
       // 3. Analyze.
@@ -171,6 +171,7 @@ function stableReason(err: unknown): string {
     "source_too_large",
     "encoding_unsupported",
     "unsupported_content_type",
+    "data-analyze:planner:",
     "empty_dataset",
     "llm_invalid_response",
   ];
