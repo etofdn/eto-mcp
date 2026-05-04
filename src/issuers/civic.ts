@@ -33,6 +33,7 @@
 
 import { createHash, createPublicKey, verify as cryptoVerify } from "node:crypto";
 
+import { computeClaimCommitments } from "./claim-commitments.js";
 import type {
   AgentCardSignatureVerifier,
   ChainClient,
@@ -438,6 +439,7 @@ export class CivicIssuer {
   private readonly issuerAuthorityPubkey: string;
   private readonly logger: IssuerLogger;
   private readonly nowUnix: () => number;
+  private readonly randomBytes: ((len: number) => Uint8Array) | undefined;
 
   public constructor(deps: CivicIssuerDeps) {
     if (deps.config.civic.enabled === false) {
@@ -457,6 +459,7 @@ export class CivicIssuer {
     this.issuerAuthorityPubkey = deps.issuerAuthorityPubkey;
     this.logger = deps.logger ?? defaultLogger();
     this.nowUnix = deps.nowUnix ?? (() => Math.floor(Date.now() / 1000));
+    this.randomBytes = deps.randomBytes;
   }
 
   public async issue(req: CivicIssueRequest): Promise<CivicIssueResponse> {
@@ -527,15 +530,22 @@ export class CivicIssuer {
       expectedOwner: req.agentCardPubkey,
     });
 
-    // 6. Build VC, pin, hash.
+    // 6. Build VC, embed §10.3.1 claimCommitments, pin, hash.
     const issuanceDate = new Date(this.nowUnix() * 1000).toISOString();
-    const vc = buildVerifiedHumanVc({
+    const baseVc = buildVerifiedHumanVc({
       agentCardPubkey: req.agentCardPubkey,
       issuerAuthorityPubkey: this.issuerAuthorityPubkey,
       civicVerifyResult: verifyResult,
       civicNullifier,
       issuanceDate,
     });
+    const claimCommitments = computeClaimCommitments(
+      baseVc.credentialSubject as Record<string, unknown>,
+      { randomBytes: this.randomBytes },
+    );
+    const vc = { ...baseVc, claimCommitments } as VerifiedHumanVc & {
+      claimCommitments: typeof claimCommitments;
+    };
     const claimHash = this.claimHasher.hash(vc);
     const claimJcs = jcsCanonicalize(vc);
     const { uri: claimUri } = await this.ipfsPinner.pin(claimJcs);

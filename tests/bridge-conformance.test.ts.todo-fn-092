@@ -343,13 +343,14 @@ describe("Suite 1 — Envelope conformance (forward actions)", () => {
   );
 
   // -------------------------------------------------------------------------
-  // §1.11 Oversized body (> 1 MiB) → 413
-  // NOTE: Express's body-parser returns a 413 with its own error format
-  // (not a Beckn NACK envelope). The status code is correct per HTTP;
-  // the body shape is a Beckn deviation. TODO: add Beckn error middleware.
+  // §1.11 Oversized body (> 1 MiB) → 413 + Beckn NACK envelope (FN-092)
+  // The 413 response body shape is now enforced by
+  // `becknPayloadTooLargeMiddleware` in `src/gateway/beckn.ts`, which maps
+  // body-parser's PayloadTooLargeError to the canonical NACK envelope
+  // `{message:{ack:{status:"NACK"}}, error:{code:"PAYLOAD_TOO_LARGE", message}}`.
   // -------------------------------------------------------------------------
 
-  it("POST /search with oversized body (> 1 MiB) → 413", async () => {
+  it("POST /search with oversized body (> 1 MiB) → 413 + Beckn NACK", async () => {
     const padding = "x".repeat(1_100_000);
     const body = JSON.stringify({
       context: freshContext("search"),
@@ -361,15 +362,15 @@ describe("Suite 1 — Envelope conformance (forward actions)", () => {
       body,
     });
     expect(res.status).toBe(413);
-    // Body shape deviates from Beckn NACK — Express default error format.
-    // TODO(FN-093): add Beckn-shaped error middleware to wrap 413 in NACK.
+    const json = (await res.json()) as {
+      message: { ack: { status: string } };
+      error: { code: string; message: string };
+    };
+    expect(json.message.ack.status).toBe("NACK");
+    expect(json.error.code).toBe("PAYLOAD_TOO_LARGE");
+    expect(typeof json.error.message).toBe("string");
+    expect(json.error.message.length).toBeGreaterThan(0);
   });
-
-  it.todo(
-    // TODO(FN-093): Once a Beckn error middleware is added to createBecknApp(),
-    // assert that the 413 body matches {message:{ack:{status:'NACK'}}, error:{code,message}}.
-    "POST /search > 1MiB: 413 body is Beckn NACK shape (TODO: FN-093 must add error middleware)",
-  );
 });
 
 // ===========================================================================

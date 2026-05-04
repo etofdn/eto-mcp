@@ -15,6 +15,7 @@ const TOOL_CAPS: Record<string, { cap: string; rate: "read" | "write" | "deploy"
   get_chain_stats:        { cap: "chain:read",      rate: "read" },
   get_block_height:       { cap: "block:read",      rate: "read" },
   get_account_transactions: { cap: "account:read",  rate: "read" },
+  query_memos:            { cap: "account:read",    rate: "read" },
   // Validator tools (read)
   list_validators:        { cap: "validator:read",  rate: "read" },
   get_epoch_info:         { cap: "validator:read",  rate: "read" },
@@ -206,8 +207,8 @@ import { registerBankingTools } from "./banking-tools.js";
 
 export function registerAllTools(server: McpServer): void {
   instrumentServer(server);
-  // Phase 1 (48 tools)
-  registerQueryTools(server);       // 8 tools
+  // Phase 1 (49 tools)
+  registerQueryTools(server);       // 9 tools
   registerValidatorTools(server);   // 3 tools
   registerDevnetTools(server);      // 2 tools
   registerWalletTools(server);      // 6 tools
@@ -234,5 +235,5 @@ export function registerAllTools(server: McpServer): void {
   registerBecknFlowTools(server);   // 5 tools: beckn_search/select/init/confirm/rate
   registerCredentialTools(server);  // 4 tools: credential_request/attach/verify/revoke
   registerBankingTools(server);     // 5 tools: bank_open_checking/onramp/offramp/wire/transfer_funds
-  // Total: 95 tools
+  // Total: 96 tools
 }

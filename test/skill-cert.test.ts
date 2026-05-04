@@ -235,19 +235,31 @@ describe("SkillCertIssuer.issue — happy path (AC: whitelist + per-(subject,ski
     expect(stored?.credentialPda).toBe(res.credentialPda);
   });
 
-  it("claim_hash matches sha256(JCS(envelope))", async () => {
+  it("claim_hash matches sha256(JCS(envelope-with-claimCommitments))", async () => {
     const { issuer, deps } = makeIssuer({ now: () => 1_700_000_000_000 });
     const res = await issuer.issue({
       skill: SKILL,
       subjectAgentCard: SUBJECT_A,
     });
-    const expectedClaim = buildSkillCertClaim({
+    // Per FN-077 / §10.3.1, the on-chain claim_hash binds the
+    // `claimCommitments` array. Those commitments are CSPRNG-salted
+    // so we cannot regenerate them deterministically here — instead
+    // we rehash the actual pinned envelope (which the verifier sees
+    // off-chain via the claim_uri) and assert hash equality.
+    expect(res.claimHash).toBe(defaultClaimHasher.hash(deps.ipfs.pinned[0]));
+    const pinnedVc = deps.ipfs.pinned[0] as Record<string, unknown>;
+    const baseClaim = buildSkillCertClaim({
       issuerDid: ISSUER_DID,
       skill: SKILL,
       subjectAgentCard: SUBJECT_A,
       issuanceDate: new Date(1_700_000_000_000).toISOString(),
     });
-    expect(res.claimHash).toBe(defaultClaimHasher.hash(expectedClaim));
+    // The pinned VC equals the rebuilt envelope plus claimCommitments.
+    expect({ ...pinnedVc, claimCommitments: undefined }).toMatchObject({
+      ...baseClaim,
+      claimCommitments: undefined,
+    });
+    expect(Array.isArray(pinnedVc.claimCommitments)).toBe(true);
     expect(deps.ipfs.pinned).toHaveLength(1);
   });
 });

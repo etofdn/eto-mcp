@@ -158,24 +158,64 @@ export function registerA2ATools(server: McpServer): void {
 
   server.tool(
     "send_a2a_message",
-    "[Not yet available] Send a message to another agent via the A2A SendMessage instruction. ETO's A2A is a task-based protocol: messages live inside a Task (created with CreateTask) between two AgentCards, not in free-standing channels. This tool is pending redesign for the task-based flow. For now, use create_a2a_channel to register your AgentCard and call_contract / cross-VM dispatch for direct agent-to-agent interaction.",
+    "Returns guidance for sending an interim agent-to-agent message by piggy-backing on `transfer_native` with a structured memo. The real CreateTask/SendMessage A2A flow is tracked in PR #5 (github.com/etofdn/eto-mcp/pull/5) and milestone FN-054; until it lands, this tool documents the bridge pattern (a tiny `transfer_native` carrying a `{type:\"a2a_message\",...}` memo) and emits a copy-pasteable example. Pass optional `to` (recipient agent_id / SVM address) and `body` (any JSON) to have them interpolated into the example. Legacy params `channel_id`, `message`, `priority` are accepted and ignored for backward compatibility.",
     {
-      channel_id: z.string().optional().describe("(legacy) ignored"),
-      message: z.any().optional().describe("(legacy) ignored"),
-      priority: z.enum(["normal", "high"]).optional().describe("(legacy) ignored"),
+      channel_id: z.string().optional().describe("(legacy) ignored — kept for backward compatibility"),
+      message: z.any().optional().describe("(legacy) ignored — kept for backward compatibility"),
+      priority: z.enum(["normal", "high"]).optional().describe("(legacy) ignored — kept for backward compatibility"),
+      to: z.string().optional().describe("Recipient agent_id / SVM address; interpolated into the example if provided"),
+      body: z.any().optional().describe("Message body (any JSON); interpolated into the example if provided"),
     },
-    async () => {
+    async ({ to, body }) => {
+      const recipient = to ?? "<recipient_svm_address>";
+      const bodyJson = body !== undefined ? JSON.stringify(body) : "<your json body>";
+      const memoObj = `{"type":"a2a_message","to":"${recipient}","body":${bodyJson},"nonce":"<uuid>","ts":<unix_ms>}`;
+
+      const example = [
+        "transfer_native({",
+        `  to: "${recipient}",`,
+        '  amount: "0.000001",',
+        '  unit: "sol",',
+        `  memo: ${JSON.stringify(memoObj)}`,
+        "})",
+      ].join("\n");
+
+      const text = [
+        "send_a2a_message — interim bridge pattern (NOT the final A2A protocol)",
+        "",
+        "This response documents how to send an agent-to-agent message today by",
+        "piggy-backing on `transfer_native` with a structured SPL Memo. The real",
+        "on-chain CreateTask + SendMessage flow is tracked in PR #5 and will",
+        "replace this bridge once shipped.",
+        "",
+        "Memo schema (JSON, anchored via SPL Memo Program v2):",
+        '  {"type":"a2a_message","to":"<agent_id>","body":<json>}',
+        "  Recommended fields: `nonce` (uuid, dedupe) and `ts` (unix ms, ordering).",
+        "",
+        "Bridge call example (paste into your MCP client):",
+        example,
+        "",
+        "The receiver polls inbound memos with `query_memos` / `get_account_transactions`",
+        "and filters for `type == \"a2a_message\"` addressed to its agent_id.",
+        "",
+        "Limitations:",
+        "  (a) Costs SOL/gas per message (a real on-chain transfer + memo).",
+        "  (b) No delivery guarantee — receiver must poll; no push.",
+        "  (c) No escrow — unlike CreateTask, funds are not held pending completion.",
+        "  (d) No read-receipt — sender cannot tell if the receiver consumed the memo.",
+        "  (e) Memo size limit ~566 bytes (SPL Memo Program v2 cap); keep bodies tiny.",
+        "  (f) Plaintext on-chain — anyone can read the memo. Encrypt sensitive payloads.",
+        "",
+        "Future replacement:",
+        "  When CreateTask + SendMessage tools land (github.com/etofdn/eto-mcp/pull/5,",
+        "  milestone FN-054), this tool will be re-wired to invoke them directly and",
+        "  the bridge pattern can be retired. Memos written today using",
+        '  `{"type":"a2a_message"}` remain queryable via `query_memos`, so messages',
+        "  sent via the bridge are not lost when the real protocol lands.",
+      ].join("\n");
+
       return {
-        content: [{ type: "text" as const, text:
-          "send_a2a_message is pending redesign for ETO's task-based A2A protocol.\n\n" +
-          "Current protocol flow:\n" +
-          "  1. Sender + receiver each register AgentCards via create_a2a_channel\n" +
-          "  2. Sender creates a Task for the receiver (CreateTask variant — not yet exposed)\n" +
-          "  3. SendMessage writes a Message PDA scoped to the Task\n" +
-          "  4. CompleteTask releases escrow to the receiver\n\n" +
-          "Track status: github.com/etofdn/eto-mcp/pull/5"
-        }],
-        isError: true,
+        content: [{ type: "text" as const, text }],
       };
     }
   );

@@ -401,17 +401,24 @@ describe("Worldcoin issuer — end-to-end (FN-044 / T-1.4.3.2)", () => {
     expect(onChain.issuerAuthority).toBe(ISSUER_AUTHORITY);
     expect(onChain.slot).toBeGreaterThan(0n);
 
-    // The recomputed VC envelope (rebuilt from public inputs) hashes to
+    // The recomputed VC envelope (rebuilt from public inputs +
+    // §10.3.1 claimCommitments carried alongside the VC) hashes to
     // the on-chain claim_hash — closes the chain-of-custody loop a
     // downstream verifier walks: chain → IPFS → hash equality.
-    const rebuilt = buildVerifiedHumanVc({
-      issuerDid: ISSUER_DID,
-      agentCardPubkey: wallet.agentCardPubkey,
-      verificationLevel: "orb",
-      nullifierHash: NULLIFIER,
-      merkleRoot: MERKLE_ROOT,
-      issuanceDate: vc["issuanceDate"] as string,
-    });
+    // claimCommitments are non-deterministic (CSPRNG-salted) so a
+    // pure rebuild can't regenerate them; we copy them through from
+    // the fetched VC, which is exactly what a verifier does.
+    const rebuilt = {
+      ...buildVerifiedHumanVc({
+        issuerDid: ISSUER_DID,
+        agentCardPubkey: wallet.agentCardPubkey,
+        verificationLevel: "orb",
+        nullifierHash: NULLIFIER,
+        merkleRoot: MERKLE_ROOT,
+        issuanceDate: vc["issuanceDate"] as string,
+      }),
+      claimCommitments: vc["claimCommitments"],
+    };
     expect(sha256Hex(canonicalJson(rebuilt))).toBe(onChain.claimHash);
   });
 

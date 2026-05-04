@@ -198,13 +198,36 @@ describe("buildTransferTx", () => {
     expect(parsed.numRequiredSignatures).toBe(1);
   });
 
-  test("empty-string memo behaves like no memo", () => {
+  test("empty-string memo behaves like no memo (byte-equal output)", () => {
     const from = makeValidPubkey();
     const to = makeValidPubkey();
-    const tx = buildTransferTx(from, to, 1n, BLOCKHASH, "");
-    const parsed = parseTransaction(tx);
+    const txEmpty = buildTransferTx(from, to, 1n, BLOCKHASH, "");
+    const txNoMemo = buildTransferTx(from, to, 1n, BLOCKHASH);
+    const parsed = parseTransaction(txEmpty);
     expect(parsed.instructions.length).toBe(1);
     expect(parsed.accountKeys.length).toBe(3);
+    expect(parsed.numReadonlyUnsigned).toBe(1);
+    expect(Buffer.from(txEmpty).equals(Buffer.from(txNoMemo))).toBe(true);
+  });
+
+  test("omitted memo arg produces byte-identical tx to undefined memo (BC regression guard)", () => {
+    const from = makeValidPubkey();
+    const to = makeValidPubkey();
+    const txA = buildTransferTx(from, to, 42_000n, BLOCKHASH);
+    const txB = buildTransferTx(from, to, 42_000n, BLOCKHASH, undefined);
+    expect(Buffer.from(txA).equals(Buffer.from(txB))).toBe(true);
+  });
+
+  test("memo round-trips multi-byte UTF-8 (non-ASCII)", () => {
+    const from = makeValidPubkey();
+    const to = makeValidPubkey();
+    const memo = "héllo 🌍 — αβγ";
+    const tx = buildTransferTx(from, to, 1n, BLOCKHASH, memo);
+    const parsed = parseTransaction(tx);
+    const memoIx = parsed.instructions[0];
+    expect(memoIx.programIdIndex).toBe(3);
+    expect(memoIx.accounts.length).toBe(0);
+    expect(new TextDecoder().decode(memoIx.data)).toBe(memo);
   });
 });
 

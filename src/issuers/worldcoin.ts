@@ -26,6 +26,7 @@
 
 import { createHash } from "node:crypto";
 
+import { computeClaimCommitments } from "./claim-commitments.js";
 import {
   type AgentCardPubkey,
   type AgentCardSignatureVerifier,
@@ -194,6 +195,12 @@ export interface WorldcoinIssuerDeps {
    * Defaults to `Date.now`.
    */
   readonly now?: () => number;
+  /**
+   * Optional CSPRNG hook for `claimCommitments` salt generation.
+   * Defaults to `globalThis.crypto.getRandomValues`. Tests inject a
+   * deterministic implementation to pin commitment hex.
+   */
+  readonly randomBytes?: (len: number) => Uint8Array;
 }
 
 /**
@@ -355,7 +362,7 @@ export class WorldcoinIssuer {
 
     /* 5. Build & pin the off-chain VC envelope. ------------------------- */
     const issuanceDate = new Date(this.now()).toISOString();
-    const vc = buildVerifiedHumanVc({
+    const baseVc = buildVerifiedHumanVc({
       issuerDid: this.cfg.issuerDid,
       agentCardPubkey: req.agentCardPubkey,
       verificationLevel: cloud.verificationLevel,
@@ -363,6 +370,14 @@ export class WorldcoinIssuer {
       merkleRoot: req.merkleRoot,
       issuanceDate,
     });
+    // §10.3.1: embed per-leaf Poseidon-2 commitments BEFORE hashing so
+    // `claim_hash` binds them. The on-chain selective-disclosure
+    // verifier reads `field_index` against this lex-sorted ordering.
+    const claimCommitments = computeClaimCommitments(
+      baseVc.credentialSubject as Record<string, unknown>,
+      { randomBytes: this.deps.randomBytes },
+    );
+    const vc = { ...baseVc, claimCommitments };
     const claimHash = this.hasher.hash(vc);
     const claimUri = await this.deps.ipfs.pinJson(vc);
     if (!claimUri.startsWith("ipfs://")) {

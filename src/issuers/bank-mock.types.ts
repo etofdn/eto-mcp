@@ -106,6 +106,11 @@ export interface BankMockIssuerDeps {
   readonly issuerAuthorityPubkey: string;
   /** Wall-clock for VC `issuanceDate` and store row timestamps. */
   readonly nowUnix?: () => number;
+  /**
+   * Optional CSPRNG hook for `claimCommitments` salt generation
+   * (§10.3.1). Defaults to `globalThis.crypto.getRandomValues`.
+   */
+  readonly randomBytes?: (len: number) => Uint8Array;
 }
 
 export interface BankMockIssueRequest {

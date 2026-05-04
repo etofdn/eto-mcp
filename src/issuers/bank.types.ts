@@ -278,6 +278,13 @@ export interface BankIssuerDeps {
   readonly issuerAuthorityPubkey: string;
   /** Wall-clock for VC `issuanceDate` and store row timestamps. */
   readonly nowUnix?: () => number;
+  /**
+   * Optional CSPRNG hook for `claimCommitments` salt generation
+   * (§10.3.1). Defaults to `globalThis.crypto.getRandomValues`. Tests
+   * inject a deterministic generator to pin commitment outputs and
+   * thereby pin `claim_hash` for KAT regression coverage.
+   */
+  readonly randomBytes?: (len: number) => Uint8Array;
 }
 
 // ---------------------------------------------------------------------------

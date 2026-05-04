@@ -16,7 +16,12 @@
  *    larger app; `createBecknApp()` returns a self-contained Express app
  *    that tests and the conformance suite (FN-092) can boot directly.
  */
-import express, { type Request, type Response, type Router } from "express";
+import express, {
+  type NextFunction,
+  type Request,
+  type Response,
+  type Router,
+} from "express";
 import { z } from "zod";
 
 // ---------- Beckn envelope types ----------
@@ -160,6 +165,53 @@ function makeHandler(expected: BecknAction) {
   };
 }
 
+// ---------- Error middleware ----------
+
+/**
+ * Express error-handling middleware that maps body-parser
+ * `PayloadTooLargeError` (the 413 thrown when a request body exceeds the
+ * per-route `express.json({ limit: "1mb" })` cap) into the canonical Beckn
+ * NACK envelope. Without this, Express's default error handler responds
+ * with its built-in HTML/plain-text 413 body, which deviates from the
+ * `{message:{ack:{status:"NACK"}}, error:{code,message}}` shape every
+ * other failure path on this router returns.
+ *
+ * Detection is deliberately broad — body-parser versions vary on which
+ * field they set (`err.type === "entity.too.large"`, `err.statusCode`,
+ * `err.status`, or `err.name === "PayloadTooLargeError"`) — so we match
+ * any of them. Unrelated errors are forwarded via `next(err)` so Express's
+ * default handler still applies.
+ */
+export function becknPayloadTooLargeMiddleware(
+  err: unknown,
+  _req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  const e = err as {
+    type?: string;
+    status?: number;
+    statusCode?: number;
+    name?: string;
+  } | null;
+  const isOversized =
+    !!e &&
+    (e.type === "entity.too.large" ||
+      e.statusCode === 413 ||
+      e.status === 413 ||
+      (err instanceof Error && err.name === "PayloadTooLargeError"));
+  if (!isOversized) {
+    next(err);
+    return;
+  }
+  const { status, body } = becknError(
+    "PAYLOAD_TOO_LARGE",
+    "Request body exceeds 1 MiB limit",
+    413,
+  );
+  res.status(status).json(body);
+}
+
 // ---------- Router ----------
 
 /**
@@ -205,5 +257,9 @@ export function createBecknApp(): express.Express {
   });
 
   app.use(becknRouter);
+  // Global error handler for body-parser PayloadTooLargeError on any of the
+  // four action routes. Must be mounted AFTER `becknRouter` so it catches
+  // errors thrown by the per-route `express.json({ limit: "1mb" })` parser.
+  app.use(becknPayloadTooLargeMiddleware);
   return app;
 }

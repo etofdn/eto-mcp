@@ -46,6 +46,7 @@ import {
   jcsCanonicalize,
   sha256Hex,
 } from "./bank-mock.js";
+import { computeClaimCommitments } from "./claim-commitments.js";
 
 import {
   BANK_ISSUER_SCHEMA_LABELS,
@@ -297,11 +298,18 @@ async function issueCredential(
   kind: BankCredentialKind,
   bindingKey: string,
   subjectAgentCardPubkey: string,
-  vc: Record<string, unknown>,
+  baseVc: Record<string, unknown>,
 ): Promise<BankIssueResponse> {
   const schemaIdHex = BANK_ISSUER_SCHEMA_IDS_HEX[kind];
 
-  // Step 2 — hash + pin + submit to chain
+  // Step 2 — §10.3.1: per-leaf Poseidon-2 commitments embedded BEFORE
+  // canonicalisation so `claim_hash` binds them. The CSPRNG hook is
+  // injected via `deps.randomBytes` for deterministic test KATs.
+  const claimCommitments = computeClaimCommitments(
+    baseVc["credentialSubject"] as Record<string, unknown>,
+    { randomBytes: deps.randomBytes },
+  );
+  const vc = { ...baseVc, claimCommitments };
   const claimJcs = jcsCanonicalize(vc);
   const claimHashHex = sha256Hex(claimJcs);
 

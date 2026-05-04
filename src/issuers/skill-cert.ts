@@ -47,6 +47,7 @@
 
 import { createHash } from "node:crypto";
 
+import { computeClaimCommitments } from "./claim-commitments.js";
 import {
   type AgentCardPubkey,
   type ChainClient,
@@ -219,6 +220,11 @@ export interface SkillCertIssuerDeps {
   readonly claimHasher?: ClaimHasher;
   /** Clock injection for deterministic tests. Defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * Optional CSPRNG hook for `claimCommitments` salt generation
+   * (§10.3.1). Defaults to `globalThis.crypto.getRandomValues`.
+   */
+  readonly randomBytes?: (len: number) => Uint8Array;
 }
 
 /**
@@ -304,12 +310,19 @@ export class SkillCertIssuer {
 
     /* 4. Build & pin the off-chain claim envelope. ---------------------- */
     const issuanceDate = new Date(this.now()).toISOString();
-    const claim = buildSkillCertClaim({
+    const baseClaim = buildSkillCertClaim({
       issuerDid: this.cfg.issuerDid,
       skill: req.skill,
       subjectAgentCard: req.subjectAgentCard,
       issuanceDate,
     });
+    // §10.3.1: per-leaf Poseidon-2 commitments over `credentialSubject`,
+    // embedded BEFORE hashing so `claim_hash` binds them.
+    const claimCommitments = computeClaimCommitments(
+      baseClaim.credentialSubject as Record<string, unknown>,
+      { randomBytes: this.deps.randomBytes },
+    );
+    const claim = { ...baseClaim, claimCommitments };
     const claimHash = this.hasher.hash(claim);
     const claimUri = await this.deps.ipfs.pinJson(claim);
     if (!claimUri.startsWith("ipfs://")) {
