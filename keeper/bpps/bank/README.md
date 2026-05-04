@@ -78,6 +78,81 @@ To stay within budget the bank BPP uses a **two-tier** approach:
 | `handlers/issue-card.ts`| FN-125     | `issueCard` — v0 stub: issues `card.debit.<jurisdiction>.v1` credential against a CheckingAccount. |
 | `index.ts`              | shared     | Public barrel; re-exports all public surface.                   |
 
+## Caller-authentication contract (FN-015)
+
+Money- and identity-binding bank BPP handlers MUST verify that the
+on-the-wire caller (the BAP whose signature was checked at the gateway)
+is the same principal named by the request body before any side effect
+runs. The shared contract lives in [`auth.ts`](./auth.ts):
+
+```ts
+import {
+  type AuthenticatedRequest,
+  assertCallerEquals,
+  UNAUTHORIZED_CALLER_REASON, // = "unauthorized_caller"
+} from "./auth.js";
+
+export interface AuthenticatedRequest<T> {
+  readonly callerPubkey: string; // hex pubkey verified by the gateway
+  readonly body: T;              // existing per-handler request shape
+}
+```
+
+Handlers receive an `AuthenticatedRequest<T>` and call
+`assertCallerEquals(req.callerPubkey, req.body.subject)` as the FIRST
+line of execution — BEFORE any credential, ledger, chain, or stub call.
+A missing / empty / mismatched `callerPubkey` is rejected with the
+canonical reason `unauthorized_caller`. Comparison is case-insensitive
+over hex and length-checked / constant-time-ish via `timingSafeEqual`.
+
+### Coverage status
+
+| Handler                          | Caller-auth wired?  | Owner |
+| -------------------------------- | ------------------- | ----- |
+| `handlers/issue-card.ts`         | ✅ yes              | FN-015 |
+| `handlers/open-checking.ts`      | ✅ yes              | FN-015 |
+| `handlers/wire.ts`               | ⏳ pending           | FN-034 |
+| `handlers/offramp.ts`            | ⏳ pending           | FN-034 |
+| `handlers/onramp.ts`             | ⏳ pending           | FN-034 |
+| `handlers/open-savings.ts`       | ⏳ pending           | FN-034 |
+
+### Dispatcher plumbing point
+
+`handler.ts` exports `extractCallerPubkey(req)`, the single point at
+which a verified caller pubkey is read off the inbound `TaskRequest`
+before the dispatcher wraps `req.input` as `AuthenticatedRequest<T>`
+for a per-capability handler. Until **FN-073** (gateway BAP-signature
+verification) and **FN-075** (populate the verified pubkey on
+`TaskRequest`) land, `extractCallerPubkey` returns `undefined` for
+every real request and the per-capability handlers continue to
+short-circuit via `STUB_REASONS`. When FN-073 / FN-075 land, the
+dispatcher MUST fail-closed with `UNAUTHORIZED_CALLER_REASON` if
+`extractCallerPubkey` returns `undefined` BEFORE invoking a real
+per-capability handler — the per-handler `assertCallerEquals` gate is
+the second line of defence, not the first.
+
+### Pitfall — do NOT confuse credential validity with caller authentication
+
+The following are **credential / issuance-side checks**. They DO NOT
+substitute for caller authentication and MUST NOT be repurposed as
+such:
+
+- `verifyHolderCredentials` — checks whether a subject possesses
+  required on-chain credentials. Says nothing about who sent the
+  current message.
+- `verifyLinkedAccount` — checks ledger-side ownership of an account
+  PDA. Same caveat.
+- `verifyCheckingCredential` (and similar `verify*Credential` deps) —
+  checks issuance metadata of an existing credential.
+- `cred.issuer === bankIssuer.issuerAuthorityPubkey` (the prod adapter
+  guard in `makeProdIssueCardCredential`) — confirms the bank is
+  signing with the right authority key. It does not bind the
+  caller's BAP signature to `cred.subject`.
+
+Caller authentication is the caller-message-authorship gate enforced
+by `assertCallerEquals` against a gateway-verified `callerPubkey`.
+All other checks layer on top.
+
 ## Running the smoke check
 
 ```bash
