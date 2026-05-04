@@ -14,7 +14,12 @@
  * See FN-018 follow-up FN-072 for the upgrade path.
  */
 
-import { createHash } from "node:crypto";
+import {
+  createHash,
+  createPrivateKey,
+  generateKeyPairSync,
+  sign as nodeSign,
+} from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -24,11 +29,13 @@ import {
   KycTestIssueError,
   buildKycTestVc,
   deriveNullifier,
+  ed25519KycTestSignatureVerifier,
   issueKycTest,
   jcsCanonicalize,
   normalizeName,
 } from "../../src/issuers/kyc-test.js";
 import type {
+  KycTestAgentCardSignatureVerifier,
   KycTestDedupeRow,
   KycTestDedupeStore,
   KycTestFormSubmission,
@@ -37,6 +44,17 @@ import type {
   KycTestSlotClock,
   KycTestVcPinner,
 } from "../../src/issuers/kyc-test.types.js";
+
+// FN-057 — wallet-binding signature is required. Most existing
+// boundary tests don't depend on signature semantics, so they use
+// an always-true stub. The dedicated FN-057 test below uses the
+// real Ed25519 verifier with a real keypair.
+const stubSigVerifier: KycTestAgentCardSignatureVerifier = {
+  async verify() {
+    return true;
+  },
+};
+const STUB_SIGNATURE = Buffer.alloc(64).toString("base64");
 
 /* -------------------------------------------------------------------------- */
 /* Fixtures                                                                    */
@@ -127,6 +145,7 @@ function kycDeps(opts?: { initialNow?: number }): BuiltStack {
     chain,
     pinner,
     clock: new FixedClock(123_456n),
+    signatureVerifier: stubSigVerifier,
     issuerAuthorityPubkey: ISSUER,
     nowUnix: () => nowRef.value,
   };
@@ -138,16 +157,19 @@ function makeSubmission(opts: {
   readonly fullName?: string;
   readonly dobIso?: string;
   readonly flowStartedAtUnix: number;
+  readonly agentCardPubkey?: string;
   readonly tagOverride?: string;
 }): KycTestFormSubmission {
   const fullName = opts.fullName ?? "Test User";
   const dobIso = opts.dobIso ?? "1990-01-01";
+  const agentCardPubkey = opts.agentCardPubkey ?? CARD_A;
   const tag =
     opts.tagOverride ??
     opts.signer.sign({
       fullName,
       dobIso,
       flowStartedAtUnix: opts.flowStartedAtUnix,
+      agentCardPubkey,
     });
   return {
     fullName,
@@ -173,6 +195,7 @@ describe("kyc.us-test issuer — boundary suite (FN-018)", () => {
     const out = await issueKycTest(deps, {
       submission,
       agentCardPubkey: CARD_A,
+      agentCardSignature: STUB_SIGNATURE,
     });
 
     expect(out.status).toBe("issued");
@@ -204,10 +227,12 @@ describe("kyc.us-test issuer — boundary suite (FN-018)", () => {
     const r1 = await issueKycTest(deps, {
       submission: sub,
       agentCardPubkey: CARD_A,
+      agentCardSignature: STUB_SIGNATURE,
     });
     const r2 = await issueKycTest(deps, {
       submission: sub,
       agentCardPubkey: CARD_A,
+      agentCardSignature: STUB_SIGNATURE,
     });
     expect(r1.status).toBe("issued");
     expect(r2.status).toBe("idempotent");
@@ -217,17 +242,25 @@ describe("kyc.us-test issuer — boundary suite (FN-018)", () => {
 
   it("replay (same identity, DIFFERENT card): throws KycTestIssueError(replay_conflict)", async () => {
     const { deps, chain, nowRef } = kycDeps({ initialNow: 1_700_000_100 });
-    const sub = makeSubmission({
+    const flowStartedAtUnix = nowRef.value - KYC_TEST_MIN_DWELL_SECONDS;
+    const subA = makeSubmission({
       signer: deps.tokenSigner as HmacKycTestFormTokenSigner,
-      flowStartedAtUnix: nowRef.value - KYC_TEST_MIN_DWELL_SECONDS,
+      flowStartedAtUnix,
+      agentCardPubkey: CARD_A,
     });
-    await issueKycTest(deps, { submission: sub, agentCardPubkey: CARD_A });
+    const subB = makeSubmission({
+      signer: deps.tokenSigner as HmacKycTestFormTokenSigner,
+      flowStartedAtUnix,
+      agentCardPubkey: CARD_B,
+    });
+    await issueKycTest(deps, { submission: subA, agentCardPubkey: CARD_A, agentCardSignature: STUB_SIGNATURE });
 
     let caught: unknown;
     try {
       await issueKycTest(deps, {
-        submission: sub,
+        submission: subB,
         agentCardPubkey: CARD_B,
+        agentCardSignature: STUB_SIGNATURE,
       });
     } catch (err) {
       caught = err;
@@ -256,6 +289,7 @@ describe("kyc.us-test issuer — boundary suite (FN-018)", () => {
       await issueKycTest(deps, {
         submission: tampered,
         agentCardPubkey: CARD_A,
+        agentCardSignature: STUB_SIGNATURE,
       });
     } catch (err) {
       caught = err;
@@ -277,6 +311,7 @@ describe("kyc.us-test issuer — boundary suite (FN-018)", () => {
       await issueKycTest(deps, {
         submission: sub,
         agentCardPubkey: CARD_A,
+        agentCardSignature: STUB_SIGNATURE,
       });
     } catch (err) {
       caught = err;
@@ -333,6 +368,7 @@ describe("kyc.us-test issuer — boundary suite (FN-018)", () => {
     const r1 = await issueKycTest(deps, {
       submission: sub1,
       agentCardPubkey: CARD_A,
+      agentCardSignature: STUB_SIGNATURE,
     });
     nowRef.value += 60;
     const sub2 = makeSubmission({
@@ -340,10 +376,12 @@ describe("kyc.us-test issuer — boundary suite (FN-018)", () => {
       fullName: "Bob Test",
       dobIso: "1991-02-02",
       flowStartedAtUnix: nowRef.value - KYC_TEST_MIN_DWELL_SECONDS,
+      agentCardPubkey: CARD_B,
     });
     const r2 = await issueKycTest(deps, {
       submission: sub2,
       agentCardPubkey: CARD_B,
+      agentCardSignature: STUB_SIGNATURE,
     });
     expect(r1.credentialPda).not.toBe(r2.credentialPda);
     expect(chain.calls).toHaveLength(2);
@@ -354,5 +392,171 @@ describe("kyc.us-test issuer — boundary suite (FN-018)", () => {
     const sub1Subj = vc1["credentialSubject"] as Record<string, unknown>;
     const sub2Subj = vc2["credentialSubject"] as Record<string, unknown>;
     expect(sub1Subj["bridgeNullifier"]).not.toBe(sub2Subj["bridgeNullifier"]);
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* FN-057 — wallet-binding signature                                   */
+  /* ------------------------------------------------------------------ */
+
+  describe("FN-057: wallet-binding signature is required", () => {
+    const BASE58_ALPHABET =
+      "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    function base58Encode(bytes: Uint8Array): string {
+      if (bytes.length === 0) return "";
+      let zeros = 0;
+      while (zeros < bytes.length && bytes[zeros] === 0) zeros += 1;
+      const digits: number[] = [];
+      for (let i = zeros; i < bytes.length; i += 1) {
+        let carry = bytes[i]!;
+        for (let j = 0; j < digits.length; j += 1) {
+          carry += digits[j]! << 8;
+          digits[j] = carry % 58;
+          carry = (carry / 58) | 0;
+        }
+        while (carry > 0) {
+          digits.push(carry % 58);
+          carry = (carry / 58) | 0;
+        }
+      }
+      let out = "";
+      for (let i = 0; i < zeros; i += 1) out += "1";
+      for (let i = digits.length - 1; i >= 0; i -= 1) {
+        out += BASE58_ALPHABET[digits[i]!]!;
+      }
+      return out;
+    }
+
+    interface Wallet {
+      readonly pubkey: string;
+      readonly rawPub: Uint8Array;
+      readonly privateKey: ReturnType<typeof createPrivateKey>;
+    }
+    function newWallet(): Wallet {
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const spki = publicKey.export({ format: "der", type: "spki" });
+      const raw = new Uint8Array(spki.subarray(spki.length - 32));
+      return { pubkey: base58Encode(raw), rawPub: raw, privateKey };
+    }
+    function signBinding(wallet: Wallet, nullifierHex: string): string {
+      const nullifierBytes = Buffer.from(nullifierHex, "hex");
+      const message = createHash("sha256")
+        .update(nullifierBytes)
+        .update(wallet.rawPub)
+        .digest();
+      return Buffer.from(
+        nodeSign(null, message, wallet.privateKey),
+      ).toString("base64");
+    }
+
+    function realDeps(opts?: { initialNow?: number }): BuiltStack {
+      const stack = kycDeps(opts);
+      // Swap the stub for the real Ed25519 verifier.
+      const realDepsObj: KycTestIssuerDeps = {
+        ...stack.deps,
+        signatureVerifier: ed25519KycTestSignatureVerifier,
+      };
+      return { ...stack, deps: realDepsObj };
+    }
+
+    it("rejects a request that supplies a victim's pubkey with the attacker's signature (HTTP 401)", async () => {
+      const stack = realDeps({ initialNow: 1_700_000_100 });
+      const { deps, chain, dedupe, nowRef } = stack;
+      const victim = newWallet();
+      const attacker = newWallet();
+
+      const submission = makeSubmission({
+        signer: deps.tokenSigner as HmacKycTestFormTokenSigner,
+        fullName: "Mallory Attacker",
+        dobIso: "1990-01-01",
+        flowStartedAtUnix: nowRef.value - KYC_TEST_MIN_DWELL_SECONDS,
+        // FN-057: HMAC is bound to the AgentCard the request claims;
+        // an attacker who legitimately rendered a form for victim.pubkey
+        // could capture it, but the wallet-binding signature still gates.
+        agentCardPubkey: victim.pubkey,
+      });
+      const nullifier = deriveNullifier(
+        normalizeName(submission.fullName),
+        submission.dobIso,
+      );
+      // Attacker can only sign for their OWN pubkey, but the request
+      // claims `agentCardPubkey = victim.pubkey`. The signature
+      // therefore validates as Ed25519 bytes but does NOT validate
+      // against `victim.pubkey` over `sha256(nullifier || victim.pubkey)`.
+      const attackerSig = signBinding(attacker, nullifier);
+
+      let caught: unknown;
+      try {
+        await issueKycTest(deps, {
+          submission,
+          agentCardPubkey: victim.pubkey,
+          agentCardSignature: attackerSig,
+        });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(KycTestIssueError);
+      expect((caught as KycTestIssueError).kind).toBe(
+        "invalid_agent_card_signature",
+      );
+      // No chain submission, no dedupe row — the attacker cannot
+      // poison the victim's `(nullifier, card)` slot.
+      expect(chain.calls).toHaveLength(0);
+      expect(dedupe.rows.size).toBe(0);
+    });
+
+    it("accepts a request signed by the holder of agentCardPubkey", async () => {
+      const stack = realDeps({ initialNow: 1_700_000_100 });
+      const { deps, chain, nowRef } = stack;
+      const wallet = newWallet();
+
+      const submission = makeSubmission({
+        signer: deps.tokenSigner as HmacKycTestFormTokenSigner,
+        fullName: "Alice Honest",
+        dobIso: "1990-01-01",
+        flowStartedAtUnix: nowRef.value - KYC_TEST_MIN_DWELL_SECONDS,
+        agentCardPubkey: wallet.pubkey,
+      });
+      const nullifier = deriveNullifier(
+        normalizeName(submission.fullName),
+        submission.dobIso,
+      );
+      const sig = signBinding(wallet, nullifier);
+
+      const out = await issueKycTest(deps, {
+        submission,
+        agentCardPubkey: wallet.pubkey,
+        agentCardSignature: sig,
+      });
+      expect(out.status).toBe("issued");
+      expect(chain.calls).toHaveLength(1);
+      expect(chain.calls[0]?.subjectAgentCardPubkey).toBe(wallet.pubkey);
+    });
+
+    it("rejects a request with an empty signature", async () => {
+      const stack = realDeps({ initialNow: 1_700_000_100 });
+      const { deps, chain, nowRef } = stack;
+      const wallet = newWallet();
+
+      const submission = makeSubmission({
+        signer: deps.tokenSigner as HmacKycTestFormTokenSigner,
+        flowStartedAtUnix: nowRef.value - KYC_TEST_MIN_DWELL_SECONDS,
+        agentCardPubkey: wallet.pubkey,
+      });
+      let caught: unknown;
+      try {
+        await issueKycTest(deps, {
+          submission,
+          agentCardPubkey: wallet.pubkey,
+          agentCardSignature: "",
+        });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(KycTestIssueError);
+      expect((caught as KycTestIssueError).kind).toBe(
+        "invalid_agent_card_signature",
+      );
+      expect(chain.calls).toHaveLength(0);
+    });
   });
 });
