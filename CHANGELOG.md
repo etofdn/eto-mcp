@@ -76,6 +76,7 @@
 - Collapse per-BPP SigningRuntimeChain imports to template barrel ([#69](https://github.com/etofdn/eto-mcp/issues/69)) ([`ce4e75c`](ce4e75cf0967b96f9d0ee397a9b4ab0dc6e1431b))
 - Add Poseidon-2 BN254 t=3 helper at src/crypto/poseidon2.ts ([#54](https://github.com/etofdn/eto-mcp/issues/54)) ([`1c207a2`](1c207a2cd0ba0c09bbf3847b54dc7a2f0f6377b0))
 - Wire Beckn gateway to swappable ChainClient ([#73](https://github.com/etofdn/eto-mcp/issues/73)) ([`ec2acba`](ec2acbafa80f94f68b3abe97c954650c6c91112f))
+- Add changeset for Poseidon-2 swap and VK regeneration note ([#53](https://github.com/etofdn/eto-mcp/issues/53)) ([`62eccf8`](62eccf8417ecd8b76fdecd6cdd276dbd08601170))
 
 ### Refactor
 
