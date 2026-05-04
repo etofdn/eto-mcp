@@ -46,11 +46,54 @@ export function registerDevnetTools(server: McpServer): void {
         const lamports = Number(solToLamports(String(amountNum)));
         const sig = await rpc.faucet(address, lamports);
 
+        // FN-098: do not report success on the bare faucet sig — the
+        // local node may run a mock/phantom faucet (FN-196). Poll
+        // getTransaction until the sig actually lands, with a 30s
+        // ceiling. If it never lands, fail loudly so the caller
+        // doesn't think their balance was credited.
+        const deadline = Date.now() + 30_000;
+        let landed = false;
+        let lastErr: string | null = null;
+        while (Date.now() < deadline) {
+          try {
+            const tx: any = await rpc.getTransaction(sig);
+            if (tx) {
+              const ok = tx.success !== false && !tx.error && tx.meta?.err == null;
+              if (!ok) {
+                lastErr = String(tx.error ?? tx.meta?.err ?? "transaction failed on-chain");
+                break;
+              }
+              landed = true;
+              break;
+            }
+          } catch (e: any) {
+            const msg = String(e?.message ?? e ?? "");
+            if (!/not\s*found|unknown\s*transaction|invalid\s*signature/i.test(msg)) {
+              lastErr = msg;
+              break;
+            }
+          }
+          await new Promise<void>((r) => setTimeout(r, 500));
+        }
+
+        if (!landed) {
+          return {
+            content: [{
+              type: "text",
+              text:
+                lastErr
+                  ? `Error: airdrop failed — ${lastErr} (sig: ${sig})`
+                  : `Error: airdrop signature ${sig} did not land within 30s. The local node may run a mock faucet — see FN-196.`,
+            }],
+            isError: true,
+          };
+        }
+
         return {
           content: [
             {
               type: "text",
-              text: `Airdropped ${amountNum} ETO to ${address}. Signature: ${sig}`,
+              text: `Airdropped ${amountNum} ETO to ${address}. Signature: ${sig} (confirmed)`,
             },
           ],
         };
