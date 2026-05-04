@@ -36,6 +36,11 @@ import {
   type IssueCardInput,
   BankIssuerError,
 } from "../../../../src/issuers/bank.js";
+import {
+  assertCallerEquals,
+  UNAUTHORIZED_CALLER_REASON,
+  type AuthenticatedRequest,
+} from "../auth.js";
 import { defaultBankLedger } from "../credential-ledger.js";
 
 // ---------------------------------------------------------------------------
@@ -175,6 +180,7 @@ export interface IssueCardDeps {
 // ---------------------------------------------------------------------------
 
 export type IssueCardRejectedReason =
+  | "unauthorized_caller"
   | "invalid_pubkey"
   | "invalid_jurisdiction"
   | "invalid_limit"
@@ -214,21 +220,41 @@ function sha256(...parts: Buffer[]): string {
 /**
  * Issue a `card.debit.<jurisdiction>.v1` credential against an existing
  * CheckingAccount. Returns `{ card_pda, credential, fulfillment_uri }`.
+ *
+ * FN-015: caller-message-authorship authentication is enforced FIRST,
+ * before any validation, credential gate, ledger write, or chain call.
+ * `req.callerPubkey` (sourced by the gateway from BAP signature
+ * verification) MUST equal `req.body.subject` — otherwise the handler
+ * rejects with `unauthorized_caller` and NO downstream side effect runs.
+ *
+ * NOTE: `verifyHolderCredentials`, `verifyLinkedAccount`, and the
+ * adapter-side `cred.issuer === bankIssuer.issuerAuthorityPubkey` check
+ * are credential-validity guards, NOT caller authentication. See
+ * `keeper/bpps/bank/auth.ts`.
  */
 export async function issueCard(
-  req: IssueCardRequest,
+  req: AuthenticatedRequest<IssueCardRequest>,
   deps: IssueCardDeps,
 ): Promise<IssueCardResult> {
+  // --- Caller-authentication (FN-015) — FIRST, before any side effect ---
+  try {
+    assertCallerEquals(req.callerPubkey, req.body.subject);
+  } catch {
+    throw new IssueCardRejected(UNAUTHORIZED_CALLER_REASON);
+  }
+
+  const body_in = req.body;
+
   // --- Defaults ---
-  const jurisdiction = req.jurisdiction ?? "us";
-  const spending_limit_per_day = req.spending_limit_per_day_atomic ?? 5_000_000_000;
-  const spending_limit_per_tx = req.spending_limit_per_tx_atomic ?? 500_000_000;
-  const expires_slot = req.expires_slot ?? 0;
+  const jurisdiction = body_in.jurisdiction ?? "us";
+  const spending_limit_per_day = body_in.spending_limit_per_day_atomic ?? 5_000_000_000;
+  const spending_limit_per_tx = body_in.spending_limit_per_tx_atomic ?? 500_000_000;
+  const expires_slot = body_in.expires_slot ?? 0;
 
   // --- Validation ---
-  if (!HEX64.test(req.subject)) throw new IssueCardRejected("invalid_pubkey");
-  if (!HEX64.test(req.bank_issuer)) throw new IssueCardRejected("invalid_pubkey");
-  if (!HEX64.test(req.linked_account_pda)) throw new IssueCardRejected("invalid_pubkey");
+  if (!HEX64.test(body_in.subject)) throw new IssueCardRejected("invalid_pubkey");
+  if (!HEX64.test(body_in.bank_issuer)) throw new IssueCardRejected("invalid_pubkey");
+  if (!HEX64.test(body_in.linked_account_pda)) throw new IssueCardRejected("invalid_pubkey");
 
   if (!JURISDICTION_RE.test(jurisdiction)) throw new IssueCardRejected("invalid_jurisdiction");
 
@@ -243,19 +269,19 @@ export async function issueCard(
   if (spending_limit_per_tx > spending_limit_per_day) throw new IssueCardRejected("invalid_limit");
 
   // --- On-chain credential gate ---
-  const credentialsOk = await deps.verifyHolderCredentials(req.subject, REQUIRED_SCHEMAS);
+  const credentialsOk = await deps.verifyHolderCredentials(body_in.subject, REQUIRED_SCHEMAS);
   if (!credentialsOk) throw new IssueCardRejected("credentials_missing");
 
   // --- Linked account gate ---
-  const accountOk = await deps.verifyLinkedAccount(req.linked_account_pda, req.subject);
+  const accountOk = await deps.verifyLinkedAccount(body_in.linked_account_pda, body_in.subject);
   if (!accountOk) throw new IssueCardRejected("account_not_found");
 
   // --- PDA derivation ---
   const card_pda = sha256(
     Buffer.from("card_debit", "utf8"),
-    Buffer.from(req.subject, "hex"),
-    Buffer.from(req.linked_account_pda, "hex"),
-    u64BE(req.issued_slot),
+    Buffer.from(body_in.subject, "hex"),
+    Buffer.from(body_in.linked_account_pda, "hex"),
+    u64BE(body_in.issued_slot),
   );
 
   // --- card_id_hash — explicit stub salt; NO real PAN material ---
@@ -265,26 +291,26 @@ export async function issueCard(
   );
 
   const body: CardDebitCredentialBody = {
-    holder: req.subject,
-    linked_account_pda: req.linked_account_pda,
+    holder: body_in.subject,
+    linked_account_pda: body_in.linked_account_pda,
     jurisdiction,
     card_id_hash,
-    issued_slot: req.issued_slot,
+    issued_slot: body_in.issued_slot,
     expires_slot,
     spending_limit_per_day,
     spending_limit_per_tx,
     network_brand: "internal",
     tier: "standard",
-    ...(req.merchant_category_blocklist !== undefined &&
-    req.merchant_category_blocklist.length > 0
-      ? { merchant_category_blocklist: req.merchant_category_blocklist }
+    ...(body_in.merchant_category_blocklist !== undefined &&
+    body_in.merchant_category_blocklist.length > 0
+      ? { merchant_category_blocklist: body_in.merchant_category_blocklist }
       : {}),
   };
 
   const credential: IssueCardCredential = {
     schema: `card.debit.${jurisdiction}.v1`,
-    subject: req.subject,
-    issuer: req.bank_issuer,
+    subject: body_in.subject,
+    issuer: body_in.bank_issuer,
     body,
   };
 

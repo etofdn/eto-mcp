@@ -11,6 +11,16 @@
 //             stubRemitToTreasury, type RemitToTreasury }
 //     from "@eto/mcp/keeper/bpps/bank/handlers";
 
+// FN-015: shared caller-authentication contract for bank BPP handlers
+export {
+  assertCallerEquals,
+  UNAUTHORIZED_CALLER_REASON,
+} from "../auth.js";
+export type {
+  AuthenticatedRequest,
+  UnauthorizedCallerReason,
+} from "../auth.js";
+
 // FN-109: 1-pip fee math and treasury remittance
 export {
   ONE_BIP_DIVISOR,

@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { AuthenticatedRequest } from '../auth.js';
 import {
   openChecking,
   stubs,
@@ -19,7 +20,7 @@ import {
 const SUBJECT = 'a'.repeat(64);
 const ISSUER = 'c'.repeat(64);
 
-function makeRequest(overrides: Partial<OpenCheckingRequest> = {}): OpenCheckingRequest {
+function makeBody(overrides: Partial<OpenCheckingRequest> = {}): OpenCheckingRequest {
   return {
     subject: SUBJECT,
     bank_issuer: ISSUER,
@@ -28,11 +29,19 @@ function makeRequest(overrides: Partial<OpenCheckingRequest> = {}): OpenChecking
   };
 }
 
+function makeRequest(
+  overrides: Partial<OpenCheckingRequest> = {},
+  callerPubkey: string = SUBJECT,
+): AuthenticatedRequest<OpenCheckingRequest> {
+  return { callerPubkey, body: makeBody(overrides) };
+}
+
 function makeDeps(overrides: Partial<OpenCheckingDeps> = {}): OpenCheckingDeps {
   return {
     verifyHolderCredentials: vi.fn().mockResolvedValue(true),
     issueCheckingCredential: vi.fn().mockResolvedValue({ tx_signature: 'sig'.repeat(21).slice(0, 64), credential_pda: 'd'.repeat(64) }),
     recordCheckingAccount: vi.fn().mockResolvedValue(undefined),
+    flagReconciliation: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -63,6 +72,49 @@ describe('openChecking — happy path', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Caller authentication (FN-015)
+// ---------------------------------------------------------------------------
+
+describe('openChecking — caller authentication', () => {
+  it('happy path: callerPubkey === body.subject succeeds', async () => {
+    const result = await openChecking(makeRequest({}, SUBJECT), makeDeps());
+    expect(result.checking_account_pda).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('rejects with unauthorized_caller when callerPubkey !== body.subject', async () => {
+    const deps = makeDeps();
+    await expect(
+      openChecking(makeRequest({}, 'd'.repeat(64)), deps),
+    ).rejects.toMatchObject({ reason: 'unauthorized_caller' });
+  });
+
+  it('does NOT invoke any dep when caller mismatches', async () => {
+    const deps = makeDeps();
+    await expect(
+      openChecking(makeRequest({}, 'd'.repeat(64)), deps),
+    ).rejects.toBeDefined();
+    expect(deps.verifyHolderCredentials).not.toHaveBeenCalled();
+    expect(deps.recordCheckingAccount).not.toHaveBeenCalled();
+    expect(deps.issueCheckingCredential).not.toHaveBeenCalled();
+    expect(deps.flagReconciliation).not.toHaveBeenCalled();
+  });
+
+  it('rejects with unauthorized_caller when callerPubkey is empty', async () => {
+    const deps = makeDeps();
+    await expect(
+      openChecking(makeRequest({}, ''), deps),
+    ).rejects.toMatchObject({ reason: 'unauthorized_caller' });
+    expect(deps.verifyHolderCredentials).not.toHaveBeenCalled();
+  });
+
+  it('matches case-insensitively over hex', async () => {
+    const upper = SUBJECT.toUpperCase();
+    const result = await openChecking(makeRequest({}, upper), makeDeps());
+    expect(result.credential.subject).toBe(SUBJECT);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Default values
 // ---------------------------------------------------------------------------
 
@@ -87,13 +139,15 @@ describe('openChecking — defaults', () => {
 describe('openChecking — invalid_pubkey', () => {
   it('throws invalid_pubkey for short subject', async () => {
     const deps = makeDeps();
-    await expect(openChecking(makeRequest({ subject: 'tooshort' }), deps))
+    // FN-015: caller must match body.subject for validation gate to run.
+    await expect(openChecking(makeRequest({ subject: 'tooshort' }, 'tooshort'), deps))
       .rejects.toMatchObject({ reason: 'invalid_pubkey' });
   });
 
   it('throws invalid_pubkey for non-hex subject', async () => {
     const deps = makeDeps();
-    await expect(openChecking(makeRequest({ subject: 'z'.repeat(64) }), deps))
+    const z = 'z'.repeat(64);
+    await expect(openChecking(makeRequest({ subject: z }, z), deps))
       .rejects.toMatchObject({ reason: 'invalid_pubkey' });
   });
 

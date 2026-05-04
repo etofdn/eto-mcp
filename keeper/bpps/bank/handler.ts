@@ -26,6 +26,7 @@
  */
 
 import type { BppHandler, TaskRequest, TaskResult } from "../../templates/bpp/index.js";
+import { UNAUTHORIZED_CALLER_REASON } from "./auth.js";
 import { BANK_CAPABILITY_KEYS } from "./catalog.js";
 import type { BankCapabilityKey } from "./types.js";
 
@@ -80,6 +81,54 @@ const STUB_REASONS: StubMap = {
 };
 
 /* -------------------------------------------------------------------------- */
+/* Caller-pubkey extraction (FN-015)                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * TODO(gateway-auth, FN-015): bank-BPP caller-authentication contract.
+ *
+ * Per-capability handlers in `./handlers/` (e.g. `issueCard`, `openChecking`)
+ * accept an `AuthenticatedRequest<T>` envelope carrying a verified
+ * `callerPubkey` produced by gateway-level BAP signature verification.
+ *
+ * The dispatcher MUST:
+ *   1. Extract the verified caller pubkey from the inbound `TaskRequest`
+ *      via {@link extractCallerPubkey}.
+ *   2. Wrap the per-handler input in `{ callerPubkey, body: req.input }`
+ *      before invoking the per-capability handler.
+ *   3. Fail-closed with reason `"unauthorized_caller"` if `callerPubkey`
+ *      is missing — this matches the per-handler gate in
+ *      `assertCallerEquals` and surfaces a single canonical reason to the
+ *      BAP regardless of which layer rejected the request.
+ *
+ * Today the per-capability handlers are still stubs (see `STUB_REASONS`),
+ * and the BPP runtime's `TaskRequest` shape does NOT yet carry a
+ * gateway-verified `callerPubkey` field — `req.bapPubkey` is informational
+ * only until FN-073 / FN-075 wire BAP-signature verification at the
+ * gateway. {@link extractCallerPubkey} therefore returns `undefined` for
+ * every real request, and the dispatcher continues to short-circuit via
+ * `STUB_REASONS` so existing flows are not broken pre-gateway-plumbing.
+ *
+ * @see FN-073 / FN-075 — gateway BAP-signature plumbing that will populate
+ *   the verified caller pubkey on `TaskRequest`.
+ * @see FN-034 — apply this contract to wire / offramp / onramp /
+ *   open-savings handlers once the envelope is wired through here.
+ */
+export function extractCallerPubkey(
+  req: TaskRequest<unknown>,
+): string | undefined {
+  // FN-073 / FN-075 will extend `TaskRequest` (or a sibling envelope) with
+  // a verified `callerPubkey` field. Until then we read it defensively so
+  // that test fixtures and future gateway plumbing can populate it without
+  // requiring a synchronised type change here.
+  const candidate = (req as { readonly callerPubkey?: unknown }).callerPubkey;
+  if (typeof candidate === "string" && candidate.length > 0) {
+    return candidate;
+  }
+  return undefined;
+}
+
+/* -------------------------------------------------------------------------- */
 /* createBankHandler                                                           */
 /* -------------------------------------------------------------------------- */
 
@@ -88,6 +137,10 @@ const STUB_REASONS: StubMap = {
  * stub `not_implemented` failures for the five bank capabilities.
  *
  * Unknown actions return an `unknown_action` failure.
+ *
+ * See {@link extractCallerPubkey} and the FN-015 caller-authentication
+ * contract for how this dispatcher will thread `callerPubkey` to
+ * per-capability handlers once FN-073 / FN-075 land.
  */
 export function createBankHandler(
   deps: BankHandlerDeps = {},
@@ -101,10 +154,19 @@ export function createBankHandler(
       req: TaskRequest<unknown>,
     ): Promise<TaskResult<unknown>> {
       const action = req.action;
+      const callerPubkey = extractCallerPubkey(req);
 
       // Check if action is one of the known capability keys
       if ((BANK_CAPABILITY_KEYS as readonly string[]).includes(action)) {
         const key = action as BankCapabilityKey;
+        // TODO(gateway-auth, FN-015): once per-capability handlers replace
+        // their stub returns, wrap `req.input` as
+        //   { callerPubkey, body: req.input }
+        // and invoke the real handler. If `callerPubkey` is `undefined`
+        // here, fail-closed with `UNAUTHORIZED_CALLER_REASON` BEFORE
+        // calling the handler — the per-handler `assertCallerEquals`
+        // gate is the second line of defence, not the first.
+        void callerPubkey;
         return {
           status: "failure",
           reason: STUB_REASONS[key],
@@ -119,3 +181,7 @@ export function createBankHandler(
     },
   };
 }
+
+// Re-export so downstream callers / tests can reference the canonical
+// reason without reaching into `./auth.js` directly.
+export { UNAUTHORIZED_CALLER_REASON };
