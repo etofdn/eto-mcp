@@ -7,8 +7,14 @@
  *  - /on_confirm with order.state=CANCELLED -> submits FailTask
  *  - /on_confirm with invalid body -> 400 with errors
  *  - fulfillment_uri extraction from tracking.url and artifacts[0].url fallback
+ *
+ * FN-036: Gateway ownership hardening
+ *  - unknown bpp_id rejected with 403 when expectedBpps is set
+ *  - duplicate transaction_id rejected with 409 (replay dedup, always on)
+ *  - missing Authorization header rejected with 401 when requireSignature=true
  */
 
+import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -144,7 +150,7 @@ async function postOnConfirm(body: unknown) {
   });
 }
 
-function buildOnConfirmBody(orderState: string, extra: Record<string, unknown> = {}) {
+function buildOnConfirmBody(orderState: string, extra: Record<string, unknown> = {}, overrideContext: Record<string, unknown> = {}) {
   return {
     context: {
       domain: 'retail',
@@ -154,9 +160,11 @@ function buildOnConfirmBody(orderState: string, extra: Record<string, unknown> =
       bap_uri: 'https://bap.example.com',
       bpp_id: 'bpp.example.com',
       bpp_uri: 'https://bpp.example.com',
-      transaction_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
-      message_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567891',
+      // Generate unique IDs per call so replay dedup doesn't reject subsequent tests
+      transaction_id: randomUUID(),
+      message_id: randomUUID(),
       timestamp: '2026-04-30T00:00:00.000Z',
+      ...overrideContext,
     },
     message: {
       order: {
@@ -235,5 +243,170 @@ describe('fulfillment_uri extraction', () => {
     await postOnConfirm(body);
     const [, args] = (deps.submitOnChain as ReturnType<typeof vi.fn>).mock.calls[0] as [string, any];
     expect(args.fulfillment_uri).toBe('');
+  });
+});
+
+// ---------- FN-036: Gateway ownership hardening ----------
+
+describe('FN-036: BPP allowlist (expectedBpps)', () => {
+  let hardenedServer: Server;
+  let hardenedUrl: string;
+
+  beforeAll(async () => {
+    const app = express();
+    app.use(express.json());
+    const hardenedDeps = makeDeps({
+      expectedBpps: new Set(['trusted-bpp.example.com']),
+    });
+    mountOnConfirmCallback(app, hardenedDeps);
+    await new Promise<void>((resolve) => {
+      hardenedServer = app.listen(0, '127.0.0.1', () => resolve());
+    });
+    const addr = hardenedServer.address() as AddressInfo;
+    hardenedUrl = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) => {
+      hardenedServer.close((err) => (err ? reject(err) : resolve()));
+    });
+  });
+
+  it('rejects callback with unknown bpp_id with 403', async () => {
+    const body = buildOnConfirmBody('COMPLETED', {}, { bpp_id: 'unknown-bpp.example.com', bpp_uri: 'https://unknown-bpp.example.com' });
+    const res = await fetch(`${hardenedUrl}/on_confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(403);
+    const json = await res.json() as any;
+    expect(json.error).toBe('unknown_bpp');
+  });
+
+  it('accepts callback from trusted bpp_id with 200', async () => {
+    const body = buildOnConfirmBody('COMPLETED', {}, { bpp_id: 'trusted-bpp.example.com', bpp_uri: 'https://trusted-bpp.example.com' });
+    const res = await fetch(`${hardenedUrl}/on_confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.message.ack.status).toBe('ACK');
+  });
+});
+
+describe('FN-036: Replay dedup (seenTransactions)', () => {
+  let dedupServer: Server;
+  let dedupUrl: string;
+  let dedupDeps: InboundBppDeps;
+
+  beforeAll(async () => {
+    const app = express();
+    app.use(express.json());
+    dedupDeps = makeDeps();
+    mountOnConfirmCallback(app, dedupDeps);
+    await new Promise<void>((resolve) => {
+      dedupServer = app.listen(0, '127.0.0.1', () => resolve());
+    });
+    const addr = dedupServer.address() as AddressInfo;
+    dedupUrl = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) => {
+      dedupServer.close((err) => (err ? reject(err) : resolve()));
+    });
+  });
+
+  it('rejects duplicate transaction_id with 409', async () => {
+    const fixedTxnId = randomUUID();
+    const body = buildOnConfirmBody('COMPLETED', {}, { transaction_id: fixedTxnId });
+
+    // First call should succeed
+    const first = await fetch(`${dedupUrl}/on_confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(first.status).toBe(200);
+
+    // Second call with same transaction_id must be rejected
+    const second = await fetch(`${dedupUrl}/on_confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(second.status).toBe(409);
+    const json = await second.json() as any;
+    expect(json.error).toBe('duplicate_transaction');
+  });
+
+  it('accepts two callbacks with distinct transaction_ids', async () => {
+    const body1 = buildOnConfirmBody('COMPLETED');
+    const body2 = buildOnConfirmBody('CANCELLED');
+
+    const r1 = await fetch(`${dedupUrl}/on_confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body1),
+    });
+    const r2 = await fetch(`${dedupUrl}/on_confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body2),
+    });
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+  });
+});
+
+describe('FN-036: Signature gate (requireSignature)', () => {
+  let sigServer: Server;
+  let sigUrl: string;
+
+  beforeAll(async () => {
+    const app = express();
+    app.use(express.json());
+    mountOnConfirmCallback(app, makeDeps({ requireSignature: true }));
+    await new Promise<void>((resolve) => {
+      sigServer = app.listen(0, '127.0.0.1', () => resolve());
+    });
+    const addr = sigServer.address() as AddressInfo;
+    sigUrl = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) => {
+      sigServer.close((err) => (err ? reject(err) : resolve()));
+    });
+  });
+
+  it('rejects request with no Authorization header with 401', async () => {
+    const body = buildOnConfirmBody('COMPLETED');
+    const res = await fetch(`${sigUrl}/on_confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(401);
+    const json = await res.json() as any;
+    expect(json.error).toBe('missing_signature');
+  });
+
+  it('accepts request with Authorization header present', async () => {
+    const body = buildOnConfirmBody('COMPLETED');
+    const res = await fetch(`${sigUrl}/on_confirm`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Signature keyId="bpp.example.com",signature="stub"',
+      },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.message.ack.status).toBe('ACK');
   });
 });

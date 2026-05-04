@@ -6,6 +6,24 @@
  *
  * Spec: T-2.8.2.3 (FN-090). Sibling roles: inbound-bap (FN-088),
  * outbound-bap (FN-089).
+ *
+ * ## Gateway ownership hardening (FN-036)
+ *
+ * Three security controls added to mountOnConfirmCallback:
+ *
+ *   1. BPP allowlist  — when `expectedBpps` is provided, callbacks from
+ *      unknown `context.bpp_id` values are rejected with HTTP 403.
+ *
+ *   2. Replay dedup   — ON BY DEFAULT. The seen-transaction set is keyed on
+ *      `context.transaction_id`. Duplicate callbacks are rejected with HTTP 409.
+ *      Pass `seenTransactions` to inject a pre-populated set (e.g. in tests).
+ *      The txn_id is committed to the set *before* `submitOnChain` is called
+ *      to prevent any double-trigger under concurrent requests.
+ *
+ *   3. Signature gate — when `requireSignature: true`, the handler rejects
+ *      requests that lack an `Authorization` header with HTTP 401.
+ *      Full Beckn Ed25519 signature verification is deferred; this is a
+ *      presence-only guard that prevents entirely unsigned inbound traffic.
  */
 
 import { createHash } from 'node:crypto';
@@ -39,6 +57,29 @@ export interface InboundBppDeps {
   chainClient?: import("./chain-client.js").ChainClient;
   /** Look up off-chain order details by terms_hash. */
   loadOrderByTermsHash?: (terms_hash: string) => Promise<object | null>;
+
+  // ---- FN-036: Gateway ownership hardening ----
+
+  /**
+   * Allowlist of trusted BPP identifiers (context.bpp_id values).
+   * When provided, callbacks from BPPs not in this set are rejected 403.
+   * When absent (default), all bpp_ids are accepted.
+   */
+  expectedBpps?: Set<string>;
+
+  /**
+   * Inject a pre-populated seen-transactions set.
+   * Defaults to a fresh Set created at mount time (replay dedup is always on).
+   * Callers can pass their own Set to share state across mount calls or to
+   * pre-seed transactions that must be treated as already seen.
+   */
+  seenTransactions?: Set<string>;
+
+  /**
+   * When true, requests without an `Authorization` header are rejected 401.
+   * Defaults to false. Full Beckn Ed25519 verification is deferred (stub-level).
+   */
+  requireSignature?: boolean;
 }
 
 /** Handle an outbound /confirm produced by an on-chain Confirm AgentTrigger. */
@@ -78,11 +119,36 @@ export function mountOnConfirmCallback(app: Express, deps: InboundBppDeps): void
       return { tx_signature: r.tx_signature };
     });
 
+  // FN-036: replay dedup set — always on; caller may inject a pre-populated set.
+  const seenTransactions: Set<string> = deps.seenTransactions ?? new Set();
+
   app.post('/on_confirm', async (req: Request, res: Response) => {
+    // 1. Schema validation (existing)
     const v = validateBecknRequest('on_confirm', req.body);
     if (!v.ok) {
       return res.status(400).json({ error: 'beckn_validation_failed', details: (v as { ok: false; errors: unknown }).errors });
     }
+
+    // 2. FN-036: Signature presence gate (optional, off by default)
+    if (deps.requireSignature && !req.headers['authorization']) {
+      return res.status(401).json({ error: 'missing_signature', details: 'Authorization header required' });
+    }
+
+    // 3. FN-036: BPP allowlist check (optional, off by default)
+    const bppId: string | undefined = req.body.context?.bpp_id;
+    if (deps.expectedBpps && (!bppId || !deps.expectedBpps.has(bppId))) {
+      return res.status(403).json({ error: 'unknown_bpp', details: `bpp_id not in allowlist: ${bppId ?? '(missing)'}` });
+    }
+
+    // 4. FN-036: Replay dedup (always on — commit before submit to prevent double-trigger)
+    const txnId: string | undefined = req.body.context?.transaction_id;
+    if (txnId) {
+      if (seenTransactions.has(txnId)) {
+        return res.status(409).json({ error: 'duplicate_transaction', details: `transaction_id already processed: ${txnId}` });
+      }
+      seenTransactions.add(txnId);
+    }
+
     try {
       const order = req.body.message?.order;
       const success = order?.state === 'COMPLETED' || order?.state === 'FULFILLED';
