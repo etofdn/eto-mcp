@@ -48,7 +48,7 @@ import {
   canonicalJson,
   makeStubSigner,
   SigningRuntimeChain,
-} from "../../keeper/bpps/text-summarize/chain-adapter.js";
+} from "../../keeper/templates/bpp/index.js";
 import type { SummarizeInput, SummarizeOutput } from "../../keeper/bpps/text-summarize/index.js";
 
 /* -------------------------------------------------------------------------- */
