@@ -113,6 +113,15 @@ export interface BankMockIssueRequest {
   readonly checkingAccountId: string;
   /** Subject's AgentCard pubkey (base58). */
   readonly agentCardPubkey: string;
+  /**
+   * Verified caller pubkey from gateway-level BAP signature verification
+   * (FN-073 / FN-075). Must equal `agentCardPubkey` before any mint
+   * side-effect runs (FN-070 caller-binding security fix).
+   *
+   * The gateway MUST populate this from the verified BAP signature.
+   * An absent or empty value causes `unauthorized_caller` rejection.
+   */
+  readonly callerPubkey: string;
 }
 
 export type BankMockIssueResponse =
@@ -163,7 +172,8 @@ export type BankMockIssueErrorKind =
   | "binding_conflict"
   | "not_found"
   | "chain_failed"
-  | "invalid_request";
+  | "invalid_request"
+  | "unauthorized_caller";
 
 export class BankMockIssueError extends Error {
   public override readonly name = "BankMockIssueError";
