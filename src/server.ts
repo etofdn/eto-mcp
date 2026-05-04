@@ -16,7 +16,7 @@ function validateProductionConfig(): void {
   }
 
   if (config.auth.devBypass) {
-    errors.push("AUTH_DEV_BYPASS must not be enabled in production");
+    errors.push("ETO_AUTH_DEV_BYPASS must not be enabled in production");
   }
 
   if (config.etoRpcUrl.includes("localhost") || config.etoRpcUrl.includes("127.0.0.1")) {

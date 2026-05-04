@@ -159,12 +159,6 @@ export function loadAppConfig(
 //   - Must be set explicitly; never enabled by NODE_ENV alone.
 //   - In production, this MUST NOT be set (server.ts validates this).
 
-function readEnvInt(key: string, fallback: number): number {
-  const v = process.env[key];
-  const n = v !== undefined ? parseInt(v, 10) : NaN;
-  return Number.isFinite(n) ? n : fallback;
-}
-
 function validateNetwork(v: string | undefined): "mainnet" | "testnet" | "devnet" {
   if (v === "mainnet" || v === "testnet" || v === "devnet") return v;
   return "testnet";
@@ -207,41 +201,58 @@ export interface RuntimeConfig {
   };
 }
 
-function loadRuntimeConfig(): RuntimeConfig {
+function readEnvIntFrom(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
+  const v = env[key];
+  const n = v !== undefined ? parseInt(v, 10) : NaN;
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Load the runtime config from a given environment (defaults to `process.env`).
+ *
+ * Exported for tests so they can assert env-var contracts (notably FN-081
+ * `ETO_AUTH_DEV_BYPASS` semantics) without re-evaluating the module.
+ */
+export function loadRuntimeConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): RuntimeConfig {
   const etoRpcUrl =
-    process.env["ETO_RPC_URL"] ??
-    process.env["SOLANA_RPC_URL"] ??
+    env["ETO_RPC_URL"] ??
+    env["SOLANA_RPC_URL"] ??
     "http://127.0.0.1:8899";
 
   const etoWsUrl =
-    process.env["ETO_WS_URL"] ??
-    process.env["SOLANA_WS_URL"] ??
+    env["ETO_WS_URL"] ??
+    env["SOLANA_WS_URL"] ??
     etoRpcUrl.replace(/^https?:\/\//, "ws://").replace(/^http:\/\//, "ws://");
 
   return {
     etoRpcUrl,
     etoWsUrl,
-    network: validateNetwork(process.env["ETO_NETWORK"]),
+    network: validateNetwork(env["ETO_NETWORK"]),
     auth: {
       // FN-081: single env var, explicit opt-in only, never NODE_ENV-derived.
-      devBypass: process.env["ETO_AUTH_DEV_BYPASS"] === "true",
-      sessionTtlSeconds: readEnvInt("ETO_SESSION_TTL_SECONDS", 300),
-      refreshTtlSeconds: readEnvInt("ETO_REFRESH_TTL_SECONDS", 86400),
+      // The string "true" is the only accepted truthy value; anything else
+      // (including "1", "yes", or NODE_ENV=development|test|production) keeps
+      // devBypass=false.
+      devBypass: env["ETO_AUTH_DEV_BYPASS"] === "true",
+      sessionTtlSeconds: readEnvIntFrom(env, "ETO_SESSION_TTL_SECONDS", 300),
+      refreshTtlSeconds: readEnvIntFrom(env, "ETO_REFRESH_TTL_SECONDS", 86400),
     },
     chain: {
-      id: readEnvInt("ETO_EVM_CHAIN_ID", 9001),
+      id: readEnvIntFrom(env, "ETO_EVM_CHAIN_ID", 9001),
     },
-    civic: loadCivicConfig(),
+    civic: loadCivicConfig(env),
     rateLimits: {
-      readPerMinute: readEnvInt("ETO_RATE_READ_PER_MIN", 100),
-      writePerMinute: readEnvInt("ETO_RATE_WRITE_PER_MIN", 20),
-      deployPerMinute: readEnvInt("ETO_RATE_DEPLOY_PER_MIN", 5),
+      readPerMinute: readEnvIntFrom(env, "ETO_RATE_READ_PER_MIN", 100),
+      writePerMinute: readEnvIntFrom(env, "ETO_RATE_WRITE_PER_MIN", 20),
+      deployPerMinute: readEnvIntFrom(env, "ETO_RATE_DEPLOY_PER_MIN", 5),
     },
     tx: {
-      defaultTimeoutMs: readEnvInt("ETO_TX_TIMEOUT_MS", 30_000),
-      maxRetries: readEnvInt("ETO_TX_MAX_RETRIES", 3),
-      confirmationPollMs: readEnvInt("ETO_TX_POLL_MS", 400),
-      maxPollErrors: readEnvInt("ETO_TX_MAX_POLL_ERRORS", 3),
+      defaultTimeoutMs: readEnvIntFrom(env, "ETO_TX_TIMEOUT_MS", 30_000),
+      maxRetries: readEnvIntFrom(env, "ETO_TX_MAX_RETRIES", 3),
+      confirmationPollMs: readEnvIntFrom(env, "ETO_TX_POLL_MS", 400),
+      maxPollErrors: readEnvIntFrom(env, "ETO_TX_MAX_POLL_ERRORS", 3),
     },
   };
 }

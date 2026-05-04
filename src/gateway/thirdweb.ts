@@ -24,7 +24,7 @@ function getClient(): ThirdwebClient {
   if (!clientId || !secretKey) {
     throw new Error(
       "thirdweb is not configured: set THIRDWEB_CLIENT_ID and THIRDWEB_SECRET_KEY " +
-      "(or enable AUTH_DEV_BYPASS=true for local development)."
+      "(or enable ETO_AUTH_DEV_BYPASS=true for local development)."
     );
   }
   cachedClient = createThirdwebClient({ clientId, secretKey });
