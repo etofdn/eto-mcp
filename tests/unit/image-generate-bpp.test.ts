@@ -62,7 +62,7 @@ import {
   canonicalJson,
   makeStubSigner,
   SigningRuntimeChain,
-} from "../../keeper/bpps/image-generate/chain-adapter.js";
+} from "../../keeper/templates/bpp/index.js";
 import type {
   ImageGenerateInput,
   ImageGenerateOutput,

@@ -569,7 +569,7 @@ import {
   SigningRuntimeChain,
   makeStubSigner,
   canonicalJson,
-} from "../../keeper/bpps/web-research/chain-adapter.js";
+} from "../../keeper/templates/bpp/index.js";
 import { InMemoryChain } from "../../keeper/templates/bpp/index.js";
 
 const cannedReportLlm: PlannerLlmClient = {
