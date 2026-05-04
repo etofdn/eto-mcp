@@ -32,6 +32,7 @@ const INTL_RECIPIENT = {
 
 function makeRequest(overrides: Partial<WireRequest> = {}): WireRequest {
   return {
+    caller_pubkey: HOLDER, // FN-034: caller MUST equal holder
     holder: HOLDER,
     checking_account_pda: CHECKING_PDA,
     amount: 10_000_000,  // 10 eUSD
@@ -140,6 +141,38 @@ describe('executeWire — invalid_pubkey', () => {
     const deps = makeDeps();
     await expect(executeWire(makeRequest({ holder: 'bad' }), deps))
       .rejects.toBeInstanceOf(WireRejected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FN-034 — caller-binding (SECURITY HIGH)
+// ---------------------------------------------------------------------------
+
+describe('executeWire — caller-binding (FN-034)', () => {
+  it('rejects when caller_pubkey != holder with caller_mismatch', async () => {
+    const deps = makeDeps();
+    const attacker = 'f'.repeat(64);
+    await expect(
+      executeWire(makeRequest({ caller_pubkey: attacker }), deps),
+    ).rejects.toMatchObject({ reason: 'caller_mismatch' });
+  });
+
+  it('rejects without invoking lockEscrow / releaseEscrow / refundEscrow', async () => {
+    const deps = makeDeps();
+    const attacker = 'f'.repeat(64);
+    await expect(
+      executeWire(makeRequest({ caller_pubkey: attacker }), deps),
+    ).rejects.toBeInstanceOf(WireRejected);
+    expect(deps.lockEscrow).not.toHaveBeenCalled();
+    expect(deps.releaseEscrow).not.toHaveBeenCalled();
+    expect(deps.refundEscrow).not.toHaveBeenCalled();
+  });
+
+  it('rejects when caller_pubkey is not a valid hex64 with invalid_pubkey', async () => {
+    const deps = makeDeps();
+    await expect(
+      executeWire(makeRequest({ caller_pubkey: 'tooshort' }), deps),
+    ).rejects.toMatchObject({ reason: 'invalid_pubkey' });
   });
 });
 
@@ -293,8 +326,9 @@ describe('executeWire — wire_id determinism', () => {
   });
 
   it('produces different wire_id when holder differs', async () => {
-    const r1 = await executeWire(makeRequest({ holder: 'a'.repeat(64) }), makeDeps());
-    const r2 = await executeWire(makeRequest({ holder: '1'.repeat(64) }), makeDeps());
+    // FN-034: caller_pubkey must equal holder, so override both together.
+    const r1 = await executeWire(makeRequest({ caller_pubkey: 'a'.repeat(64), holder: 'a'.repeat(64) }), makeDeps());
+    const r2 = await executeWire(makeRequest({ caller_pubkey: '1'.repeat(64), holder: '1'.repeat(64) }), makeDeps());
     expect(r1.wire_id).not.toBe(r2.wire_id);
   });
 });
