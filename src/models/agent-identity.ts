@@ -80,6 +80,14 @@ export type ModelAttestation =
       kid: string;
       /** Issuance timestamp (seconds since epoch) of the verified JWS. */
       issued_at: number;
+      /** How the verification was established. `"session_signed"` = caller
+       *  supplied a JWS bound to this session; `"provider_oidc"` = verified
+       *  against the provider's published JWKS endpoint. */
+      source: "session_signed" | "provider_oidc";
+      /** Whether the provider's own infrastructure attested the model claim. */
+      provider_verified: boolean;
+      /** The raw compact JWS that carried the attestation. */
+      jws: string;
     }
   | {
       attestation_status: "self_declared";
@@ -192,6 +200,23 @@ export interface InterimAgentIdentityInput {
   capabilities?: ReadonlyArray<string>;
   /** Optional: `SessionPayload.jti` when available. */
   jti?: string;
+  /**
+   * Optional: a caller-supplied JWS that was already verified against the
+   * provider's session signing key. When present, `buildInterimAgentIdentity`
+   * emits a `"verified"` attestation with `source: "session_signed"`.
+   */
+  verified_session_jws?: {
+    /** The compact JWS string. */
+    jws: string;
+    /** `sub` claim from the verified token — the model's identity assertion. */
+    sub: string;
+    /** Model identifier claimed in the JWS. */
+    model_id: string;
+    /** Provider that issued the JWS (e.g. `"anthropic"`). */
+    provider: string;
+    /** Expiry of the JWS as a Unix timestamp (seconds). */
+    exp: number;
+  };
 }
 
 /**
@@ -216,7 +241,18 @@ export function buildInterimAgentIdentity(
 
   const human_authority = resolveHumanAuthority(input);
   const environment = resolveEnvironment(input);
-  const model_attestation: ModelAttestation = input.declared_model
+  const model_attestation: ModelAttestation = input.verified_session_jws
+    ? {
+        attestation_status: "verified",
+        provider: input.verified_session_jws.provider,
+        model_id: input.verified_session_jws.model_id,
+        kid: input.verified_session_jws.sub,
+        issued_at: input.verified_session_jws.exp,
+        source: "session_signed",
+        provider_verified: false,
+        jws: input.verified_session_jws.jws,
+      }
+    : input.declared_model
     ? {
         attestation_status: "self_declared",
         provider: input.declared_model.provider,
