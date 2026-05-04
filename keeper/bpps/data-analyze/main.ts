@@ -33,7 +33,7 @@ import {
   SigningRuntimeChain,
 } from "./chain-adapter.js";
 import { buildHandlerFromPrimitives } from "./handler.js";
-import type { LlmClient } from "./analyzer.js";
+import type { LlmClient } from "./analyzers/planner.js";
 import type { AnalyzeInput, AnalyzeOutput, AnalysisReport } from "./types.js";
 import {
   assertSelfSkillCredential,

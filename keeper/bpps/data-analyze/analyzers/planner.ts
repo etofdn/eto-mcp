@@ -14,9 +14,9 @@
  */
 
 import { createHash } from "node:crypto";
-import type { DatasetProfile, AnalysisReport, ColumnProfile } from "./types.js";
-import { zAnalysisReport } from "./types.js";
-import type { ColumnFlags, DatasetSample } from "./analyzers/profiler.js";
+import type { DatasetProfile, AnalysisReport, ColumnProfile } from "../types.js";
+import { zAnalysisReport } from "../types.js";
+import type { ColumnFlags, DatasetSample } from "./profiler.js";
 
 /* -------------------------------------------------------------------------- */
 /* LlmClient seam                                                             */

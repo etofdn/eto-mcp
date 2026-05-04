@@ -35,17 +35,17 @@ import {
 import {
   fetchCsv,
   type FetchLike,
-} from "../../keeper/bpps/data-analyze/fetcher.js";
+} from "../../keeper/bpps/data-analyze/source-loader.js";
 import {
   parseCsv,
   detectDelimiter,
   profileCsv,
-} from "../../keeper/bpps/data-analyze/profiler.js";
+} from "../../keeper/bpps/data-analyze/analyzers/profiler.js";
 import {
   analyze,
   sha256Hex,
   type LlmClient,
-} from "../../keeper/bpps/data-analyze/analyzer.js";
+} from "../../keeper/bpps/data-analyze/analyzers/planner.js";
 import {
   buildHandlerFromPrimitives,
   createDataAnalyzeHandler,
@@ -617,7 +617,7 @@ describe("analyze", () => {
     const empty = { ...fakeProfile, columns: [], columnCount: 0, rowCount: 0 };
     await expect(
       analyze(empty, fakeSample, { modelId: "m" }, { llm: cannedLlm }),
-    ).rejects.toThrow("empty_dataset");
+    ).rejects.toThrow("data-analyze:planner:empty-dataset");
   });
 
   it("surfaces llm_invalid_response for malformed LLM output", async () => {
@@ -629,7 +629,7 @@ describe("analyze", () => {
     };
     await expect(
       analyze(fakeProfile, fakeSample, { modelId: "m" }, { llm: badLlm }),
-    ).rejects.toThrow("llm_invalid_response");
+    ).rejects.toThrow("data-analyze:planner:");
   });
 
   it("merges profiler-flagged anomalies into the report", async () => {

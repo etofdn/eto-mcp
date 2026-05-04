@@ -89,10 +89,10 @@ import {
   DEV_AUTHORITY_PUBKEY as DATA_AUTHORITY,
 } from "../data-analyze/config.js";
 import { createDataAnalyzeHandler } from "../data-analyze/handler.js";
-import { profileCsv } from "../data-analyze/profiler.js";
-import type { FetchedCsv } from "../data-analyze/fetcher.js";
-import type { AnalyzeResult } from "../data-analyze/analyzer.js";
-import type { DatasetSample } from "../data-analyze/profiler.js";
+import { profileCsv } from "../data-analyze/analyzers/profiler.js";
+import type { FetchedCsv } from "../data-analyze/source-loader.js";
+import type { AnalyzeResult } from "../data-analyze/analyzers/planner.js";
+import type { DatasetSample } from "../data-analyze/analyzers/profiler.js";
 import type { DatasetProfile } from "../data-analyze/types.js";
 import type { AnalysisReport } from "../data-analyze/types.js";
 
