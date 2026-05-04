@@ -3,7 +3,7 @@ import { z } from "zod";
 import { getSignerFactory } from "../signing/index.js";
 import { localSignerFactory } from "../signing/local-signer.js";
 import { rpc } from "../read/rpc-client.js";
-import { resolveAddresses } from "../utils/address.js";
+import { resolveAddressesAsync } from "../utils/address.js";
 import { lamportsToSol } from "../utils/units.js";
 
 // Active wallet is scoped per caller (thirdweb sub / __stdio__ / __dev__) via
@@ -252,15 +252,19 @@ export function registerWalletTools(server: McpServer): void {
         const factory = getSignerFactory();
         const signer = await factory.getSigner(wallet_id);
         const svmAddress = signer.getPublicKey();
-        const addresses = resolveAddresses(svmAddress);
+        // EVM address comes directly from the signer (HKDF-SHA256 → secp256k1 →
+        // keccak256) — this is the same address used by ecrecover on signed EVM
+        // transactions (FN-016). No registry lookup needed since we hold the
+        // signer and its getEvmAddress() is the canonical source.
+        const evmAddress = signer.getEvmAddress();
 
         const lines: string[] = [`Wallet ID: ${wallet_id}`];
 
         if (!vm || vm === "svm") {
-          lines.push(`SVM Address (base58): ${addresses.svm}`);
+          lines.push(`SVM Address (base58): ${svmAddress}`);
         }
         if (!vm || vm === "evm") {
-          lines.push(`EVM Address (0x):     ${addresses.evm}`);
+          lines.push(`EVM Address (0x):     ${evmAddress}`);
         }
 
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
