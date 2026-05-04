@@ -4,31 +4,9 @@
  * Closes the FN-097 error-masking case where `JSON.stringify(result)` was
  * returned as a fallback, turning rate-limit / mock-faucet error payloads
  * into strings that callers treated as real signatures.
- *
- * NOTE: `src/config.ts` currently has multiple duplicate `export const config`
- * declarations (tracked by FN-062 / FN-066) that cause esbuild to refuse to
- * transform the file. We work around that here by stubbing the config module
- * via `vi.mock` rather than importing the real one. Do NOT dedupe config.ts
- * as part of FN-197 — that is explicitly out of scope.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-// Hoisted by vitest before the rpc-client import below.
-vi.mock("../../src/config.js", () => ({
-  config: {
-    etoRpcUrl: "http://stub",
-    tx: {
-      blockhashRefreshMs: 20_000,
-      blockhashValidityMs: 60_000,
-      defaultTimeoutMs: 30_000,
-      maxRetries: 3,
-      confirmationPollMs: 1,
-      maxPollErrors: 3,
-    },
-    logLevel: "error",
-  },
-}));
 
 // Silence the rpc-client's debug logger so test output stays readable.
 vi.mock("../../src/utils/logger.js", () => ({

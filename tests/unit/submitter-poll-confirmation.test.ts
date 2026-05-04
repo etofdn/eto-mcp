@@ -8,39 +8,12 @@
  * polling". After FN-197, only "not found" errors stay in the polling
  * loop; real errors are surfaced after `config.tx.maxPollErrors`
  * consecutive occurrences.
- *
- * NOTE on `vi.mock("../../src/config.js")`: `src/config.ts` currently has
- * multiple duplicate `export const config` declarations (tracked by
- * FN-062 / FN-066) that cause esbuild to refuse to transform it. We stub
- * the config module so the test file can be transformed at all. Do NOT
- * dedupe config.ts as part of FN-197 — that is explicitly out of scope.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// `vi.mock` factories are hoisted to the top of the file by vitest, so they
-// cannot reference module-scoped consts. Inline literals must be used here.
-// The `maxPollErrors` value is duplicated as MAX_POLL_ERRORS below for
-// assertion convenience and must stay in sync with the mock factory.
-vi.mock("../../src/config.js", () => ({
-  config: {
-    etoRpcUrl: "http://stub",
-    tx: {
-      blockhashRefreshMs: 20_000,
-      blockhashValidityMs: 60_000,
-      defaultTimeoutMs: 30_000,
-      maxRetries: 3,
-      // Tight values so the test runs quickly. Each iteration awaits
-      // `setTimeout(r, confirmationPollMs)` once, so 1ms keeps wall time
-      // negligible even when polling several times.
-      confirmationPollMs: 1,
-      maxPollErrors: 2,
-    },
-    logLevel: "error",
-  },
-}));
-
-const MAX_POLL_ERRORS = 2;
+// maxPollErrors matches the default in config.ts (ETO_TX_MAX_POLL_ERRORS default = 3).
+const MAX_POLL_ERRORS = 3;
 
 // Silence rpc-client and submitter logging noise.
 vi.mock("../../src/utils/logger.js", () => ({
