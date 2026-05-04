@@ -110,6 +110,16 @@ export const config = {
     defaultTimeoutMs: 30_000,
     maxRetries: 3,
     confirmationPollMs: 400,
+    /**
+     * FN-197: maximum number of consecutive non-"not found" errors that
+     * `TransactionSubmitter.pollConfirmation` tolerates before bubbling
+     * the error to the outer retry classifier. Override via env
+     * `ETO_TX_MAX_POLL_ERRORS` (positive integer).
+     */
+    maxPollErrors: (() => {
+      const v = parseInt(process.env.ETO_TX_MAX_POLL_ERRORS ?? "", 10);
+      return Number.isFinite(v) && v > 0 ? v : 3;
+    })(),
   },
 
   auth: {
@@ -208,6 +218,11 @@ export interface GatewayConfig {
     readonly defaultTimeoutMs: number;
     readonly maxRetries: number;
     readonly confirmationPollMs: number;
+    /**
+     * FN-197: max consecutive non-"not found" RPC failures tolerated by
+     * `pollConfirmation` before bubbling. Env: `ETO_TX_MAX_POLL_ERRORS`.
+     */
+    readonly maxPollErrors: number;
   };
   readonly chain: {
     readonly id: number;
@@ -257,6 +272,7 @@ function loadGatewayConfig(): GatewayConfig {
       defaultTimeoutMs: readEnvInt("ETO_TX_TIMEOUT_MS", 30_000),
       maxRetries: readEnvInt("ETO_TX_MAX_RETRIES", 3),
       confirmationPollMs: readEnvInt("ETO_TX_POLL_MS", 400),
+      maxPollErrors: readEnvInt("ETO_TX_MAX_POLL_ERRORS", 3),
     },
     chain: {
       id: readEnvInt("ETO_EVM_CHAIN_ID", 9001),

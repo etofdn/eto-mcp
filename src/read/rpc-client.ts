@@ -13,17 +13,21 @@ interface JsonRpcResponse<T> {
 }
 
 /**
- * FN-197 / FN-198: validate that a string looks like a real on-chain
- * transaction signature before letting it leave the RPC client. Accepts
- * either base58 (40-90 chars, base58 alphabet) or hex (64-128 chars).
- * Rejects the JSON.stringify-of-an-error-object case.
+ * FN-197: validate that a string looks like a real on-chain transaction
+ * signature before letting it leave the RPC client. `faucet` is SVM-only,
+ * so we accept base58 only with the strict bounds called out in the
+ * FN-097 error-masking audit: 43–88 chars from the base58 alphabet
+ * (Solana mainnet sigs decode to 64 bytes → 87–88 base58 chars; 43 is
+ * the lower bound for short test payloads). Hex responses are themselves
+ * a smell — they indicate the node is running a non-SVM mock — so they
+ * are rejected. This closes the JSON.stringify-of-an-error-object
+ * masking case identified by FN-097.
  */
-const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{40,90}$/;
-const HEX_SIG_RE = /^(0x)?[0-9a-fA-F]{64,128}$/;
+const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{43,88}$/;
 function isValidSignature(s: string): boolean {
   if (typeof s !== "string") return false;
   if (s.length === 0) return false;
-  return BASE58_RE.test(s) || HEX_SIG_RE.test(s);
+  return BASE58_RE.test(s);
 }
 
 export class EtoRpcClient {
