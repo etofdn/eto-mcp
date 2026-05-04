@@ -119,7 +119,10 @@ export function registerQueryTools(server: McpServer): void {
     { hash: z.string().describe("Transaction hash (base58 SVM or 0x EVM)") },
     async ({ hash }) => {
       try {
-        const tx = await rpc.etoGetTransaction(hash);
+        // FN-027: align with submitter.pollConfirmation — both now use getTransaction
+        // (Solana-compatible method). The eto_getTransaction unified shape is only
+        // used by the MCP tool's prior code; after this fix, response shape matches.
+        const tx = await rpc.getTransaction(hash);
 
         if (!tx) {
           return {
