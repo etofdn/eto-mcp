@@ -918,3 +918,192 @@ describe("runBpp end-to-end", () => {
     }
   });
 });
+
+/* ========================================================================== */
+/* FN-022 — idempotent retry                                                  */
+/* ========================================================================== */
+
+describe("idempotent retry (FN-022)", () => {
+  it("dispatches the same taskId only once when delivered twice", async () => {
+    const handler = buildHandlerFromPrimitives({
+      fetchDeps: { fetch: makeFetch({}) },
+      analyzeDeps: { llm: cannedLlm },
+      modelId: "test-model",
+      now: () => 1700_000_000,
+    });
+
+    const events = new InMemoryEventSource<unknown>();
+    const inner = new InMemoryChain();
+    const chain = new SigningRuntimeChain({
+      inner,
+      signer: makeStubSigner("idem-replay"),
+      now: () => 1700_000_000,
+    });
+    const gate = defaultCredentialGate([], {
+      loadAgentCard: async () => ({ authority: "BAP", credentials: [] }),
+      now: () => 0,
+    });
+
+    const done = runBpp<unknown, AnalyzeOutput>(config, handler, {
+      eventSource: events,
+      chain,
+      gate,
+      logger: silentLogger,
+    });
+
+    // Same taskId, same input — delivered twice (network replay).
+    const replay: BeckonInitEvent<unknown> = {
+      taskId: "replay-task-1",
+      bapPubkey: "BAP",
+      bppPubkey: config.authority,
+      networkPubkey: "NET",
+      action: "data:analyze",
+      input: { source: { kind: "csv", text: "a,b\n1,2\n3,4\n" } },
+      observedAt: 0,
+    };
+
+    events.push(replay);
+    events.push(replay);
+    events.close();
+    await done;
+
+    // Single chain completion — duplicate suppressed.
+    expect(inner.completed).toHaveLength(1);
+    expect(inner.failed).toHaveLength(0);
+    // Single signed receipt — SigningRuntimeChain only saw one completeTask.
+    expect(chain.signedComplete).toHaveLength(1);
+    expect(chain.signedFail).toHaveLength(0);
+    // The completed entry must reference the same taskId.
+    expect(inner.completed[0]!.taskId).toBe("replay-task-1");
+  });
+
+  it("permits the same taskId across separate runBpp invocations (per-process scope)", async () => {
+    // The dedupe is scoped to one runBpp process lifetime — a fresh runBpp
+    // run starts with an empty seen-set. This documents the boundary.
+    const handler = buildHandlerFromPrimitives({
+      fetchDeps: { fetch: makeFetch({}) },
+      analyzeDeps: { llm: cannedLlm },
+      modelId: "test-model",
+      now: () => 1700_000_000,
+    });
+
+    const evt: BeckonInitEvent<unknown> = {
+      taskId: "cross-run-task-1",
+      bapPubkey: "BAP",
+      bppPubkey: config.authority,
+      networkPubkey: "NET",
+      action: "data:analyze",
+      input: { source: { kind: "csv", text: "a,b\n1,2\n" } },
+      observedAt: 0,
+    };
+
+    // First run.
+    {
+      const events = new InMemoryEventSource<unknown>();
+      const inner = new InMemoryChain();
+      const chain = new SigningRuntimeChain({
+        inner,
+        signer: makeStubSigner("cross-A"),
+        now: () => 1700_000_000,
+      });
+      const gate = defaultCredentialGate([], {
+        loadAgentCard: async () => ({ authority: "BAP", credentials: [] }),
+        now: () => 0,
+      });
+      const done = runBpp<unknown, AnalyzeOutput>(config, handler, {
+        eventSource: events,
+        chain,
+        gate,
+        logger: silentLogger,
+      });
+      events.push(evt);
+      events.close();
+      await done;
+      expect(inner.completed).toHaveLength(1);
+    }
+
+    // Second run, same taskId — fresh seen-set, so it is processed.
+    {
+      const events = new InMemoryEventSource<unknown>();
+      const inner = new InMemoryChain();
+      const chain = new SigningRuntimeChain({
+        inner,
+        signer: makeStubSigner("cross-B"),
+        now: () => 1700_000_000,
+      });
+      const gate = defaultCredentialGate([], {
+        loadAgentCard: async () => ({ authority: "BAP", credentials: [] }),
+        now: () => 0,
+      });
+      const done = runBpp<unknown, AnalyzeOutput>(config, handler, {
+        eventSource: events,
+        chain,
+        gate,
+        logger: silentLogger,
+      });
+      events.push(evt);
+      events.close();
+      await done;
+      expect(inner.completed).toHaveLength(1);
+    }
+  });
+
+  it("dedupes by taskId regardless of input mutation (replay safety)", async () => {
+    // Even if a malicious replay attempts to slip in a different payload
+    // under the same taskId, dedupe MUST still kick in — otherwise an
+    // attacker could overwrite a completed task's output.
+    const handler = buildHandlerFromPrimitives({
+      fetchDeps: { fetch: makeFetch({}) },
+      analyzeDeps: { llm: cannedLlm },
+      modelId: "test-model",
+      now: () => 1700_000_000,
+    });
+
+    const events = new InMemoryEventSource<unknown>();
+    const inner = new InMemoryChain();
+    const chain = new SigningRuntimeChain({
+      inner,
+      signer: makeStubSigner("malice"),
+      now: () => 1700_000_000,
+    });
+    const gate = defaultCredentialGate([], {
+      loadAgentCard: async () => ({ authority: "BAP", credentials: [] }),
+      now: () => 0,
+    });
+
+    const done = runBpp<unknown, AnalyzeOutput>(config, handler, {
+      eventSource: events,
+      chain,
+      gate,
+      logger: silentLogger,
+    });
+
+    const taskId = "tampered-replay-1";
+    events.push({
+      taskId,
+      bapPubkey: "BAP",
+      bppPubkey: config.authority,
+      networkPubkey: "NET",
+      action: "data:analyze",
+      input: { source: { kind: "csv", text: "a,b\n1,2\n" } },
+      observedAt: 0,
+    });
+    events.push({
+      taskId,
+      bapPubkey: "BAP",
+      bppPubkey: config.authority,
+      networkPubkey: "NET",
+      action: "data:analyze",
+      // Different payload — would-be tampering attempt.
+      input: { source: { kind: "csv", text: "MALICIOUS\n9,9\n" } },
+      observedAt: 0,
+    });
+    events.close();
+    await done;
+
+    expect(inner.completed).toHaveLength(1);
+    // The first event's payload wins (the second is suppressed entirely).
+    const out = inner.completed[0]!.output as { result: AnalyzeOutput };
+    expect(out.result.artifact.content).not.toContain("MALICIOUS");
+  });
+});
