@@ -16,6 +16,7 @@
 - Pin @noble crypto deps to versions tests expect ([#35](https://github.com/etofdn/eto-mcp/issues/35)) ([`f8a6ca5`](f8a6ca5eec85b67fdf00d5575843a78fa53c4619))
 - Skip tests/bridge-conformance.test.ts until FN-092 stubs ship ([#41](https://github.com/etofdn/eto-mcp/issues/41)) ([`c456130`](c456130c7fde5bd9e9d6dadcf610044667e25080))
 - Inline BANK_NETWORK_LABEL + computeBankNetworkId into eto-mcp ([#45](https://github.com/etofdn/eto-mcp/issues/45)) ([`097e78e`](097e78e8562a682d82d0451ce638ac118a12eaee))
+- Devnet write reliability cluster (FN-098, FN-099, FN-197, FN-198) ([#70](https://github.com/etofdn/eto-mcp/issues/70)) ([`52bc84c`](52bc84c14b0ea63a46d6189598330637eb68098c))
 
 ### CI/CD
 
@@ -29,11 +30,13 @@
 - ISSUER_URL prod warn + signing-key alias + docs ([`83dbc29`](83dbc2907609e5cafe7ea64c6e113c111b09348d))
 - Board hygiene audit docs ([#38](https://github.com/etofdn/eto-mcp/issues/38)) ([`a764a86`](a764a86e06ee2ffd4f4bc9fd2109989faae9ba10))
 - Add @noble/curves dep for src/signing/local-signer.ts ([#47](https://github.com/etofdn/eto-mcp/issues/47)) ([`5ec7479`](5ec74793aa541283c72f4aef0702a1027937878a))
+- Strip debug console, fix conformance fixture once-and-for-all; full suite 41/41 passes with no drift ([#58](https://github.com/etofdn/eto-mcp/issues/58)) ([`a93f3ca`](a93f3ca00ed803abdf70c564567ff047f8c616ba))
 
 ### Documentation
 
 - Add Marqeta integration v0.5 placeholder + swap-surface checklist ([`a7dc246`](a7dc24602e5f7cb586d95681a0ed1cddcd837b77))
 - Audit cast_call vs read_contract — document return-format difference ([#23](https://github.com/etofdn/eto-mcp/issues/23)) ([`62fc53a`](62fc53aeec203b3b0935cb03ab3954516b471672))
+- Land schema-registry at docs/schema-registry.md ([#72](https://github.com/etofdn/eto-mcp/issues/72)) ([`e89654f`](e89654f0d4fad37c31037a52cf66fea564093e5a))
 
 ### Features
 
@@ -69,6 +72,9 @@
 - Wire IssueCardDeps.recordCard to shared bank credential ledger ([#48](https://github.com/etofdn/eto-mcp/issues/48)) ([`7b575e5`](7b575e5f282952f28a29456133a88d3640d2f477))
 - Add changeset for Poseidon-2 swap and VK regeneration note ([#50](https://github.com/etofdn/eto-mcp/issues/50)) ([`da71e91`](da71e91e21955d911109a40f67e00ed913849dfc))
 - Merge fusion/fn-083 ([`464bbe1`](464bbe1b73194e6365aa63834acb05f42a01b290))
+- Collapse per-BPP SigningRuntimeChain imports to template barrel ([#69](https://github.com/etofdn/eto-mcp/issues/69)) ([`ce4e75c`](ce4e75cf0967b96f9d0ee397a9b4ab0dc6e1431b))
+- Add Poseidon-2 BN254 t=3 helper at src/crypto/poseidon2.ts ([#54](https://github.com/etofdn/eto-mcp/issues/54)) ([`1c207a2`](1c207a2cd0ba0c09bbf3847b54dc7a2f0f6377b0))
+- Wire Beckn gateway to swappable ChainClient ([#73](https://github.com/etofdn/eto-mcp/issues/73)) ([`ec2acba`](ec2acbafa80f94f68b3abe97c954650c6c91112f))
 
 ### Refactor
 
