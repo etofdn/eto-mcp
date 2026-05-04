@@ -19,7 +19,7 @@ import { BANK_CAPABILITY_KEYS, buildBankCatalog, canonicalCatalogJson, catalogHa
 import { buildConfig } from "../../keeper/bpps/bank/config.js";
 import { createBankHandler } from "../../keeper/bpps/bank/handler.js";
 import { InMemoryCatalogCommitRecorder, publishBankCatalog } from "../../keeper/bpps/bank/catalog-publisher.js";
-import { makeStubSigner } from "../../keeper/bpps/bank/chain-adapter.js";
+import { makeStubSigner } from "../../keeper/templates/bpp/index.js";
 import { zBankCapability, zBankCatalog, zCatalogCommitPayload } from "../../keeper/bpps/bank/types.js";
 import { zBppConfig } from "../../keeper/templates/bpp/types.js";
 import {
