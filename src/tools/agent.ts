@@ -417,11 +417,6 @@ export function registerAgentTools(server: McpServer): void {
           `Balance:     ${account.lamports ?? 0} lamports`,
         ];
         if (metaStr) lines.push(`Metadata:    ${metaStr}`);
-        if (parsed && parsed.schemaVersion >= 1) {
-          lines.push(`Layout:      v${parsed.schemaVersion}`);
-          if (parsed.taskCount !== undefined) lines.push(`Task count:  ${parsed.taskCount}`);
-          if (parsed.createdAt !== undefined) lines.push(`Created at:  ${parsed.createdAt} (unix s)`);
-        }
 
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
