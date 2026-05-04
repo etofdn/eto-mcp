@@ -28,10 +28,13 @@ function baseDeps(): IssueCardDeps {
 }
 
 const req = {
-  subject: SUBJECT,
-  bank_issuer: BANK,
-  linked_account_pda: LINKED,
-  issued_slot: 1_000_000,
+  callerPubkey: SUBJECT,
+  body: {
+    subject: SUBJECT,
+    bank_issuer: BANK,
+    linked_account_pda: LINKED,
+    issued_slot: 1_000_000,
+  },
 };
 
 describe("FN-191 — issue-card flagReconciliation", () => {

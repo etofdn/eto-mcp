@@ -28,6 +28,11 @@
 
 import { createHash } from 'node:crypto';
 
+import {
+  assertCallerEquals,
+  UNAUTHORIZED_CALLER_REASON,
+  type AuthenticatedRequest,
+} from '../auth.js';
 import { defaultBankLedger } from '../credential-ledger.js';
 
 export interface OpenCheckingRequest {
@@ -79,7 +84,7 @@ export interface OpenCheckingDeps {
 }
 
 export class OpenCheckingRejected extends Error {
-  constructor(public reason: 'invalid_pubkey' | 'invalid_deposit' | 'credentials_missing' | 'issue_failed' | 'ledger_failed') {
+  constructor(public reason: 'unauthorized_caller' | 'invalid_pubkey' | 'invalid_deposit' | 'credentials_missing' | 'issue_failed' | 'ledger_failed') {
     super('open-checking rejected: ' + reason);
   }
 }
@@ -89,31 +94,53 @@ const HEX64 = /^[0-9a-fA-F]{64}$/;
 /** Credential schemas required by the on-chain Network policy for this BPP. */
 export const REQUIRED_SCHEMAS = ['eto.beckn.schema.verified-human.v1', 'eto.beckn.schema.kyc.us-test.v1'];
 
-export async function openChecking(req: OpenCheckingRequest, deps: OpenCheckingDeps): Promise<OpenCheckingResult> {
-  if (!HEX64.test(req.subject)) throw new OpenCheckingRejected('invalid_pubkey');
-  if (!HEX64.test(req.bank_issuer)) throw new OpenCheckingRejected('invalid_pubkey');
-  const opening = req.opening_deposit_atomic ?? 0;
+/**
+ * FN-015: caller-message-authorship authentication is enforced FIRST,
+ * before any validation, credential gate, ledger write, or chain call.
+ * `req.callerPubkey` (sourced by the gateway from BAP signature
+ * verification) MUST equal `req.body.subject` — otherwise the handler
+ * rejects with `unauthorized_caller` and NO downstream side effect runs.
+ *
+ * NOTE: `verifyHolderCredentials` is a credential-validity guard, NOT
+ * caller authentication. See `keeper/bpps/bank/auth.ts`.
+ */
+export async function openChecking(
+  req: AuthenticatedRequest<OpenCheckingRequest>,
+  deps: OpenCheckingDeps,
+): Promise<OpenCheckingResult> {
+  // --- Caller-authentication (FN-015) — FIRST, before any side effect ---
+  try {
+    assertCallerEquals(req.callerPubkey, req.body.subject);
+  } catch {
+    throw new OpenCheckingRejected(UNAUTHORIZED_CALLER_REASON);
+  }
+
+  const body = req.body;
+
+  if (!HEX64.test(body.subject)) throw new OpenCheckingRejected('invalid_pubkey');
+  if (!HEX64.test(body.bank_issuer)) throw new OpenCheckingRejected('invalid_pubkey');
+  const opening = body.opening_deposit_atomic ?? 0;
   if (!Number.isInteger(opening) || opening < 0) throw new OpenCheckingRejected('invalid_deposit');
 
   // Defensive re-check (chain gate is authoritative; this guards against
   // mis-routed requests that bypass the on-chain Init gate).
-  const ok = await deps.verifyHolderCredentials(req.subject, REQUIRED_SCHEMAS);
+  const ok = await deps.verifyHolderCredentials(body.subject, REQUIRED_SCHEMAS);
   if (!ok) throw new OpenCheckingRejected('credentials_missing');
 
   const checking_account_pda = createHash('sha256')
     .update('checking_account')
-    .update(Buffer.from(req.subject, 'hex'))
-    .update(Buffer.from(BigInt(req.opened_slot).toString(16).padStart(16, '0'), 'hex'))
+    .update(Buffer.from(body.subject, 'hex'))
+    .update(Buffer.from(BigInt(body.opened_slot).toString(16).padStart(16, '0'), 'hex'))
     .digest('hex');
 
   const credential: OpenCheckingResult['credential'] = {
     schema: 'account.checking.v1',
-    subject: req.subject,
-    issuer: req.bank_issuer,
+    subject: body.subject,
+    issuer: body.bank_issuer,
     body: {
       account_pda: checking_account_pda,
-      holder: req.subject,
-      opened_slot: req.opened_slot,
+      holder: body.subject,
+      opened_slot: body.opened_slot,
       currency: 'eUSD',
       opening_balance: opening,
     },
@@ -122,8 +149,8 @@ export async function openChecking(req: OpenCheckingRequest, deps: OpenCheckingD
   // Side-effects (atomicity is best-effort in v0; real impl uses 2-phase commit)
   try {
     await deps.recordCheckingAccount(checking_account_pda, {
-      holder: req.subject,
-      opened_slot: req.opened_slot,
+      holder: body.subject,
+      opened_slot: body.opened_slot,
       opening_balance: opening,
     });
   } catch {
@@ -139,8 +166,8 @@ export async function openChecking(req: OpenCheckingRequest, deps: OpenCheckingD
     // throw — if it does, swallow: the primary issue_failed error is
     // what callers act on.
     try {
-      await deps.flagReconciliation(checking_account_pda, req.subject, {
-        opened_slot: req.opened_slot,
+      await deps.flagReconciliation(checking_account_pda, body.subject, {
+        opened_slot: body.opened_slot,
         opening_balance: opening,
       });
     } catch {

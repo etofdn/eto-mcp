@@ -26,10 +26,13 @@ function baseDeps(): OpenCheckingDeps {
 }
 
 const req = {
-  subject: SUBJECT,
-  bank_issuer: BANK,
-  opened_slot: 1_000_000,
-  opening_deposit_atomic: 5_000_000,
+  callerPubkey: SUBJECT,
+  body: {
+    subject: SUBJECT,
+    bank_issuer: BANK,
+    opened_slot: 1_000_000,
+    opening_deposit_atomic: 5_000_000,
+  },
 };
 
 describe("FN-191 — open-checking flagReconciliation", () => {

@@ -109,10 +109,13 @@ describe("bank account lifecycle (E11)", () => {
 
     const result = await openChecking(
       {
-        subject: HOLDER_PUBKEY,
-        bank_issuer: BANK_ISSUER_PUBKEY,
-        opened_slot: 1000,
-        opening_deposit_atomic: 0,
+        callerPubkey: HOLDER_PUBKEY,
+        body: {
+          subject: HOLDER_PUBKEY,
+          bank_issuer: BANK_ISSUER_PUBKEY,
+          opened_slot: 1000,
+          opening_deposit_atomic: 0,
+        },
       },
       makeOpenCheckingDeps(state, holderCredentialSchemas),
     );

@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
+import type { AuthenticatedRequest } from "../auth.js";
 import {
   issueCard,
   stubs,
@@ -20,7 +21,7 @@ const SUBJECT = "a".repeat(64);
 const BANK_ISSUER = "b".repeat(64);
 const LINKED_ACCOUNT_PDA = "c".repeat(64);
 
-function makeRequest(overrides: Partial<IssueCardRequest> = {}): IssueCardRequest {
+function makeBody(overrides: Partial<IssueCardRequest> = {}): IssueCardRequest {
   return {
     subject: SUBJECT,
     bank_issuer: BANK_ISSUER,
@@ -28,6 +29,13 @@ function makeRequest(overrides: Partial<IssueCardRequest> = {}): IssueCardReques
     issued_slot: 1_000_000,
     ...overrides,
   };
+}
+
+function makeRequest(
+  overrides: Partial<IssueCardRequest> = {},
+  callerPubkey: string = SUBJECT,
+): AuthenticatedRequest<IssueCardRequest> {
+  return { callerPubkey, body: makeBody(overrides) };
 }
 
 function makeDeps(overrides: Partial<IssueCardDeps> = {}): IssueCardDeps {
@@ -39,6 +47,7 @@ function makeDeps(overrides: Partial<IssueCardDeps> = {}): IssueCardDeps {
       credential_pda: "e".repeat(64),
     }),
     recordCard: vi.fn().mockResolvedValue(undefined),
+    flagReconciliation: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -67,6 +76,50 @@ describe("issueCard — happy path", () => {
     const result = await issueCard(makeRequest(), makeDeps());
     expect(result.credential.subject).toBe(SUBJECT);
     expect(result.credential.issuer).toBe(BANK_ISSUER);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Caller authentication (FN-015)
+// ---------------------------------------------------------------------------
+
+describe("issueCard — caller authentication", () => {
+  it("happy path: callerPubkey === body.subject succeeds", async () => {
+    const result = await issueCard(makeRequest({}, SUBJECT), makeDeps());
+    expect(result.card_pda).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("rejects with unauthorized_caller when callerPubkey !== body.subject", async () => {
+    const deps = makeDeps();
+    await expect(
+      issueCard(makeRequest({}, "d".repeat(64)), deps),
+    ).rejects.toMatchObject({ reason: "unauthorized_caller" });
+  });
+
+  it("does NOT invoke any dep when callerPubkey mismatches", async () => {
+    const deps = makeDeps();
+    await expect(
+      issueCard(makeRequest({}, "d".repeat(64)), deps),
+    ).rejects.toBeDefined();
+    expect(deps.verifyHolderCredentials).not.toHaveBeenCalled();
+    expect(deps.verifyLinkedAccount).not.toHaveBeenCalled();
+    expect(deps.recordCard).not.toHaveBeenCalled();
+    expect(deps.issueCardCredential).not.toHaveBeenCalled();
+    expect(deps.flagReconciliation).not.toHaveBeenCalled();
+  });
+
+  it("rejects with unauthorized_caller when callerPubkey is empty string", async () => {
+    const deps = makeDeps();
+    await expect(
+      issueCard(makeRequest({}, ""), deps),
+    ).rejects.toMatchObject({ reason: "unauthorized_caller" });
+    expect(deps.verifyHolderCredentials).not.toHaveBeenCalled();
+  });
+
+  it("matches case-insensitively over hex (uppercase caller, lowercase subject)", async () => {
+    const upper = SUBJECT.toUpperCase();
+    const result = await issueCard(makeRequest({}, upper), makeDeps());
+    expect(result.credential.subject).toBe(SUBJECT);
   });
 });
 
@@ -142,8 +195,10 @@ describe("issueCard — defaults", () => {
 
 describe("issueCard — validation: invalid_pubkey", () => {
   it("throws invalid_pubkey for bad subject (too short)", async () => {
+    // FN-015: callerPubkey must match body.subject for the validation
+    // gate to be exercised at all; here both sides are the (bad) value.
     await expect(
-      issueCard(makeRequest({ subject: "abc" }), makeDeps()),
+      issueCard(makeRequest({ subject: "abc" }, "abc"), makeDeps()),
     ).rejects.toMatchObject({ reason: "invalid_pubkey" });
   });
 
@@ -160,8 +215,9 @@ describe("issueCard — validation: invalid_pubkey", () => {
   });
 
   it("throws invalid_pubkey for 65-char hex subject", async () => {
+    const long = "a".repeat(65);
     await expect(
-      issueCard(makeRequest({ subject: "a".repeat(65) }), makeDeps()),
+      issueCard(makeRequest({ subject: long }, long), makeDeps()),
     ).rejects.toMatchObject({ reason: "invalid_pubkey" });
   });
 });
@@ -361,8 +417,10 @@ describe("issueCard — PDA determinism", () => {
   });
 
   it("differing subject → different card_pda", async () => {
-    const r1 = await issueCard(makeRequest({ subject: "a".repeat(64) }), makeDeps());
-    const r2 = await issueCard(makeRequest({ subject: "b".repeat(64) }), makeDeps());
+    const A = "a".repeat(64);
+    const B = "b".repeat(64);
+    const r1 = await issueCard(makeRequest({ subject: A }, A), makeDeps());
+    const r2 = await issueCard(makeRequest({ subject: B }, B), makeDeps());
     expect(r1.card_pda).not.toBe(r2.card_pda);
   });
 
