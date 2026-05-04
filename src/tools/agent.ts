@@ -11,19 +11,57 @@ import * as ed from "@noble/ed25519";
 import { BorshReader, decodeAccountData } from "../utils/borsh-reader.js";
 
 // AgentState on-chain layout (Rust borsh, see runtime/src/programs/agent.rs):
-//   discriminator: [u8; 8]
-//   authority: Pubkey (32)
-//   name: String, model_id: String, metadata_uri: String
-//   reputation: u64
-//   status: u8 (0=active, 1=paused, 2=deactivated)
-//   ...
-function parseAgentState(rawData: any): {
+//
+// v0 (every real on-chain account today):
+//   discriminator:  [u8; 8]
+//   authority:      Pubkey (32)
+//   name:           String
+//   model_id:       String
+//   metadata_uri:   String
+//   reputation:     u64-LE
+//   status:         u8       (0=active, 1=paused, 2=deactivated)
+//
+// v1 trailer (FN-094 — appended immediately after the v0 `status` byte once
+// the runtime change lands):
+//   schema_version:  u8                       // == 1 for v1; 0 here is illegal
+//   human_authority: Option<HumanAuthority>   // 1-byte tag (0=None, 1=Some) + body if Some
+//
+//   HumanAuthority = {
+//     auth_strategy:  String  (u32-LE length + utf8)
+//     sub:            String  (u32-LE length + utf8)
+//     bound_at_slot:  u64-LE
+//   }
+//
+// Decoder rules (must match the wire spec exactly):
+//   1. Legacy v0 fallthrough — buffer ends right after the v0 `status` byte
+//      ⇒ return v0 fields with `schemaVersion: 0, humanAuthority: null`.
+//   2. v1 — `schema_version === 1` ⇒ decode the Option<HumanAuthority>.
+//   3. `schema_version === 0` with a trailer byte present is malformed ⇒ null.
+//   4. `schema_version >= 2` (unknown future version) ⇒ refuse with null;
+//      consumers (FN-045 `create_a2a_channel`, FN-046 `join_swarm`) treat
+//      null as "skip the authority fast-path and fall through".
+//
+// `auth_strategy` is surfaced as the raw on-chain string. Mapping to the
+// `AuthStrategy` union (`"siwe" | "inapp_email" | "inapp_oauth" | "dev"`)
+// is the consumer's job (see `agentIdentityFromAgentState` in FN-045).
+
+/**
+ * Decode an on-chain `AgentState` account body. Exported so FN-045's
+ * authority-inheritance fast-path (and FN-046's `join_swarm` equivalent) can
+ * consume the v1 `humanAuthority` binding without duplicating Borsh logic.
+ * Returns `null` on any decode failure or unknown future schema version.
+ */
+export function parseAgentState(rawData: any): {
   authority: string;
   name: string;
   modelId: string;
   metadataUri: string;
   reputation: bigint;
   statusByte: number;
+  // v1 fields — `schemaVersion: 0` for legacy accounts (no trailer on the wire);
+  // `schemaVersion: 1` plus the optional `humanAuthority` binding for v1 accounts.
+  schemaVersion: number;
+  humanAuthority: { authStrategy: string; sub: string; boundAtSlot: bigint } | null;
 } | null {
   const buf = decodeAccountData(rawData);
   if (!buf || buf.length < 40) return null;
@@ -36,7 +74,46 @@ function parseAgentState(rawData: any): {
     const metadataUri = r.readString();
     const reputation = r.readU64();
     const statusByte = r.readU8();
-    return { authority, name, modelId, metadataUri, reputation, statusByte };
+
+    // Step 1 — Legacy v0 fallthrough: buffer ended exactly at `statusByte`.
+    if (r.remaining() === 0) {
+      return {
+        authority,
+        name,
+        modelId,
+        metadataUri,
+        reputation,
+        statusByte,
+        schemaVersion: 0,
+        humanAuthority: null,
+      };
+    }
+
+    // Step 2 — A trailer is present. Read schema_version and dispatch.
+    const schemaVersion = r.readU8();
+    if (schemaVersion === 0) {
+      // Malformed: v0 must reach EOF before the trailer position.
+      return null;
+    }
+    if (schemaVersion === 1) {
+      const humanAuthority = r.readOption((rr) => ({
+        authStrategy: rr.readString(),
+        sub: rr.readString(),
+        boundAtSlot: rr.readU64(),
+      }));
+      return {
+        authority,
+        name,
+        modelId,
+        metadataUri,
+        reputation,
+        statusByte,
+        schemaVersion: 1,
+        humanAuthority,
+      };
+    }
+    // Step 3 — Unknown future schema version: refuse.
+    return null;
   } catch {
     return null;
   }
@@ -340,6 +417,11 @@ export function registerAgentTools(server: McpServer): void {
           `Balance:     ${account.lamports ?? 0} lamports`,
         ];
         if (metaStr) lines.push(`Metadata:    ${metaStr}`);
+        if (parsed && parsed.schemaVersion >= 1) {
+          lines.push(`Layout:      v${parsed.schemaVersion}`);
+          if (parsed.taskCount !== undefined) lines.push(`Task count:  ${parsed.taskCount}`);
+          if (parsed.createdAt !== undefined) lines.push(`Created at:  ${parsed.createdAt} (unix s)`);
+        }
 
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
