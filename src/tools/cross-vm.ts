@@ -2,10 +2,13 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { rpc } from "../read/rpc-client.js";
 import {
-  resolveAddresses,
+  resolveAddressesAsync,
+  evmAddressToPubkey,
   isValidEvmAddress,
   isValidSvmAddress,
 } from "../utils/address.js";
+import bs58 from "bs58";
+import { localSignerFactory } from "../signing/local-signer.js";
 import { buildCrossVmCallTx } from "../wasm/index.js";
 import { getSignerFactory } from "../signing/index.js";
 import { getActiveWalletId } from "./wallet.js";
@@ -69,10 +72,14 @@ export function registerCrossVmTools(server: McpServer): void {
         const sourceVmNum = vmMap[source_vm] ?? 0;
         const targetVmNum = vmMap[target_vm] ?? 1;
 
-        // If target is EVM and address is 0x-prefixed, derive the SVM pubkey via SHA256("evm:" || addr)
+        // If target is EVM and address is 0x-prefixed, encode the EVM address as an
+        // SVM-compatible pubkey for the CrossVmDispatcher instruction. This uses
+        // `evmAddressToPubkey` (FN-017 will update the body; for now the SHA-256
+        // preimage is retained as a stable internal representation for the
+        // cross-VM dispatcher key derivation — distinct from the wallet registry).
         let resolvedTargetContract = target_contract;
         if (target_vm === "evm" && target_contract.startsWith("0x") && isValidEvmAddress(target_contract)) {
-          resolvedTargetContract = resolveAddresses(target_contract).svm;
+          resolvedTargetContract = bs58.encode(evmAddressToPubkey(target_contract));
         }
 
         let calldata: Uint8Array;
@@ -147,7 +154,10 @@ export function registerCrossVmTools(server: McpServer): void {
           };
         }
 
-        const { svm, evm } = resolveAddresses(trimmed);
+        // Use the registry-backed async resolver (FN-016).
+        // Falls back to an informative error if the address is not registered.
+        const registry = localSignerFactory.getRegistryForCurrentScope();
+        const { svm, evm } = await resolveAddressesAsync(trimmed, registry);
 
         const inputType = isValidEvmAddress(trimmed) ? "EVM" : "SVM";
 
@@ -158,30 +168,13 @@ export function registerCrossVmTools(server: McpServer): void {
           `SVM Address:   ${svm}`,
           `EVM Address:   ${evm}`,
           ``,
-        ];
-
-        if (inputType === "SVM") {
-          lines.push(
-            "Mapping (SVM → EVM):",
-            "  The EVM address is derived by taking the last 20 bytes of the 32-byte SVM pubkey.",
-            "  pubkey[12..32] → 0x-prefixed hex string.",
-            "  This is a deterministic, one-to-many mapping — multiple SVM keys can share",
-            "  the same EVM suffix. For the reverse mapping, use the EVM→SVM derivation."
-          );
-        } else {
-          lines.push(
-            "Mapping (EVM → SVM):",
-            "  The SVM pubkey is derived via SHA256('evm:' || address_bytes).",
-            "  This creates a unique, deterministic 32-byte pubkey for each EVM address.",
-            "  The 'evm:' prefix prevents collision with native SVM pubkeys."
-          );
-        }
-
-        lines.push(
+          "Mapping method: registry-backed bijection (FN-016).",
+          "  EVM address = signer.getEvmSigningAddress() stored at wallet creation.",
+          "  This is the address recovered by ecrecover on any signed EVM transaction.",
           "",
           "Note: Both addresses refer to the same ETO account. Funds sent to either",
-          "address are accessible from both EVM and SVM programs."
-        );
+          "address are accessible from both EVM and SVM programs.",
+        ];
 
         return { content: [{ type: "text", text: lines.join("\n") }] };
       } catch (err: any) {
