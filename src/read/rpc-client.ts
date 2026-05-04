@@ -99,8 +99,16 @@ export class EtoRpcClient {
     return this.call<any>("getAccountInfo", [pubkey]);
   }
 
-  sendTransaction(serializedTx: string): Promise<string> {
-    return this.call<string>("sendTransaction", [serializedTx]);
+  sendTransaction(
+    serializedTx: string,
+    config?: { commitment?: "submitted" | "confirmed" | "finalized" },
+  ): Promise<string> {
+    // FN-090: forward commitment per Solana JSON-RPC spec so the node
+    // uses the caller's desired commitment level rather than defaulting
+    // to "confirmed". Without this, a tx visible only at "finalized"
+    // would never be found by the polling loop (Issue #13, root-cause #4).
+    const params: any[] = config ? [serializedTx, config] : [serializedTx];
+    return this.call<string>("sendTransaction", params);
   }
 
   getTransactionCount(): Promise<number> {
@@ -126,8 +134,16 @@ export class EtoRpcClient {
     return candidate;
   }
 
-  getTransaction(signature: string): Promise<any> {
-    return this.call<any>("getTransaction", [signature]);
+  getTransaction(
+    signature: string,
+    config?: { commitment?: "submitted" | "confirmed" | "finalized" },
+  ): Promise<any> {
+    // FN-090: forward commitment so the node returns the tx at the
+    // requested commitment level. Without this, a finalized tx that
+    // hasn't been indexed at the default level causes the poll loop to
+    // time out as "not found" even though the tx is on-chain.
+    const params: any[] = config ? [signature, config] : [signature];
+    return this.call<any>("getTransaction", params);
   }
 
   getBlock(height: number): Promise<any> {

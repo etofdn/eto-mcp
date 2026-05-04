@@ -65,14 +65,18 @@ export class TransactionSubmitter {
 
     while (retries <= config.tx.maxRetries) {
       try {
-        // Submit
-        const signature = await rpc.sendTransaction(params.signedTxBase64);
+        // Submit — FN-090: forward commitment so the node processes the tx
+        // at the requested level. Omit config object when no commitment is
+        // set to preserve backward-compatible call shape.
+        const commitmentCfg = params.commitment ? { commitment: params.commitment } : undefined;
+        const signature = await rpc.sendTransaction(params.signedTxBase64, commitmentCfg);
 
         // Poll for confirmation
         const result = await this.pollConfirmation(
           signature,
           timeout - (Date.now() - startTime),
           params.vm,
+          commitmentCfg,
         );
         result.retries = retries;
         result.latency_ms = Date.now() - startTime;
@@ -128,6 +132,7 @@ export class TransactionSubmitter {
     signature: string,
     remainingMs: number,
     _vm: string,
+    commitmentCfg?: { commitment?: "submitted" | "confirmed" | "finalized" },
   ): Promise<TransactionResult> {
     const deadline = Date.now() + Math.max(remainingMs, 5000);
     // FN-197: count consecutive non-"not found" RPC failures. A single
@@ -139,7 +144,10 @@ export class TransactionSubmitter {
 
     while (Date.now() < deadline) {
       try {
-        const tx: any = await rpc.getTransaction(signature);
+        // FN-090: forward commitment so the node returns the tx at the
+        // requested level, preventing poll timeouts for txs visible only
+        // at a higher commitment level than the node default.
+        const tx: any = await rpc.getTransaction(signature, commitmentCfg);
         consecutiveErrors = 0;
         if (tx) {
           // The receipt arrives whether the tx succeeded or failed; check
