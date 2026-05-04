@@ -24,6 +24,27 @@
  *      requests that lack an `Authorization` header with HTTP 401.
  *      Full Beckn Ed25519 signature verification is deferred; this is a
  *      presence-only guard that prevents entirely unsigned inbound traffic.
+ *
+ * ## Caller pubkey plumbing (FN-075)
+ *
+ * `callerPubkey` is the verified BAP signing key surfaced to downstream bank
+ * BPP handlers as `AuthenticatedRequest<T>.callerPubkey`. It is produced
+ * exclusively by the deps-injected `verifyBapSignature` function, which
+ * inspects the inbound HTTP request (e.g. the Beckn `Authorization: Signature`
+ * header) and returns the signer's lowercase hex pubkey, or `null` on failure.
+ *
+ * Canonical encoding: lowercase hex (matches `assertCallerEquals` in
+ * `keeper/bpps/bank/auth.ts`).
+ *
+ * Dev-bypass (fail-closed): when no `verifyBapSignature` is injected,
+ * `callerPubkey` is `undefined`. Handlers that call
+ * `assertCallerEquals(undefined, …)` reject with `unauthorized_caller`.
+ * The gateway MUST NOT forge a `callerPubkey` in any code path.
+ *
+ * Contract for BPP handler authors: `callerPubkey` passed in the task outcome
+ * args is the ONLY trusted principal. Body-supplied pubkeys (`subject`,
+ * `holder`, `funder`) are untrusted until the handler asserts equality with
+ * `callerPubkey` via `assertCallerEquals`.
  */
 
 import { createHash } from 'node:crypto';
@@ -80,6 +101,23 @@ export interface InboundBppDeps {
    * Defaults to false. Full Beckn Ed25519 verification is deferred (stub-level).
    */
   requireSignature?: boolean;
+
+  // ---- FN-075: Caller pubkey plumbing ----
+
+  /**
+   * Extract the verified BAP signing pubkey from the inbound HTTP request.
+   *
+   * Implementations SHOULD inspect the `Authorization: Signature …` header,
+   * verify the Beckn Ed25519 signature, and return the signer's lowercase hex
+   * pubkey on success, or `null` when verification fails.
+   *
+   * When absent (default), `callerPubkey` is `undefined` — the gateway does
+   * NOT forge a pubkey. Handlers will reject with `unauthorized_caller`.
+   *
+   * When present and returns `null`, the request is rejected with HTTP 401
+   * before any handler is invoked.
+   */
+  verifyBapSignature?: (req: Request) => string | null;
 }
 
 /** Handle an outbound /confirm produced by an on-chain Confirm AgentTrigger. */
@@ -129,18 +167,32 @@ export function mountOnConfirmCallback(app: Express, deps: InboundBppDeps): void
       return res.status(400).json({ error: 'beckn_validation_failed', details: (v as { ok: false; errors: unknown }).errors });
     }
 
-    // 2. FN-036: Signature presence gate (optional, off by default)
+    // 2. FN-075: Extract verified caller pubkey (before FN-036 guards so a
+    //    bad signature short-circuits before any allowlist / dedup logic runs).
+    //    When verifyBapSignature is present and returns null → 401, no dispatch.
+    //    When verifyBapSignature is absent → callerPubkey remains undefined
+    //    (fail-closed: handlers will reject via assertCallerEquals).
+    let callerPubkey: string | undefined;
+    if (deps.verifyBapSignature !== undefined) {
+      const verified = deps.verifyBapSignature(req);
+      if (verified === null) {
+        return res.status(401).json({ error: 'invalid_signature', details: 'BAP signature verification failed' });
+      }
+      callerPubkey = verified.toLowerCase();
+    }
+
+    // 3. FN-036: Signature presence gate (optional, off by default)
     if (deps.requireSignature && !req.headers['authorization']) {
       return res.status(401).json({ error: 'missing_signature', details: 'Authorization header required' });
     }
 
-    // 3. FN-036: BPP allowlist check (optional, off by default)
+    // 4. FN-036: BPP allowlist check (optional, off by default)
     const bppId: string | undefined = req.body.context?.bpp_id;
     if (deps.expectedBpps && (!bppId || !deps.expectedBpps.has(bppId))) {
       return res.status(403).json({ error: 'unknown_bpp', details: `bpp_id not in allowlist: ${bppId ?? '(missing)'}` });
     }
 
-    // 4. FN-036: Replay dedup (always on — commit before submit to prevent double-trigger)
+    // 5. FN-036: Replay dedup (always on — commit before submit to prevent double-trigger)
     const txnId: string | undefined = req.body.context?.transaction_id;
     if (txnId) {
       if (seenTransactions.has(txnId)) {
@@ -152,7 +204,7 @@ export function mountOnConfirmCallback(app: Express, deps: InboundBppDeps): void
     try {
       const order = req.body.message?.order;
       const success = order?.state === 'COMPLETED' || order?.state === 'FULFILLED';
-      const args = becknOnConfirmToTaskOutcome(req.body);
+      const args = becknOnConfirmToTaskOutcome(req.body, callerPubkey);
       const { tx_signature } = await resolvedSubmit(success ? 'CompleteTask' : 'FailTask', args);
       res.status(200).json({ message: { ack: { status: 'ACK' } }, tx_signature });
     } catch (err) {
@@ -161,7 +213,7 @@ export function mountOnConfirmCallback(app: Express, deps: InboundBppDeps): void
   });
 }
 
-function becknOnConfirmToTaskOutcome(body: any) {
+function becknOnConfirmToTaskOutcome(body: any, callerPubkey?: string) {
   const order = body.message?.order ?? {};
   const fulfillment_uri = order?.fulfillment?.tracking?.url
     ?? order?.fulfillment?.artifacts?.[0]?.url
@@ -173,6 +225,8 @@ function becknOnConfirmToTaskOutcome(body: any) {
     fulfillment_uri,
     state: order.state ?? 'UNKNOWN',
     received_at_iso: new Date().toISOString(),
+    // FN-075: verified BAP signing key — undefined when no verifier injected
+    caller_pubkey: callerPubkey,
   };
 }
 

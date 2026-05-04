@@ -365,3 +365,113 @@ describe("validateBecknEnvelope + freshness (four defect cases)", () => {
     }
   });
 });
+
+// ---------- FN-075: Caller pubkey plumbing on /search and /select ----------
+
+describe('FN-075: verifyBapSignature — callerPubkey plumbing on /search', () => {
+  const SIGNER_PUBKEY = 'b'.repeat(64); // canonical lowercase hex
+
+  function buildBapServer(deps: InboundBapDeps) {
+    return new Promise<{ server: http.Server; url: string }>((resolve) => {
+      const app = express();
+      app.use(express.json());
+      mountInboundBap(app, deps);
+      const s = app.listen(0, '127.0.0.1', () => {
+        const addr = s.address() as { port: number };
+        resolve({ server: s, url: `http://127.0.0.1:${addr.port}` });
+      });
+    });
+  }
+
+  it('happy path: valid signature → callerPubkey in on-chain args, submitOnChain called', async () => {
+    const submitMock = vi.fn().mockResolvedValue({ tx_signature: 'aaaa'.repeat(16) });
+    const { server, url } = await buildBapServer({
+      submitOnChain: submitMock,
+      verifyBapSignature: () => SIGNER_PUBKEY,
+    });
+
+    const res = await fetch(`${url}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validSearchBody),
+    });
+
+    expect(res.status).toBe(202);
+    expect(submitMock).toHaveBeenCalledOnce();
+    const [, args] = submitMock.mock.calls[0] as [string, Record<string, unknown>];
+    expect(args.caller_pubkey).toBe(SIGNER_PUBKEY);
+
+    await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
+  });
+
+  it('bad signature → 401, submitOnChain NOT called', async () => {
+    const submitMock = vi.fn().mockResolvedValue({ tx_signature: 'aaaa'.repeat(16) });
+    const { server, url } = await buildBapServer({
+      submitOnChain: submitMock,
+      verifyBapSignature: () => null,
+    });
+
+    const res = await fetch(`${url}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validSearchBody),
+    });
+
+    expect(res.status).toBe(401);
+    const json = await res.json() as Record<string, unknown>;
+    expect(json.error).toBe('invalid_signature');
+    expect(submitMock).not.toHaveBeenCalled();
+
+    await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
+  });
+
+  it('body bap_id differs from signer: callerPubkey reflects signer, body bap_id unchanged', async () => {
+    const submitMock = vi.fn().mockResolvedValue({ tx_signature: 'aaaa'.repeat(16) });
+    const { server, url } = await buildBapServer({
+      submitOnChain: submitMock,
+      verifyBapSignature: () => SIGNER_PUBKEY,
+    });
+
+    const bodyWithDifferentBapId = {
+      ...validSearchBody,
+      context: { ...validSearchBody.context, bap_id: 'other-bap.example.com' },
+    };
+    const res = await fetch(`${url}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bodyWithDifferentBapId),
+    });
+
+    expect(res.status).toBe(202);
+    expect(submitMock).toHaveBeenCalledOnce();
+    const [, args] = submitMock.mock.calls[0] as [string, Record<string, unknown>];
+    // callerPubkey is the signer — not the body bap_id
+    expect(args.caller_pubkey).toBe(SIGNER_PUBKEY);
+    // body bap_id is passed through unchanged (handler enforces equality)
+    expect(args.bap_id).toBe('other-bap.example.com');
+
+    await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
+  });
+
+  it('dev-bypass (no verifyBapSignature): caller_pubkey absent, no pubkey forged', async () => {
+    const submitMock = vi.fn().mockResolvedValue({ tx_signature: 'aaaa'.repeat(16) });
+    const { server, url } = await buildBapServer({
+      submitOnChain: submitMock,
+      // verifyBapSignature intentionally absent
+    });
+
+    const res = await fetch(`${url}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validSearchBody),
+    });
+
+    expect(res.status).toBe(202);
+    expect(submitMock).toHaveBeenCalledOnce();
+    const [, args] = submitMock.mock.calls[0] as [string, Record<string, unknown>];
+    // Must NOT have a forged pubkey — undefined means no verification ran
+    expect(args.caller_pubkey).toBeUndefined();
+
+    await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
+  });
+});
