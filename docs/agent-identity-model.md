@@ -255,6 +255,14 @@ treat `model_attestation` as untrusted telemetry. Specifically:
 The canonical TS surface is in [`src/models/agent-identity.ts`](../src/models/agent-identity.ts).
 Field-level JSDoc cites the section numbers in this document.
 
+> **On-chain decoder (FN-094).** The `humanAuthority` binding is also surfaced
+> by the on-chain `AgentState` v1 trailer, decoded by
+> [`parseAgentState`](../src/tools/agent.ts) in `src/tools/agent.ts`. Legacy
+> v0 accounts decode as `schemaVersion: 0, humanAuthority: null`; unknown
+> future schema versions return `null` so consumers fall through to the slow
+> path. FN-045 / FN-046 use this for the authority-inheritance fast-path.
+
+
 ```ts
 interface AgentIdentity {
   human_authority: HumanAuthority;     // §2.1
