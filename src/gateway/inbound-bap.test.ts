@@ -12,7 +12,10 @@ import {
   extractTags,
   sha256_hex,
   stubSubmit,
+  validateBecknEnvelope,
+  validateBecknEnvelopeFreshness,
   type InboundBapDeps,
+  type NackBody,
 } from "./inbound-bap.js";
 
 // ---------- Minimal HTTP test helper ----------
@@ -266,5 +269,96 @@ describe("stubSubmit", () => {
     const r1 = await stubSubmit("search", { foo: "bar" });
     const r2 = await stubSubmit("search", { foo: "bar" });
     expect(r1.tx_signature).toBe(r2.tx_signature);
+  });
+});
+
+// ---------- Envelope hardening parity tests (FN-074 / FN-188) ----------
+
+describe("validateBecknEnvelope + freshness (four defect cases)", () => {
+  const base = { ...validSearchBody };
+
+  it("rejects BAD_VERSION", async () => {
+    const bad = { ...base, context: { ...base.context, version: "1.0.0" } };
+    const env = validateBecknEnvelope(bad.context);
+    expect(env.ok).toBe(false);
+    if (!env.ok) {
+      expect(env.body.error.code).toBe("BAD_VERSION");
+      expect(env.status).toBe(400);
+    }
+  });
+
+  it("rejects BAD_TIMESTAMP (malformed)", async () => {
+    const bad = { ...base, context: { ...base.context, timestamp: "2024-13-01T00:00:00Z" } };
+    const env = validateBecknEnvelope(bad.context);
+    expect(env.ok).toBe(false);
+    if (!env.ok) {
+      expect(env.body.error.code).toBe("BAD_TIMESTAMP");
+      expect(env.status).toBe(400);
+    }
+  });
+
+  it("rejects BAD_TTL (malformed)", async () => {
+    const bad = { ...base, context: { ...base.context, ttl: "30 seconds" } };
+    const env = validateBecknEnvelope(bad.context);
+    expect(env.ok).toBe(false);
+    if (!env.ok) {
+      expect(env.body.error.code).toBe("BAD_TTL");
+      expect(env.status).toBe(400);
+    }
+  });
+
+  it("rejects EXPIRED_TTL (timestamp + ttl < now)", async () => {
+    const past = new Date(Date.now() - 1000 * 3600 * 24 * 7).toISOString();
+    const bad = { ...base, context: { ...base.context, timestamp: past, ttl: "PT1S" } };
+    const env = validateBecknEnvelope(bad.context);
+    expect(env.ok).toBe(false);
+    if (!env.ok) {
+      expect(env.body.error.code).toBe("EXPIRED_TTL");
+      expect(env.status).toBe(400);
+    }
+  });
+
+  it("POST /search with bad version returns 400 NACK", async () => {
+    // self-contained server for this edge case test to avoid scope/close races
+    const app = express();
+    app.use(express.json());
+    const mock = vi.fn().mockResolvedValue({ tx_signature: "dead".repeat(16) });
+    mountInboundBap(app, { submitOnChain: mock });
+    const localServer = app.listen(0, "127.0.0.1");
+    const addr = localServer.address() as { port: number };
+    try {
+      const bad = { ...base, context: { ...base.context, version: "1.0.0" } };
+      const { status, body } = await new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+        const data = JSON.stringify(bad);
+        const req = http.request(
+          {
+            hostname: "127.0.0.1",
+            port: addr.port,
+            path: "/search",
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) },
+          },
+          (res) => {
+            let raw = "";
+            res.on("data", (c: Buffer) => (raw += c.toString()));
+            res.on("end", () => {
+              try {
+                resolve({ status: res.statusCode ?? 0, body: JSON.parse(raw) });
+              } catch {
+                resolve({ status: res.statusCode ?? 0, body: raw });
+              }
+            });
+          },
+        );
+        req.on("error", reject);
+        req.write(data);
+        req.end();
+      });
+      expect(status).toBe(400);
+      const b = body as Record<string, unknown>;
+      expect((b.error as Record<string, unknown>)?.code).toBe("BAD_VERSION");
+    } finally {
+      localServer.close();
+    }
   });
 });

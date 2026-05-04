@@ -169,8 +169,21 @@ export class TransactionSubmitter {
             latency_ms: 0,
           };
         }
-      } catch {
-        // Transaction not found yet, keep polling
+      } catch (e: any) {
+        // FN-197 / FN-099: only swallow "transaction not found yet" — that
+        // is the expected polling case. Network errors, JSON-RPC malformed
+        // responses, and 5xx errors are real failures that the caller
+        // needs to see, otherwise the loop spins silently until timeout.
+        const msg = String(e?.message ?? e ?? "");
+        const notFound =
+          /not\s*found|unknown\s*transaction|invalid\s*signature/i.test(msg) ||
+          /JSON-RPC\s*error\s*-32004/.test(msg) || // common "tx not found" code
+          /JSON-RPC\s*error\s*-32602/.test(msg); // invalid params (sig not seen yet)
+        if (!notFound) {
+          // Bubble real errors out — caller needs to know the node is sick.
+          throw e;
+        }
+        // Otherwise: keep polling.
       }
       await new Promise<void>((r) => setTimeout(r, config.tx.confirmationPollMs));
     }
