@@ -115,6 +115,9 @@ describe("buildInterimAgentIdentity", () => {
         model_id: "claude-sonnet-4-5",
         kid: "kid-1",
         issued_at: 1_730_000_000,
+        source: "provider_oidc" as const,
+        provider_verified: true,
+        jws: "eyJhbGciOiJFZERTQSJ9.e30.sig",
       },
       environment: {
         surface: "sse",
@@ -130,5 +133,51 @@ describe("buildInterimAgentIdentity", () => {
     } satisfies AgentIdentity;
 
     expect(literal.human_authority.kind).toBe("thirdweb");
+  });
+
+  it("emits source=session_signed verified attestation when verified_session_jws is supplied", () => {
+    const jws = "eyJhbGciOiJFZERTQSJ9.e30.sessionSig";
+    const id = buildInterimAgentIdentity(
+      baseInput({
+        verified_session_jws: {
+          jws,
+          sub: "model-subject-id",
+          model_id: "claude-opus-4-7",
+          provider: "anthropic",
+          exp: 1_800_000_000,
+        },
+      }),
+    );
+
+    expect(id.model_attestation.attestation_status).toBe("verified");
+    if (id.model_attestation.attestation_status === "verified") {
+      expect(id.model_attestation.source).toBe("session_signed");
+      expect(id.model_attestation.provider_verified).toBe(false);
+      expect(id.model_attestation.provider).toBe("anthropic");
+      expect(id.model_attestation.model_id).toBe("claude-opus-4-7");
+      expect(id.model_attestation.jws).toBe(jws);
+      expect(id.model_attestation.kid).toBe("model-subject-id");
+      expect(id.model_attestation.issued_at).toBe(1_800_000_000);
+    }
+  });
+
+  it("verified_session_jws takes precedence over declared_model", () => {
+    const id = buildInterimAgentIdentity(
+      baseInput({
+        verified_session_jws: {
+          jws: "eyJ.e30.sig",
+          sub: "sub-1",
+          model_id: "claude-haiku-4-5",
+          provider: "anthropic",
+          exp: 1_900_000_000,
+        },
+        declared_model: { provider: "openai", model_id: "gpt-4o" },
+      }),
+    );
+
+    expect(id.model_attestation.attestation_status).toBe("verified");
+    if (id.model_attestation.attestation_status === "verified") {
+      expect(id.model_attestation.model_id).toBe("claude-haiku-4-5");
+    }
   });
 });
