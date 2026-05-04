@@ -815,7 +815,7 @@ describe("createDataAnalyzeHandler", () => {
     );
     expect(res.status).toBe("failure");
     if (res.status === "failure") {
-      expect(res.reason).toBe("empty_dataset");
+      expect(res.reason).toBe("data-analyze:planner:empty-dataset");
     }
   });
 });
