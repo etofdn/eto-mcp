@@ -15,6 +15,7 @@ import { sessionStore } from "./signing/session-context.js";
 import { oauthProvider, issueAuthCode } from "./gateway/oauth-provider.js";
 import { verifyPayload } from "./gateway/thirdweb.js";
 import { verifyOauthState } from "./gateway/session.js";
+import { getCurrentJwks } from "./signing/jwks.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LLMS_TXT = readFileSync(join(__dirname, "../public/llms.txt"), "utf8");
@@ -38,6 +39,21 @@ app.use((req, res, next) => {
     return;
   }
   next();
+});
+
+// FN-048: JWKS publication endpoint. Mounted BEFORE the OAuth router so it
+// is never gated by `mcpAuthRouter`'s metadata handlers, and unauthenticated
+// (downstream verifiers must be able to resolve `kid` without a Bearer token).
+app.get("/.well-known/jwks.json", (_req, res) => {
+  try {
+    const jwks = getCurrentJwks();
+    res.set("Content-Type", "application/jwk-set+json");
+    res.set("Cache-Control", "public, max-age=300, must-revalidate");
+    res.status(200).json(jwks);
+  } catch (err) {
+    log("error", "sse", "JWKS publication failed", { err: String(err) });
+    res.status(500).json({ code: "JWKS_001", message: "JWKS unavailable" });
+  }
 });
 
 // OAuth 2.1 authorization server — serves /.well-known/*, /register, /authorize, /token, /revoke
