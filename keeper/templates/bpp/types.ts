@@ -106,6 +106,8 @@ export interface CapabilityTags {
   readonly price: {
     readonly amount: string;
     readonly currency: Currency;
+    /** Integer minor units (cents for USD/EUSD; ETO micro-units for ETO). Added by FN-100/ADR-0001. */
+    readonly cents?: number;
   };
   /** Credentials the BAP must present at Beckn `init` time. */
   readonly requiredCredentials: readonly RequiredCredential[];
@@ -276,6 +278,7 @@ export const zCapabilityTags = z
       .object({
         amount: z.string().regex(/^\d+(\.\d+)?$/, "decimal amount string"),
         currency: z.enum(SUPPORTED_CURRENCIES),
+        cents: z.number().int().nonnegative().optional(),
       })
       .strict(),
     requiredCredentials: z.array(zRequiredCredential),

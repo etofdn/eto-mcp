@@ -90,7 +90,7 @@ describe("config + tags", () => {
     expect(tags.domain).toBe("web");
     expect(tags.action).toBe("research");
     expect(tags.version).toBe("1.0.0");
-    expect(tags.price).toEqual({ amount: "0.50", currency: "ETO" });
+    expect(tags.price).toEqual({ amount: "0.50", currency: "ETO", cents: 50 });
     expect(tags.requiredCredentials).toEqual([]);
     expect(tags.description.length).toBeLessThanOrEqual(512);
   });
