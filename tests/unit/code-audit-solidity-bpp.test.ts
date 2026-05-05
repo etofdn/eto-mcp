@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { zBppConfig, zCapabilityTags } from "../../keeper/templates/bpp/index.js";
+import { zBppConfig, zCapabilityTags, projectCapabilityTags } from "../../keeper/templates/bpp/index.js";
 import type { AgentCardSnapshot } from "../../keeper/templates/bpp/index.js";
 import {
   config,
@@ -59,6 +59,14 @@ describe("config + tags", () => {
     expect(tags.price).toEqual({ amount: "1.00", currency: "ETO" });
     expect(tags.requiredCredentials).toEqual([]);
     expect(tags.description.length).toBeLessThanOrEqual(512);
+  });
+
+  it("projectCapabilityTags surfaces price.cents (ADR-0001)", () => {
+    const entry = projectCapabilityTags(tags);
+    expect(entry.domain).toBe(tags.domain);
+    expect(entry.action).toBe(tags.action);
+    expect(entry.price.cents).toBe(tags.price.cents);
+    expect(entry.price.cents).toBe(100);
   });
 
   it("config (sans extension field) passes zBppConfig", () => {
