@@ -22,6 +22,22 @@ export {
   PostgresMemoIndex,
 } from "./memo-index.postgres.js";
 
+// FN-105: Memo block ingester — logsSubscribe → ingestBatch pipeline.
+export { MemoBlockIngester, createMemoBlockIngesterFromEnv } from "./memo-ingester.js";
+export type { MemoBlockIngesterDeps, IngesterStats } from "./memo-ingester.js";
+export { extractMemoEntries, tryParseMemoEnvelope, MEMO_PROGRAM_ID } from "./parse-memo-instructions.js";
+export type { ConfirmedTxLike } from "./parse-memo-instructions.js";
+export {
+  InMemoryCheckpointStore,
+  PostgresCheckpointStore,
+  createCheckpointStoreFromEnv,
+  MemoIngesterError,
+} from "./memo-ingester-checkpoint.js";
+export type {
+  MemoIngesterCheckpointStore,
+  PostgresCheckpointStoreInit,
+} from "./memo-ingester-checkpoint.js";
+
 // FN-084: VC signer abstractions for `Ed25519Signature2020` proof blocks
 // over the audit-trail and travel-rule JSON-LD documents.
 export {
