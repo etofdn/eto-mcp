@@ -15,7 +15,7 @@ export const tags: CapabilityTags = {
   domain: "data",
   action: "analyze",
   version: "1.0.0",
-  price: { amount: "0.25", currency: "ETO" },
+  price: { amount: "0.25", currency: "ETO", cents: 25 },
   // TODO(FN-081): once the verified-human credential schema lands,
   // populate this with `{ schema: <verified-human-hash>, ... }` so the
   // BPP rejects anonymous BAPs at Beckn `init` time.

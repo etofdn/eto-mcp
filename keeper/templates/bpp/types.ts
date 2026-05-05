@@ -106,8 +106,12 @@ export interface CapabilityTags {
   readonly price: {
     readonly amount: string;
     readonly currency: Currency;
-    /** Integer minor units (cents for USD/EUSD; ETO micro-units for ETO). Added by FN-100/ADR-0001. */
-    readonly cents?: number;
+    /**
+     * Integer minor units (cents for USD/EUSD; ETO micro-units for ETO).
+     * Required as of FN-102 — the canonical settlement amount; `amount` (decimal string) is the human-display mirror.
+     * A BPP that omits this field fails `zBppConfig.parse()` at boot.
+     */
+    readonly cents: number;
   };
   /** Credentials the BAP must present at Beckn `init` time. */
   readonly requiredCredentials: readonly RequiredCredential[];
@@ -278,7 +282,7 @@ export const zCapabilityTags = z
       .object({
         amount: z.string().regex(/^\d+(\.\d+)?$/, "decimal amount string"),
         currency: z.enum(SUPPORTED_CURRENCIES),
-        cents: z.number().int().nonnegative().optional(),
+        cents: z.number().int().nonnegative(),
       })
       .strict(),
     requiredCredentials: z.array(zRequiredCredential),

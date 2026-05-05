@@ -69,7 +69,7 @@ const tags: CapabilityTags = {
   domain: "code",
   action: "audit:solidity",
   version: "1.0.0",
-  price: { amount: "0.05", currency: "ETO" },
+  price: { amount: "0.05", currency: "ETO", cents: 5 },
   requiredCredentials: [
     { schema: "<sha256 hex>", issuerSet: [], mustBeActive: true },
   ],
