@@ -126,6 +126,11 @@ describe("buildBankCatalog", () => {
     }
   });
 
+  it("umbrella tags carry cents: 0 (ADR-0001)", () => {
+    const { tags } = buildConfig({ authority: FIXED_BPP_AUTHORITY });
+    expect(tags.price).toEqual({ amount: "0", currency: "ETO", cents: 0 });
+  });
+
   it("accepts pricing overrides", () => {
     const c = buildBankCatalog({
       bppAuthority: FIXED_BPP_AUTHORITY,
