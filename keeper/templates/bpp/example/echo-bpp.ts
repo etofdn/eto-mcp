@@ -35,7 +35,7 @@ const tags: CapabilityTags = {
   domain: "util",
   action: "echo",
   version: "1.0.0",
-  price: { amount: "0", currency: "ETO" },
+  price: { amount: "0", currency: "ETO", cents: 0 },
   requiredCredentials: [],
   description: "Echo BPP — returns the input message verbatim.",
 };
