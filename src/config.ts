@@ -138,6 +138,39 @@ export function loadCivicConfig(
   };
 }
 
+// ---------------------------------------------------------------------------
+// FN-048 — MCP server signing / JWKS publication config
+// ---------------------------------------------------------------------------
+//
+// Env vars:
+//   MCP_SERVER_SIGNING_KEY_PATH  filesystem path to a 32-byte Ed25519 seed
+//                                (raw / hex / base64). REQUIRED in production
+//                                so JWS issued by this server keep verifying
+//                                across restarts. In non-production an
+//                                ephemeral key is generated.
+//   MCP_JWKS_OVERLAP_SECONDS     overlap window during which the previous key
+//                                is also served at /.well-known/jwks.json.
+//                                Default: 300. Bounded [60, 86400].
+//
+// Loading is additive — these surface alongside existing config entries
+// without touching the duplicate-export situation tracked under FN-062 / FN-066.
+
+export interface McpServerSigningConfig {
+  readonly keyPath: string;
+  readonly jwksOverlapSeconds: number;
+}
+
+export function loadMcpServerSigningConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): McpServerSigningConfig {
+  const keyPath = (env.MCP_SERVER_SIGNING_KEY_PATH ?? "").trim();
+  const raw = env.MCP_JWKS_OVERLAP_SECONDS;
+  const parsed = typeof raw === "string" && raw.length > 0 ? parseInt(raw, 10) : NaN;
+  const jwksOverlapSeconds =
+    Number.isFinite(parsed) && parsed >= 60 && parsed <= 86400 ? parsed : 300;
+  return { keyPath, jwksOverlapSeconds };
+}
+
 export function loadAppConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): AppConfig {

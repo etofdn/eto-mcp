@@ -3,8 +3,11 @@ import { localSignerFactory } from "../signing/local-signer.js";
 import { currentScope } from "../signing/session-context.js";
 import { getActiveWalletId } from "./wallet.js";
 import { authenticate } from "../gateway/auth.js";
+import { getServerInstance } from "../signing/server-key.js";
 
-const STARTED_AT = new Date().toISOString();
+// FN-048: `last_restart_iso` is sourced from the canonical owner in
+// `src/signing/server-key.ts` so the JWKS module's `kid` derivation and the
+// `session_info` field always agree on the same value.
 
 export function registerSessionTools(server: McpServer): void {
   server.tool(
@@ -54,7 +57,7 @@ export function registerSessionTools(server: McpServer): void {
           auth_strategy: authStrategy ?? null,
           token_expires_at: tokenExpiresAt,
           token_expires_in_seconds: tokenExpiresInSeconds,
-          last_restart_iso: STARTED_AT,
+          last_restart_iso: getServerInstance(),
         };
 
         return { content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }] };
