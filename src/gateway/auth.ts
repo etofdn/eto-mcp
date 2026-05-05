@@ -2,11 +2,18 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { config } from "../config.js";
 import { verifySession, hasCapability, CAPABILITY_SCOPES, type Capability, type SessionPayload } from "./session.js";
 import { McpError } from "../errors/index.js";
+import { mintSessionAttestation } from "./session-attestation.js";
 
 export interface AuthContext {
   session: SessionPayload;
   userId: string;
   walletId: string;
+  /**
+   * FN-049: compact-JWS session attestation signed by the server's Ed25519 key.
+   * Null for stdio (__stdio__), dev-bypass, and any session where minting fails.
+   * Non-null for siwe / inapp_email / inapp_oauth sessions.
+   */
+  session_attestation_jws: string | null;
 }
 
 // Ambient bearer token for the current request. The SSE server extracts the
@@ -48,14 +55,20 @@ const DEV_SESSION: SessionPayload = {
 /**
  * Authenticate a request. In dev mode, bypasses auth entirely.
  * In production, verifies the PASETO/HMAC session token.
+ *
+ * FN-049: For non-stdio, non-dev sessions (siwe / inapp_email / inapp_oauth),
+ * mints a compact-JWS session attestation signed by the server's Ed25519 key.
+ * The JWS is returned on `AuthContext.session_attestation_jws`. Failures in
+ * minting never hard-fail auth — the field is null instead.
  */
 export function authenticate(authHeader?: string): AuthContext {
-  // Dev bypass
+  // Dev bypass — no attestation for dev sessions.
   if (config.auth.devBypass) {
     return {
       session: DEV_SESSION,
       userId: DEV_SESSION.sub,
       walletId: DEV_SESSION.wallet_id,
+      session_attestation_jws: null,
     };
   }
 
@@ -84,10 +97,34 @@ export function authenticate(authHeader?: string): AuthContext {
     );
   }
 
+  // FN-049: Mint a session attestation JWS for non-dev, non-stdio strategies.
+  // The auth_strategy field distinguishes real human-attested sessions
+  // (siwe / inapp_email / inapp_oauth) from dev bypass (already short-circuited
+  // above). stdio sessions don't reach this code path (they don't carry tokens).
+  let session_attestation_jws: string | null = null;
+  const strategy = session.auth_strategy;
+  if (
+    strategy === "siwe" ||
+    strategy === "inapp_email" ||
+    strategy === "inapp_oauth"
+  ) {
+    try {
+      session_attestation_jws = mintSessionAttestation({
+        sub: session.sub,
+        jti: session.jti,
+        exp: session.exp,
+      });
+    } catch {
+      // Never hard-fail auth due to attestation minting failure.
+      session_attestation_jws = null;
+    }
+  }
+
   return {
     session,
     userId: session.sub,
     walletId: session.wallet_id,
+    session_attestation_jws,
   };
 }
 
