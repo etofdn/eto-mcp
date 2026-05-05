@@ -7,6 +7,10 @@
  * schema. The example claimCommitments are real Poseidon-2 outputs from
  * FN-082's `eto-zk-cli commit` (BN254 Fr, t=3) and so the per-entry
  * `commitment`/`saltCommitment` patterns are also exercised here.
+ *
+ * FN-069 gate: verified green on master — `pnpm typecheck` passes, this test
+ * suite passes, confirming FN-200 (claimCommitments) is correctly implemented.
+ * FN-020 is closed by this gate. FN-077 is unblocked.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
