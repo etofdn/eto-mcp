@@ -21,7 +21,7 @@ import { createBankHandler } from "../../keeper/bpps/bank/handler.js";
 import { InMemoryCatalogCommitRecorder, publishBankCatalog } from "../../keeper/bpps/bank/catalog-publisher.js";
 import { makeStubSigner } from "../../keeper/templates/bpp/index.js";
 import { zBankCapability, zBankCatalog, zCatalogCommitPayload } from "../../keeper/bpps/bank/types.js";
-import { zBppConfig } from "../../keeper/templates/bpp/types.js";
+import { zBppConfig, zCapabilityTags } from "../../keeper/templates/bpp/types.js";
 import {
   BANK_NETWORK_LABEL,
   computeBankNetworkId,
@@ -294,6 +294,18 @@ describe("buildConfig", () => {
   it("catalog has 5 capabilities", () => {
     const { catalog } = buildConfig({ authority: FIXED_BPP_AUTHORITY });
     expect(catalog.capabilities.length).toBe(5);
+  });
+
+  it("umbrella tag price advertises free capability with integer cents", () => {
+    const { config } = buildConfig({ authority: FIXED_BPP_AUTHORITY });
+    expect(config.capabilityTags.price.amount).toBe("0");
+    expect(config.capabilityTags.price.currency).toBe("ETO");
+    expect(config.capabilityTags.price.cents).toBe(0);
+  });
+
+  it("umbrella tag round-trips through zCapabilityTags", () => {
+    const { config } = buildConfig({ authority: FIXED_BPP_AUTHORITY });
+    expect(() => zCapabilityTags.parse(config.capabilityTags)).not.toThrow();
   });
 });
 
