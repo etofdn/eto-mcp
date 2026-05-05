@@ -9,11 +9,10 @@
  * loop; real errors are surfaced after `config.tx.maxPollErrors`
  * consecutive occurrences.
  *
- * NOTE on `vi.mock("../../src/config.js")`: `src/config.ts` currently has
- * multiple duplicate `export const config` declarations (tracked by
- * FN-062 / FN-066) that cause esbuild to refuse to transform it. We stub
- * the config module so the test file can be transformed at all. Do NOT
- * dedupe config.ts as part of FN-197 — that is explicitly out of scope.
+ * NOTE on `vi.mock("../../src/config.js")`: `src/config.ts` is stubbed so
+ * the submitter import resolves to a lightweight fixture without pulling in
+ * the full env-reading config loader (dedup of config.ts was completed in
+ * FN-062 / FN-066).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
