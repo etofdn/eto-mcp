@@ -19,7 +19,7 @@ import { BANK_CAPABILITY_KEYS, buildBankCatalog, canonicalCatalogJson, catalogHa
 import { buildConfig } from "../../keeper/bpps/bank/config.js";
 import { createBankHandler } from "../../keeper/bpps/bank/handler.js";
 import { InMemoryCatalogCommitRecorder, publishBankCatalog } from "../../keeper/bpps/bank/catalog-publisher.js";
-import { makeStubSigner } from "../../keeper/templates/bpp/index.js";
+import { makeStubSigner, projectCapabilityTags } from "../../keeper/templates/bpp/index.js";
 import { zBankCapability, zBankCatalog, zCatalogCommitPayload } from "../../keeper/bpps/bank/types.js";
 import { zBppConfig, zCapabilityTags } from "../../keeper/templates/bpp/types.js";
 import {
@@ -284,6 +284,13 @@ describe("buildConfig", () => {
   it("capabilityTags has version === '0.1.0'", () => {
     const { config } = buildConfig({ authority: FIXED_BPP_AUTHORITY });
     expect(config.capabilityTags.version).toBe("0.1.0");
+  });
+
+  it("projectCapabilityTags surfaces price.cents on umbrella tag (ADR-0001)", () => {
+    const { config } = buildConfig({ authority: FIXED_BPP_AUTHORITY });
+    const entry = projectCapabilityTags(config.capabilityTags);
+    expect(entry.domain).toBe("bank");
+    expect(entry.price.cents).toBe(config.capabilityTags.price.cents);
   });
 
   it("description is short enough (≤ 512 chars)", () => {

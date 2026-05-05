@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { zBppConfig } from "../../keeper/templates/bpp/index.js";
+import { zBppConfig, projectCapabilityTags } from "../../keeper/templates/bpp/index.js";
 import {
   config,
   tags,
@@ -93,6 +93,14 @@ describe("config + tags", () => {
     expect(tags.price).toEqual({ amount: "0.50", currency: "ETO", cents: 50 });
     expect(tags.requiredCredentials).toEqual([]);
     expect(tags.description.length).toBeLessThanOrEqual(512);
+  });
+
+  it("projectCapabilityTags surfaces price.cents (ADR-0001)", () => {
+    const entry = projectCapabilityTags(tags);
+    expect(entry.domain).toBe(tags.domain);
+    expect(entry.action).toBe(tags.action);
+    expect(entry.price.cents).toBe(tags.price.cents);
+    expect(entry.price.cents).toBe(50);
   });
 
   it("buildConfig honours WEB_RESEARCH_AUTHORITY env", () => {

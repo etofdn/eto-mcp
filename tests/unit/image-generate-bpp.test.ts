@@ -21,6 +21,7 @@ import {
   InMemoryEventSource,
   runBpp,
   zBppConfig,
+  projectCapabilityTags,
   type BeckonInitEvent,
   type Logger,
 } from "../../keeper/templates/bpp/index.js";
@@ -160,6 +161,13 @@ describe("config", () => {
     expect(tags.version).toBe("1.0.0");
     expect(tags.price.currency).toBe("ETO");
     expect(tags.requiredCredentials).toEqual([]);
+  });
+
+  it("projectCapabilityTags surfaces price.cents (ADR-0001)", () => {
+    const entry = projectCapabilityTags(tags);
+    expect(entry.domain).toBe(tags.domain);
+    expect(entry.action).toBe(tags.action);
+    expect(entry.price.cents).toBe(tags.price.cents);
   });
 
   it("parses against zBppConfig", () => {
