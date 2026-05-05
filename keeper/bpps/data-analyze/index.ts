@@ -33,7 +33,7 @@ export {
   type FetchLikeResponse,
   type FetchCsvDeps,
   type FetchedCsv,
-} from "./fetcher.js";
+} from "./source-loader.js";
 export {
   profileCsv,
   parseCsv,
@@ -43,7 +43,7 @@ export {
   type ProfileResult,
   type DatasetSample,
   type ColumnFlags,
-} from "./profiler.js";
+} from "./analyzers/profiler.js";
 export {
   analyze,
   sha256Hex,
@@ -54,7 +54,7 @@ export {
   type AnalyzeOpts,
   type AnalyzeDeps,
   type AnalyzeResult,
-} from "./analyzer.js";
+} from "./analyzers/llm.js";
 export {
   zAnalyzeInput,
   zAnalyzeOutput,

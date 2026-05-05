@@ -10,12 +10,12 @@
  */
 
 import type { BppHandler, TaskResult } from "../../templates/bpp/index.js";
-import type { FetchCsvDeps, FetchedCsv } from "./fetcher.js";
-import { fetchCsv } from "./fetcher.js";
-import type { ProfileDeps, ProfileResult, ProfileOpts } from "./profiler.js";
-import { profileCsv } from "./profiler.js";
-import type { AnalyzeDeps, AnalyzeOpts, AnalyzeResult } from "./analyzer.js";
-import { analyze, sha256Hex } from "./analyzer.js";
+import type { FetchCsvDeps, FetchedCsv } from "./source-loader.js";
+import { fetchCsv } from "./source-loader.js";
+import type { ProfileDeps, ProfileResult, ProfileOpts } from "./analyzers/profiler.js";
+import { profileCsv } from "./analyzers/profiler.js";
+import type { AnalyzeDeps, AnalyzeOpts, AnalyzeResult } from "./analyzers/llm.js";
+import { analyze, sha256Hex } from "./analyzers/llm.js";
 import type {
   AnalyzeInput,
   AnalyzeOutput,
