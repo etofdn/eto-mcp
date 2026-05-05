@@ -5,11 +5,9 @@
  * returned as a fallback, turning rate-limit / mock-faucet error payloads
  * into strings that callers treated as real signatures.
  *
- * NOTE: `src/config.ts` currently has multiple duplicate `export const config`
- * declarations (tracked by FN-062 / FN-066) that cause esbuild to refuse to
- * transform the file. We work around that here by stubbing the config module
- * via `vi.mock` rather than importing the real one. Do NOT dedupe config.ts
- * as part of FN-197 — that is explicitly out of scope.
+ * NOTE: `src/config.ts` is stubbed via `vi.mock` so the rpc-client import
+ * resolves to a lightweight fixture without pulling in the full env-reading
+ * config loader (dedup of config.ts was completed in FN-062 / FN-066).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
