@@ -98,6 +98,11 @@ function purgeExpired(now: Date): void {
   if (now.getTime() > expiresAt) overlap = null;
 }
 
+/** Returns the `kid` for the current server key (without building the full JWKS doc). */
+export function getCurrentKid(): string {
+  return computeKid(getServerInstance(), rotationEpoch);
+}
+
 /** Returns the JWKS to publish at the well-known endpoint. */
 export function getCurrentJwks(now: Date = new Date()): Jwks {
   purgeExpired(now);
