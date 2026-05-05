@@ -76,7 +76,7 @@ export const BANK_UMBRELLA_TAGS: CapabilityTags = {
   domain: "bank",
   action: "catalog",
   version: "0.1.0",
-  price: { amount: "0", currency: "ETO" },
+  price: { amount: "0", currency: "ETO", cents: 0 },
   // TODO(FN-099): add the verified-human + kyc.us-test required
   // credentials once the gate policy lands.
   requiredCredentials: [],
