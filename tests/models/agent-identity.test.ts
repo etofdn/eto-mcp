@@ -20,6 +20,22 @@ function baseInput(overrides: Partial<InterimAgentIdentityInput> = {}): InterimA
   };
 }
 
+function verifiedInput(
+  overrides: Partial<InterimAgentIdentityInput> = {},
+): InterimAgentIdentityInput {
+  return baseInput({
+    verified_session_jws:
+      "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIweEFsaWNlIn0.sig",
+    verified_session_jws_claims: {
+      provider: "anthropic",
+      model_id: "claude-sonnet-4-5",
+      kid: "kid-test-1",
+      issued_at: 1_730_000_000,
+    },
+    ...overrides,
+  });
+}
+
 describe("buildInterimAgentIdentity", () => {
   it("builds a thirdweb-kind identity with self_declared attestation when declared_model is supplied", () => {
     const id = buildInterimAgentIdentity(
@@ -110,11 +126,14 @@ describe("buildInterimAgentIdentity", () => {
         auth_strategy: "siwe",
       },
       model_attestation: {
-        attestation_status: "verified",
+        attestation_status: "verified" as const,
+        source: "session_signed" as const,
+        provider_verified: false as const,
         provider: "anthropic",
         model_id: "claude-sonnet-4-5",
         kid: "kid-1",
         issued_at: 1_730_000_000,
+        jws: "eyJhbGciOiJFZERTQSJ9.e30.sig",
       },
       environment: {
         surface: "sse",
@@ -130,5 +149,114 @@ describe("buildInterimAgentIdentity", () => {
     } satisfies AgentIdentity;
 
     expect(literal.human_authority.kind).toBe("thirdweb");
+  });
+
+  it("emits source=session_signed verified attestation when verified_session_jws + claims are supplied", () => {
+    const id = buildInterimAgentIdentity(verifiedInput());
+
+    expect(id.model_attestation.attestation_status).toBe("verified");
+    if (id.model_attestation.attestation_status === "verified") {
+      // Sub-discriminator narrows to a literal union here.
+      expect(id.model_attestation.source).toBe("session_signed");
+      if (id.model_attestation.source === "session_signed") {
+        expect(id.model_attestation.provider_verified).toBe(false);
+        expect(id.model_attestation.provider).toBe("anthropic");
+        expect(id.model_attestation.model_id).toBe("claude-sonnet-4-5");
+        expect(id.model_attestation.kid).toBe("kid-test-1");
+        expect(id.model_attestation.issued_at).toBe(1_730_000_000);
+        expect(id.model_attestation.jws).toBe(
+          "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIweEFsaWNlIn0.sig",
+        );
+      }
+    }
+  });
+
+  it("verified arm overrides declared_model (precedence rule)", () => {
+    const id = buildInterimAgentIdentity(
+      verifiedInput({
+        declared_model: { provider: "openai", model_id: "gpt-4o" },
+      }),
+    );
+
+    expect(id.model_attestation.attestation_status).toBe("verified");
+    if (id.model_attestation.attestation_status === "verified") {
+      // Verified-arm provider wins over declared_model.
+      expect(id.model_attestation.provider).toBe("anthropic");
+      expect(id.model_attestation.model_id).toBe("claude-sonnet-4-5");
+    }
+  });
+
+  it("suppresses verified arm under __stdio__ scope", () => {
+    const id = buildInterimAgentIdentity(
+      verifiedInput({ scope: "__stdio__", auth_strategy: null }),
+    );
+    expect(id.model_attestation.attestation_status).toBe("absent");
+  });
+
+  it("suppresses verified arm under __dev__ scope", () => {
+    const id = buildInterimAgentIdentity(
+      verifiedInput({ scope: "__dev__", auth_strategy: null }),
+    );
+    expect(id.model_attestation.attestation_status).toBe("absent");
+  });
+
+  it("suppresses verified arm under auth_strategy: 'dev'", () => {
+    const id = buildInterimAgentIdentity(verifiedInput({ auth_strategy: "dev" }));
+    expect(id.model_attestation.attestation_status).toBe("absent");
+  });
+
+  it("falls through to absent when verified_session_jws is supplied without claims", () => {
+    const id = buildInterimAgentIdentity(
+      baseInput({ verified_session_jws: "abc.def.ghi" }),
+    );
+    expect(id.model_attestation.attestation_status).toBe("absent");
+  });
+
+  it("falls through to absent when verified_session_jws_claims is supplied without jws", () => {
+    const id = buildInterimAgentIdentity(
+      baseInput({
+        verified_session_jws_claims: {
+          provider: "p",
+          model_id: "m",
+          kid: "k",
+          issued_at: 1,
+        },
+      }),
+    );
+    expect(id.model_attestation.attestation_status).toBe("absent");
+  });
+
+  it("type-level: a provider_oidc verified literal satisfies AgentIdentity", () => {
+    const literal = {
+      human_authority: {
+        sub: "0xAlice",
+        kind: "thirdweb",
+        auth_strategy: "siwe",
+      },
+      model_attestation: {
+        attestation_status: "verified" as const,
+        source: "provider_oidc" as const,
+        provider_verified: true as const,
+        provider: "anthropic",
+        model_id: "claude-sonnet-4-5",
+        kid: "kid-oidc-1",
+        issued_at: 1_730_000_000,
+        jws: "eyJhbGciOiJFZERTQSJ9.e30.providerSig",
+      },
+      environment: {
+        surface: "sse",
+        server_instance: "2026-05-01T00:00:00.000Z",
+        wallet_anchor: { id: "w-1", svm: null, evm: null, label: null },
+      },
+      session_scope: {
+        scope: "0xAlice",
+        jti: "jti-1",
+        expires_at_iso: "2030-01-01T00:00:00.000Z",
+        capabilities: ["wallet:read"],
+      },
+    } satisfies AgentIdentity;
+
+    expect(literal.model_attestation.source).toBe("provider_oidc");
+    expect(literal.model_attestation.provider_verified).toBe(true);
   });
 });

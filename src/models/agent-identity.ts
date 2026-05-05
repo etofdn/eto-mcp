@@ -61,8 +61,12 @@ export interface HumanAuthority {
 /**
  * Discriminator for {@link ModelAttestation}. See spec §2.2 and §4.
  *
- * - `"verified"` — provider-signed JWS verified against published JWKS.
- *   ONLY this state is safe for capability gating.
+ * - `"verified"` — a JWS attesting `(provider, model_id)` was verified.
+ *   The verified arm is itself sub-discriminated by
+ *   {@link AttestationSource} (`source: "session_signed" | "provider_oidc"`).
+ *   Capability gating MUST consult `provider_verified` (not just
+ *   `attestation_status`) — `session_signed` is gateway-witnessed but
+ *   NOT provider-attested.
  * - `"self_declared"` — the agent advertised a model claim but no signature
  *   was verified. Telemetry-only; never gate capabilities on this.
  * - `"absent"` — no claim was made (or verification failed). Do not branch
@@ -70,16 +74,63 @@ export interface HumanAuthority {
  */
 export type AttestationStatus = "verified" | "self_declared" | "absent";
 
-/** A claim about which AI model produced the agent's actions. See spec §2.2. */
+/**
+ * Sub-discriminator for the {@link ModelAttestation} `verified` arm.
+ *
+ * - `"session_signed"` — the gateway minted a session-attestation JWS at
+ *   auth time binding the caller-declared `(provider, model_id)` to the
+ *   session token's `(sub, jti, iat, exp)`. The provider itself did NOT
+ *   sign anything; `provider_verified` is therefore always `false`.
+ *   Stronger than `self_declared` (the gateway witnessed the binding) but
+ *   weaker than `provider_oidc`. See `docs/model-attestation.md` §5.2 and
+ *   `docs/agent-identity-model.md` §2.2.
+ * - `"provider_oidc"` — a provider-signed JWS (e.g. via the provider's
+ *   OIDC JWKS) was verified. `provider_verified` is always `true`.
+ *   Capability gating MAY rely on this; see spec §3.2.
+ */
+export type AttestationSource = "session_signed" | "provider_oidc";
+
+/**
+ * A claim about which AI model produced the agent's actions. See spec §2.2.
+ *
+ * Type-narrowing pattern:
+ * ```ts
+ * if (m.attestation_status === "verified") {
+ *   //                       ^? "session_signed" | "provider_oidc"
+ *   if (m.source === "provider_oidc") {
+ *     // m.provider_verified is `true`
+ *   } else {
+ *     // m.source is "session_signed"; m.provider_verified is `false`
+ *   }
+ * }
+ * ```
+ */
 export type ModelAttestation =
   | {
       attestation_status: "verified";
+      /** Sub-discriminator — see {@link AttestationSource}. */
+      source: "session_signed";
+      /** Always `false` for `session_signed` — the gateway, not the provider, signed. */
+      provider_verified: false;
       provider: string;
       model_id: string;
       /** JWS `kid` from the verified attestation. */
       kid: string;
       /** Issuance timestamp (seconds since epoch) of the verified JWS. */
       issued_at: number;
+      /** The compact-form JWS string (RFC 7515) that produced this verified result. */
+      jws: string;
+    }
+  | {
+      attestation_status: "verified";
+      source: "provider_oidc";
+      /** Always `true` for `provider_oidc` — the provider's signing key signed. */
+      provider_verified: true;
+      provider: string;
+      model_id: string;
+      kid: string;
+      issued_at: number;
+      jws: string;
     }
   | {
       attestation_status: "self_declared";
@@ -192,15 +243,68 @@ export interface InterimAgentIdentityInput {
   capabilities?: ReadonlyArray<string>;
   /** Optional: `SessionPayload.jti` when available. */
   jti?: string;
+  /**
+   * Optional: a session-attestation JWS that has ALREADY been verified by
+   * the caller (e.g. FN-049's mint path on the same gateway, or FN-052's
+   * counterparty verifier). The builder treats this as opaque — it does
+   * NOT decode, verify, or fetch any JWKS. If supplied,
+   * `verified_session_jws_claims` MUST also be supplied; otherwise the
+   * builder ignores both and falls through to `self_declared` / `absent`.
+   *
+   * Trust boundary: the agent-identity module is intentionally decoupled
+   * from `src/gateway/**` and `src/signing/**`; verification happens in
+   * those layers and the result is passed in here as opaque data.
+   *
+   * See `docs/model-attestation.md` §5.2 for the canonical payload shape.
+   */
+  verified_session_jws?: string;
+
+  /**
+   * Optional: pre-validated claims extracted from `verified_session_jws`.
+   * Mirrors a subset of FN-049's `SessionAttestationPayload` — duplicated
+   * here (rather than imported) to keep this module decoupled from
+   * `src/gateway/session-attestation.ts`.
+   *
+   * When both fields are present AND the scope is not a dev/stdio sentinel,
+   * the builder emits a `ModelAttestation` with `attestation_status:
+   * "verified"`, `source: "session_signed"`, `provider_verified: false`.
+   */
+  verified_session_jws_claims?: {
+    /** Mirrors FN-049 `provider_declared`. 1..64 chars. */
+    provider: string;
+    /** Mirrors FN-049 `model_id_declared`. 1..128 chars. */
+    model_id: string;
+    /** JWS header `kid`. Non-empty string. */
+    kid: string;
+    /** Mirrors `payload.iat` (unix seconds). Finite integer. */
+    issued_at: number;
+  };
 }
 
 /**
- * Build an {@link AgentIdentity} from a `session_info`-shaped payload, with
- * no provider integration. The result always has
- * `model_attestation.attestation_status` of `"self_declared"` (when
- * `declared_model` is present) or `"absent"`.
+ * Build an {@link AgentIdentity} from a `session_info`-shaped payload.
  *
- * Pure function — no I/O, no global state.
+ * Model-attestation resolution precedence:
+ *
+ * 1. **Negative gates.** If `scope === "__stdio__"`, `scope === "__dev__"`,
+ *    or `auth_strategy === "dev"`, the builder NEVER emits a `verified` arm
+ *    — dev/stdio sessions cannot meaningfully attest a model identity
+ *    (cf. FN-049 mint-path negative gates). Falls through to
+ *    `self_declared` (if `declared_model`) or `absent`.
+ * 2. **Verified arm.** Else if BOTH `verified_session_jws` AND
+ *    `verified_session_jws_claims` are supplied, emits
+ *    `attestation_status: "verified"`, `source: "session_signed"`,
+ *    `provider_verified: false`. The JWS is treated as opaque, already
+ *    validated by the caller.
+ * 3. **Self-declared arm.** Else if `declared_model` is supplied, emits
+ *    `self_declared`.
+ * 4. **Absent.** Otherwise emits `absent`.
+ *
+ * The builder NEVER emits `source: "provider_oidc"` from any input shape.
+ * That arm is type-only at this stage; a future task (downstream of FN-052)
+ * will add a `verified_provider_oidc_jws` builder path.
+ *
+ * Pure function — no I/O, no global state, no `Date.now()`.
  *
  * @throws {Error} if `scope` is missing or empty (see spec §5: there is no
  * meaningful identity without a session-scope persistence key).
@@ -216,13 +320,8 @@ export function buildInterimAgentIdentity(
 
   const human_authority = resolveHumanAuthority(input);
   const environment = resolveEnvironment(input);
-  const model_attestation: ModelAttestation = input.declared_model
-    ? {
-        attestation_status: "self_declared",
-        provider: input.declared_model.provider,
-        model_id: input.declared_model.model_id,
-      }
-    : { attestation_status: "absent" };
+  const model_attestation = resolveModelAttestation(input);
+
 
   const session_scope: SessionScope = {
     scope: input.scope,
@@ -232,6 +331,49 @@ export function buildInterimAgentIdentity(
   };
 
   return { human_authority, model_attestation, environment, session_scope };
+}
+
+function resolveModelAttestation(
+  input: InterimAgentIdentityInput,
+): ModelAttestation {
+  // Negative gates: dev/stdio sessions cannot meaningfully attest a model.
+  // Mirrors FN-049's mint-path gates so a verified arm is never emitted in
+  // these scopes even if the caller supplied a JWS.
+  const isDevOrStdio =
+    input.scope === "__stdio__" ||
+    input.scope === "__dev__" ||
+    input.auth_strategy === "dev";
+
+  if (
+    !isDevOrStdio &&
+    input.verified_session_jws &&
+    input.verified_session_jws_claims
+  ) {
+    const claims = input.verified_session_jws_claims;
+    return {
+      attestation_status: "verified",
+      source: "session_signed",
+      provider_verified: false,
+      provider: claims.provider,
+      model_id: claims.model_id,
+      kid: claims.kid,
+      issued_at: claims.issued_at,
+      jws: input.verified_session_jws,
+    };
+  }
+
+  // asymmetric input — defensively ignore both; fall through to
+  // self_declared / absent rather than throwing.
+
+  if (input.declared_model) {
+    return {
+      attestation_status: "self_declared",
+      provider: input.declared_model.provider,
+      model_id: input.declared_model.model_id,
+    };
+  }
+
+  return { attestation_status: "absent" };
 }
 
 function resolveHumanAuthority(input: InterimAgentIdentityInput): HumanAuthority {

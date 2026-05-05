@@ -69,12 +69,24 @@ decisions on each.
 | **Trust assumption** | When `attestation_status === "verified"`: trust the provider's JWKS. When `"self_declared"`: treat the model claim as a **hint for telemetry only**, never for capability gating. When `"absent"`: do not branch on model identity at all. |
 | **Threat model** | Self-declared values can be spoofed trivially. Verified values inherit the provider's KMS posture; signature replay across audiences is mitigated by `aud` binding to the MCP server's origin. |
 
-JWKS publication contract: see [`model-attestation.md`](./model-attestation.md) §5.1, §5.3.
-
 This is the axis that explicitly *does not work today*. The interim path
 (see [§5](#5-interim-implementation-works-today)) is to record the
 self-declared claim and propagate `attestation_status: "self_declared"` so
 downstream code can refuse to trust it.
+
+**Sub-discriminator on the `verified` arm.** When `attestation_status === "verified"`,
+the arm is itself sub-discriminated by `source: "session_signed" | "provider_oidc"`.
+The invariants are: `source: "session_signed"` ⇒ `provider_verified: false`
+(the gateway minted a session-attestation JWS at auth time — stronger than
+`self_declared` because the gateway witnessed the binding, but the provider
+itself did not sign anything); `source: "provider_oidc"` ⇒ `provider_verified: true`
+(a provider-signed JWS was verified against the provider's published JWKS).
+Capability gating MUST consult `provider_verified`, not just `attestation_status`.
+See [`docs/model-attestation.md`](./model-attestation.md) §5.2 for the
+session-signed payload shape; the `provider_oidc` arm has no on-disk emitter
+today (future work, downstream of FN-052). The corresponding TypeScript shapes
+live in [`src/models/agent-identity.ts`](../src/models/agent-identity.ts) as
+`ModelAttestation` and `InterimAgentIdentityInput.verified_session_jws_claims`.
 
 ### §2.3 — `environment`
 
