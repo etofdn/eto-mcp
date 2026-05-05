@@ -35,17 +35,17 @@ import {
 import {
   fetchCsv,
   type FetchLike,
-} from "../../keeper/bpps/data-analyze/fetcher.js";
+} from "../../keeper/bpps/data-analyze/source-loader.js";
 import {
   parseCsv,
   detectDelimiter,
   profileCsv,
-} from "../../keeper/bpps/data-analyze/profiler.js";
+} from "../../keeper/bpps/data-analyze/analyzers/profiler.js";
 import {
   analyze,
   sha256Hex,
   type LlmClient,
-} from "../../keeper/bpps/data-analyze/analyzer.js";
+} from "../../keeper/bpps/data-analyze/analyzers/llm.js";
 import {
   buildHandlerFromPrimitives,
   createDataAnalyzeHandler,
@@ -1105,5 +1105,78 @@ describe("idempotent retry (FN-022)", () => {
     // The first event's payload wins (the second is suppressed entirely).
     const out = inner.completed[0]!.output as { result: AnalyzeOutput };
     expect(out.result.artifact.content).not.toContain("MALICIOUS");
+  });
+});
+
+/* ========================================================================== */
+/* FN-084 — catalog price.cents + idempotent-failure de-dupe                 */
+/* ========================================================================== */
+
+describe("FN-084: catalog tags surface price.cents (ADR-0001)", () => {
+  it("tags.price includes cents alongside amount+currency", () => {
+    // Both the config-level tags object and the runtime BPP config expose
+    // tags.price.cents so catalog/search responses carry the integer form.
+    expect(tags.domain).toBe("data");
+    expect(tags.action).toBe("analyze");
+    expect(tags.price).toMatchObject({
+      amount: "0.25",
+      currency: "ETO",
+      cents: 25,
+    });
+    // Assert dev-mode invariant: Number(amount) * 100 === cents
+    const priceCents = (tags.price as { amount: string; cents: number }).cents;
+    const priceAmount = parseFloat(
+      (tags.price as { amount: string }).amount,
+    );
+    expect(Math.round(priceAmount * 100)).toBe(priceCents);
+  });
+});
+
+describe("FN-084: idempotent retry produces exactly one completed-or-failed entry", () => {
+  it("two BeckonInitEvents with same taskId → exactly one inner.completed entry", async () => {
+    const handler = buildHandlerFromPrimitives({
+      fetchDeps: { fetch: makeFetch({}) },
+      analyzeDeps: { llm: cannedLlm },
+      modelId: "test-model",
+      now: () => 1700_000_000,
+    });
+
+    const events = new InMemoryEventSource<unknown>();
+    const inner = new InMemoryChain();
+    const chain = new SigningRuntimeChain({
+      inner,
+      signer: makeStubSigner("fn-084-idem"),
+      now: () => 1700_000_000,
+    });
+    const gate = defaultCredentialGate([], {
+      loadAgentCard: async () => ({ authority: "BAP", credentials: [] }),
+      now: () => 0,
+    });
+
+    const done = runBpp<unknown, AnalyzeOutput>(config, handler, {
+      eventSource: events,
+      chain,
+      gate,
+      logger: silentLogger,
+    });
+
+    const evt: BeckonInitEvent<unknown> = {
+      taskId: "fn-084-dedupe-1",
+      bapPubkey: "BAP",
+      bppPubkey: config.authority,
+      networkPubkey: "NET",
+      action: "data:analyze",
+      input: { source: { kind: "csv", text: "x,y\n1,2\n3,4\n" } },
+      observedAt: 0,
+    };
+
+    // Push the same event twice to exercise the de-dupe path.
+    events.push(evt);
+    events.push(evt);
+    events.close();
+    await done;
+
+    const totalOutcomes = inner.completed.length + inner.failed.length;
+    expect(totalOutcomes).toBe(1);
   });
 });
