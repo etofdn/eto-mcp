@@ -50,6 +50,7 @@
 import { createHash } from 'node:crypto';
 import type { Express, Request, Response } from 'express';
 import { validateBecknRequest } from './beckn-schemas.js';
+import { validateBecknEnvelope, validateBecknEnvelopeFreshness } from './inbound-bap.js';
 
 export interface ConfirmTrigger {
   kind: 'Confirm';
@@ -161,10 +162,22 @@ export function mountOnConfirmCallback(app: Express, deps: InboundBppDeps): void
   const seenTransactions: Set<string> = deps.seenTransactions ?? new Set();
 
   app.post('/on_confirm', async (req: Request, res: Response) => {
+    // FN-055 / FN-074 parity: envelope hardening BEFORE Ajv schema validation.
+    // Order: envelope validate → schema validate → freshness recheck → handler.
+    const now = Date.now();
+    const ctx = (req.body as Record<string, unknown> | undefined)?.context;
+    const env = validateBecknEnvelope(ctx, now);
+    if (!env.ok) {
+      return res.status(env.status).json(env.body);
+    }
     // 1. Schema validation (existing)
     const v = validateBecknRequest('on_confirm', req.body);
     if (!v.ok) {
       return res.status(400).json({ error: 'beckn_validation_failed', details: (v as { ok: false; errors: unknown }).errors });
+    }
+    const fresh = validateBecknEnvelopeFreshness(ctx, now);
+    if (!fresh.ok) {
+      return res.status(fresh.status).json(fresh.body);
     }
 
     // 2. FN-075: Extract verified caller pubkey (before FN-036 guards so a
@@ -228,6 +241,48 @@ function becknOnConfirmToTaskOutcome(body: any, callerPubkey?: string) {
     // FN-075: verified BAP signing key — undefined when no verifier injected
     caller_pubkey: callerPubkey,
   };
+}
+
+/**
+ * FN-055: mount additional BPP→BAP callback receivers with the same FN-074
+ * envelope hardening applied to `/on_confirm` above.
+ *
+ * Currently wires `/on_select` (the BPP's quoted-order callback). Other
+ * BPP-origin callbacks (`/on_init`, `/on_status`, `/on_cancel`) can be added
+ * here once their on-chain handlers are defined.
+ *
+ * Pipeline order (mirrors `/on_confirm` and `inbound-bap.ts` routes):
+ *   1. validateBecknEnvelope          → 400 NACK on bad version/timestamp/TTL
+ *   2. validateBecknRequest (Ajv)     → 400 beckn_validation_failed
+ *   3. validateBecknEnvelopeFreshness → 400 NACK on EXPIRED_TTL
+ *   4. handler (ACK — no chain submission until on_select handler defined)
+ */
+export function mountInboundBppCallbacks(app: Express, _deps: InboundBppDeps): void {
+  app.post('/on_select', async (req: Request, res: Response) => {
+    const now = Date.now();
+    const ctx = (req.body as Record<string, unknown> | undefined)?.context;
+    const env = validateBecknEnvelope(ctx, now);
+    if (!env.ok) {
+      return res.status(env.status).json(env.body);
+    }
+    const v = validateBecknRequest('on_select', req.body);
+    if (!v.ok) {
+      return res.status(400).json({
+        error: 'beckn_validation_failed',
+        details: (v as { ok: false; errors: unknown }).errors,
+      });
+    }
+    const fresh = validateBecknEnvelopeFreshness(ctx, now);
+    if (!fresh.ok) {
+      return res.status(fresh.status).json(fresh.body);
+    }
+    // No on-chain handler defined yet for `/on_select`; return a stable ACK so
+    // the envelope+schema gate can be exercised by integration tests.
+    return res.status(200).json({
+      message: { ack: { status: 'ACK' } },
+      context: ctx,
+    });
+  });
 }
 
 /** Default stub for v0 use. */

@@ -13,6 +13,10 @@
 import { createHash } from 'node:crypto';
 import type { Express, Request, Response } from 'express';
 import { validateBecknRequest } from './beckn-schemas.js';
+import {
+  validateBecknEnvelope,
+  validateBecknEnvelopeFreshness,
+} from './inbound-bap.js';
 
 export interface AgentTrigger {
   kind: 'Search' | 'Select' | 'Init' | 'Confirm';
@@ -64,9 +68,23 @@ export async function handleSearchTrigger(trigger: AgentTrigger, deps: OutboundB
 /** Mount the /on_search callback receiver on the bridge's express app. */
 export function mountOnSearchCallback(app: Express, deps: OutboundBapDeps): void {
   app.post('/on_search', async (req: Request, res: Response) => {
+    // FN-055 / FN-074 parity: envelope hardening BEFORE Ajv schema validation.
+    // Pipeline: envelope validate → schema validate → freshness recheck → handler.
+    const now = Date.now();
+    const ctx = (req.body as Record<string, unknown> | undefined)?.context;
+    const env = validateBecknEnvelope(ctx, now);
+    if (!env.ok) {
+      res.status(env.status).json(env.body);
+      return;
+    }
     const v = validateBecknRequest('on_search', req.body);
     if (!v.ok) {
       res.status(400).json({ error: 'beckn_validation_failed', details: v.errors });
+      return;
+    }
+    const fresh = validateBecknEnvelopeFreshness(ctx, now);
+    if (!fresh.ok) {
+      res.status(fresh.status).json(fresh.body);
       return;
     }
     try {
