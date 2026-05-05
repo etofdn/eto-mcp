@@ -188,8 +188,9 @@ export function loadAppConfig(
 // consumers (auth.ts, server.ts, sse-server.ts, submitter.ts, …) import
 // from this single export.
 //
-// devBypass env var: ETO_AUTH_DEV_BYPASS=true
+// devBypass env var: ETO_AUTH_DEV_BYPASS=true  (FN-108: canonical name)
 //   - Must be set explicitly; never enabled by NODE_ENV alone.
+//   - The legacy AUTH_DEV_BYPASS name is no longer read anywhere.
 //   - In production, this MUST NOT be set (server.ts validates this).
 
 function validateNetwork(v: string | undefined): "mainnet" | "testnet" | "devnet" {
