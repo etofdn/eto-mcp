@@ -1,9 +1,23 @@
 /**
- * Public API barrel for the memo runtime.
+ * Public API barrel for the memo runtime (FN-040).
  *
  * Exposes `encodeMemo` / `decodeMemo` plus the supporting types and budget
  * constants. See `docs/memo-schema-registry.md` §5 for the producer/consumer
  * contract this module implements.
+ *
+ * Implementation covers the full FN-040 spec:
+ *  - `encodeMemo<T>(type, payload, opts?)` validates via Ajv 2020 + ajv-formats
+ *    against the registered envelope + payload schemas; enforces ≤400-byte
+ *    soft-warn (MEMO_SOFT_WARN_BYTES) and a hard limit (MEMO_HARD_LIMIT_BYTES).
+ *  - `decodeMemo(raw)` never throws; returns `{ ok, envelope }` or
+ *    `{ ok: false, reason }` for all failure modes (not_json, envelope_invalid,
+ *    unknown_schema, payload_invalid, unknown_future_version, …).
+ *  - `transfer_native` and `batch` accept either a free-form string or a
+ *    structured `{ type, payload }` shape (wired in `src/tools/transfer.ts`).
+ *  - `query_memos` returns `{ raw, decoded }` per record, never throwing on
+ *    malformed entries (wired in `src/tools/query.ts`).
+ *  - Three v1 payload schemas registered: eval_score, payment, coordination_log
+ *    (loaded from `spec/memo-schemas/*.v1.json` via `src/memo/registry.ts`).
  */
 
 import {
