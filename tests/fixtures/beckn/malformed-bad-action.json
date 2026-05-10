@@ -1,0 +1,15 @@
+{
+  "_source": "Beckn v2.0 LTS reference: https://developers.becknprotocol.io/docs/protocol-specifications/",
+  "_note": "Malformed envelope: context.action is not one of the four supported Beckn actions. Bridge must return 400 + NACK BECKN_400 (zod enum rejection before action-match check).",
+  "context": {
+    "domain": "retail",
+    "action": "unknown_action",
+    "version": "2.0.0",
+    "bap_id": "bap.example.com",
+    "bap_uri": "https://bap.example.com/beckn",
+    "transaction_id": "00000000-0000-0000-0000-000000000001",
+    "message_id": "00000000-0000-0000-0000-000000000002",
+    "timestamp": "2026-01-01T00:00:00.000Z"
+  },
+  "message": {}
+}

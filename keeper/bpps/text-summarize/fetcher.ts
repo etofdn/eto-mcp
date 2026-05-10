@@ -14,6 +14,10 @@
  * All side-effecting seams (`fetch`, `pdfExtractor`) are injected so
  * the test suite drives the path with deterministic stubs.
  *
+ * SSRF guard (FN-111): `fetchUrl` calls `assertPublicHttpUrl` before
+ * opening a network connection to block loopback, private-range IPv4,
+ * IPv6 link-local / ULA, and non-http(s) schemes.
+ *
  * **PDF extractor:** by default we ship the `noopPdfExtractor` (throws
  * `pdf_extraction_unavailable`); deploys that need PDF support inject
  * a real extractor backed by `pdf-parse` or similar. We deliberately
@@ -24,6 +28,7 @@
  */
 
 import type { SummarizeSource } from "./types.js";
+import { assertPublicHttpUrl } from "../web-research/fetcher.js";
 
 /* -------------------------------------------------------------------------- */
 /* Types                                                                      */
@@ -99,6 +104,8 @@ async function fetchUrl(
   maxBytesOpt: number | undefined,
   deps: FetchSourceDeps,
 ): Promise<FetchedSource> {
+  // SSRF guard (FN-111): block loopback / private / link-local / IMDS targets.
+  assertPublicHttpUrl(url);
   const maxBytes = maxBytesOpt ?? DEFAULT_FETCH_MAX_BYTES;
   const timeoutMs = deps.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
   const ctrl = new AbortController();

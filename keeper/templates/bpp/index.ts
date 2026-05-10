@@ -17,3 +17,5 @@ export * from "./types.js";
 export * from "./register.js";
 export * from "./credential-gate.js";
 export * from "./runtime.js";
+export * from "./chain.js";
+export * from "./catalog.js";

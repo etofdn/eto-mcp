@@ -31,7 +31,7 @@ export const tags: CapabilityTags = {
   domain: "code",
   action: "audit:solidity",
   version: "1.0.0",
-  price: { amount: "1.00", currency: "ETO" },
+  price: { amount: "1.00", currency: "ETO", cents: 100 },
   // TODO(FN-081): once the verified-human credential schema lands,
   // populate this so the BPP rejects anonymous BAPs at Beckn `init`.
   requiredCredentials: [],

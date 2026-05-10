@@ -4,6 +4,7 @@ import {
   HmacKycTestFormTokenSigner,
   KYC_TEST_MIN_DWELL_SECONDS,
   KYC_TEST_SCHEMA_ID_HEX,
+  KycTestAgentCardSignatureVerifier,
   KycTestDedupeRow,
   KycTestDedupeStore,
   KycTestFormSubmission,
@@ -20,6 +21,18 @@ import {
   normalizeName,
   renderKycTestFormHtml,
 } from "../src/issuers/kyc-test.js";
+
+// FN-057 — wallet-binding signature is now required. Tests in this
+// file pre-date that change and exercise issuance logic that doesn't
+// depend on signature semantics, so we use an always-true stub and a
+// constant signature placeholder. The dedicated boundary suite in
+// `tests/issuers/kyc-test.test.ts` exercises the real Ed25519 path.
+const stubSigVerifier: KycTestAgentCardSignatureVerifier = {
+  async verify() {
+    return true;
+  },
+};
+const STUB_SIGNATURE = Buffer.alloc(64).toString("base64");
 
 const CARD_A = "AgentCardAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const CARD_B = "AgentCardBbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -117,6 +130,7 @@ interface DepsOverrides {
   chain?: KycTestIssueCredentialClient;
   pinner?: KycTestVcPinner;
   clock?: KycTestSlotClock;
+  signatureVerifier?: KycTestAgentCardSignatureVerifier;
   issuerAuthorityPubkey?: string;
   minDwellSeconds?: number;
   nowUnix: number;
@@ -129,6 +143,7 @@ function depsWith(overrides: DepsOverrides): KycTestIssuerDeps {
     chain: overrides.chain ?? new StubChain(),
     pinner: overrides.pinner ?? new StubPinner(),
     clock: overrides.clock ?? new FixedClock(123n),
+    signatureVerifier: overrides.signatureVerifier ?? stubSigVerifier,
     issuerAuthorityPubkey: overrides.issuerAuthorityPubkey ?? ISSUER,
     nowUnix: () => overrides.nowUnix,
     ...(overrides.minDwellSeconds !== undefined
@@ -258,6 +273,7 @@ describe("issueKycTest happy path", () => {
     const res = await issueKycTest(deps, {
       submission,
       agentCardPubkey: CARD_A,
+      agentCardSignature: STUB_SIGNATURE,
     });
 
     expect(res.status).toBe("issued");
@@ -296,10 +312,12 @@ describe("issueKycTest happy path", () => {
     const first = await issueKycTest(deps, {
       submission,
       agentCardPubkey: CARD_A,
+      agentCardSignature: STUB_SIGNATURE,
     });
     const second = await issueKycTest(deps, {
       submission,
       agentCardPubkey: CARD_A,
+      agentCardSignature: STUB_SIGNATURE,
     });
 
     expect(first.status).toBe("issued");
@@ -325,6 +343,7 @@ describe("issueKycTest dwell enforcement", () => {
       issueKycTest(deps, {
         submission: makeSubmission({ signer, flowStartedAtUnix }),
         agentCardPubkey: CARD_A,
+        agentCardSignature: STUB_SIGNATURE,
       }),
     ).rejects.toMatchObject({
       kind: "dwell_too_short",
@@ -341,6 +360,7 @@ describe("issueKycTest dwell enforcement", () => {
       issueKycTest(deps, {
         submission: makeSubmission({ signer, flowStartedAtUnix }),
         agentCardPubkey: CARD_A,
+        agentCardSignature: STUB_SIGNATURE,
       }),
     ).rejects.toBeInstanceOf(KycTestIssueError);
   });
@@ -355,6 +375,7 @@ describe("issueKycTest dwell enforcement", () => {
     const res = await issueKycTest(deps, {
       submission: makeSubmission({ signer, flowStartedAtUnix }),
       agentCardPubkey: CARD_A,
+      agentCardSignature: STUB_SIGNATURE,
     });
     expect(res.status).toBe("issued");
   });
@@ -373,7 +394,7 @@ describe("issueKycTest token + form validation", () => {
       tagOverride: "00".repeat(32),
     });
     await expect(
-      issueKycTest(deps, { submission, agentCardPubkey: CARD_A }),
+      issueKycTest(deps, { submission, agentCardPubkey: CARD_A, agentCardSignature: STUB_SIGNATURE }),
     ).rejects.toMatchObject({ kind: "invalid_token" });
   });
 
@@ -394,6 +415,7 @@ describe("issueKycTest token + form validation", () => {
           formTokenHmacHex: tag,
         },
         agentCardPubkey: CARD_A,
+        agentCardSignature: STUB_SIGNATURE,
       }),
     ).rejects.toMatchObject({ kind: "invalid_token" });
   });
@@ -411,7 +433,7 @@ describe("issueKycTest token + form validation", () => {
       flowStartedAtUnix,
     });
     await expect(
-      issueKycTest(deps, { submission, agentCardPubkey: CARD_A }),
+      issueKycTest(deps, { submission, agentCardPubkey: CARD_A, agentCardSignature: STUB_SIGNATURE }),
     ).rejects.toMatchObject({ kind: "invalid_form" });
   });
 
@@ -430,7 +452,7 @@ describe("issueKycTest token + form validation", () => {
       flowStartedAtUnix,
     });
     await expect(
-      issueKycTest(deps, { submission, agentCardPubkey: CARD_A }),
+      issueKycTest(deps, { submission, agentCardPubkey: CARD_A, agentCardSignature: STUB_SIGNATURE }),
     ).rejects.toMatchObject({ kind: "invalid_form" });
   });
 
@@ -439,7 +461,7 @@ describe("issueKycTest token + form validation", () => {
     const deps = depsWith({ tokenSigner: signer, nowUnix });
     const submission = makeSubmission({ signer, flowStartedAtUnix });
     await expect(
-      issueKycTest(deps, { submission, agentCardPubkey: "" }),
+      issueKycTest(deps, { submission, agentCardPubkey: "", agentCardSignature: STUB_SIGNATURE }),
     ).rejects.toMatchObject({ kind: "invalid_form" });
   });
 });
@@ -462,12 +484,14 @@ describe("issueKycTest dedupe semantics", () => {
     await issueKycTest(deps, {
       submission: makeSubmission({ signer, flowStartedAtUnix }),
       agentCardPubkey: CARD_A,
+      agentCardSignature: STUB_SIGNATURE,
     });
 
     await expect(
       issueKycTest(deps, {
         submission: makeSubmission({ signer, flowStartedAtUnix }),
         agentCardPubkey: CARD_B,
+        agentCardSignature: STUB_SIGNATURE,
       }),
     ).rejects.toMatchObject({ kind: "replay_conflict" });
 
@@ -490,6 +514,7 @@ describe("issueKycTest dedupe semantics", () => {
       issueKycTest(deps, {
         submission: makeSubmission({ signer, flowStartedAtUnix }),
         agentCardPubkey: CARD_A,
+        agentCardSignature: STUB_SIGNATURE,
       }),
     ).rejects.toMatchObject({ kind: "chain_failed" });
     expect(dedupe.rows.size).toBe(0);
@@ -498,6 +523,7 @@ describe("issueKycTest dedupe semantics", () => {
     const res = await issueKycTest(deps, {
       submission: makeSubmission({ signer, flowStartedAtUnix }),
       agentCardPubkey: CARD_A,
+      agentCardSignature: STUB_SIGNATURE,
     });
     expect(res.status).toBe("issued");
   });

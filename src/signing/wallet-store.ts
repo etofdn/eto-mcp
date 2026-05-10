@@ -3,6 +3,8 @@ import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
 import { mkdir, readFile, rename, writeFile, stat } from "fs/promises";
+import bs58 from "bs58";
+import type { WalletRegistry } from "../utils/address.js";
 
 const WALLET_DIR = process.env.ETO_WALLET_DIR || join(homedir(), ".eto", "wallets");
 const LEGACY_WALLET_PATH = join(homedir(), ".eto", "wallets.enc");
@@ -11,6 +13,9 @@ export interface WalletData {
   label: string;
   privateKey: Uint8Array;
   publicKey: Uint8Array;
+  /** Canonical EVM address for this wallet. Populated at wallet creation from
+   * `signer.getEvmSigningAddress()`. Used by the SVM↔EVM registry (FN-016). */
+  evmAddress?: string;
 }
 
 // File format: salt(32) + nonce(12) + tag(16) + ciphertext
@@ -18,12 +23,48 @@ const SALT_LEN = 32;
 const NONCE_LEN = 12;
 const TAG_LEN = 16;
 
+/**
+ * In-memory cross-VM address registry for a single wallet scope.
+ *
+ * This implements WalletRegistry (FN-016) — populated at wallet creation time
+ * so that every wallet visible to the caller has an entry before any
+ * `resolve_cross_vm_address` call is made against it.
+ *
+ * Keyed by:
+ *   - SVM pubkey (base58) → EVM address (0x-prefixed lowercase)
+ *   - EVM address (0x-prefixed lowercase) → SVM pubkey (base58)
+ */
+class InMemoryRegistry implements WalletRegistry {
+  private readonly svmToEvm = new Map<string, string>();
+  private readonly evmToSvm = new Map<string, string>();
+
+  record(svmAddress: string, evmAddress: string): void {
+    const normalizedEvm = evmAddress.toLowerCase();
+    this.svmToEvm.set(svmAddress, normalizedEvm);
+    this.evmToSvm.set(normalizedEvm, svmAddress);
+  }
+
+  lookupBySvm(svmAddress: string): string | undefined {
+    return this.svmToEvm.get(svmAddress);
+  }
+
+  lookupByEvm(evmAddress: string): string | undefined {
+    return this.evmToSvm.get(evmAddress.toLowerCase());
+  }
+
+  clear(): void {
+    this.svmToEvm.clear();
+    this.evmToSvm.clear();
+  }
+}
+
 export class WalletStore {
   private key: Uint8Array | null = null;
   private _passphrase: string | null = null;
   private _cachedKey: { salt: Uint8Array; key: Uint8Array; N: number } | null = null;
   private loadPromise: Promise<void> | null = null;
   private readonly scope: string;
+  private readonly registry = new InMemoryRegistry();
 
   constructor(scope: string = "__default__") {
     this.scope = scope;
@@ -110,12 +151,13 @@ export class WalletStore {
     if (!this._passphrase) return;
 
     // Serialize wallet map to JSON-safe structure
-    const plain: Record<string, { label: string; privateKey: string; publicKey: string }> = {};
+    const plain: Record<string, { label: string; privateKey: string; publicKey: string; evmAddress?: string }> = {};
     for (const [id, w] of wallets) {
       plain[id] = {
         label: w.label,
         privateKey: Buffer.from(w.privateKey).toString("hex"),
         publicKey: Buffer.from(w.publicKey).toString("hex"),
+        ...(w.evmAddress ? { evmAddress: w.evmAddress } : {}),
       };
     }
     const plaintext = Buffer.from(JSON.stringify(plain), "utf8");
@@ -183,15 +225,23 @@ export class WalletStore {
         const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
         const plain = JSON.parse(plaintext.toString("utf8")) as Record<
           string,
-          { label: string; privateKey: string; publicKey: string }
+          { label: string; privateKey: string; publicKey: string; evmAddress?: string }
         >;
         const wallets = new Map<string, WalletData>();
         for (const [id, w] of Object.entries(plain)) {
-          wallets.set(id, {
+          const entry: WalletData = {
             label: w.label,
             privateKey: Uint8Array.from(Buffer.from(w.privateKey, "hex")),
             publicKey: Uint8Array.from(Buffer.from(w.publicKey, "hex")),
-          });
+            evmAddress: w.evmAddress,
+          };
+          wallets.set(id, entry);
+          // Restore SVM↔EVM registry entries so resolve_cross_vm_address works
+          // immediately after load (FN-016).
+          if (w.evmAddress) {
+            const svmAddr = bs58.encode(entry.publicKey);
+            this.registry.record(svmAddr, w.evmAddress);
+          }
         }
         if (N === WalletStore.SCRYPT_N_LEGACY) {
           console.error(
@@ -238,5 +288,48 @@ export class WalletStore {
       console.error("[eto-mcp] Migrated legacy wallets but could not rename legacy file:", e);
     }
     console.error("[eto-mcp] Migrated legacy wallets.enc into scoped store (__stdio__).");
+  }
+
+  // -------------------------------------------------------------------------
+  // SVM↔EVM Cross-VM Registry (FN-016)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Record a SVM↔EVM address mapping in the in-memory registry.
+   *
+   * Called immediately after a wallet keypair is materialised (in
+   * `LocalSignerFactory.createWallet` / `importWallet`) so every wallet the
+   * caller can reach has an entry before any `resolve_cross_vm_address` call.
+   *
+   * @param svmAddress  Base58-encoded SVM (Ed25519) public key.
+   * @param evmAddress  0x-prefixed EVM (secp256k1) address from
+   *   `signer.getEvmSigningAddress()`.  Stored lowercase.
+   */
+  recordCrossVmMapping(svmAddress: string, evmAddress: string): void {
+    this.registry.record(svmAddress, evmAddress);
+  }
+
+  /**
+   * Look up the EVM address for a given SVM pubkey.
+   * Returns `undefined` if no mapping exists (foreign / unregistered wallet).
+   */
+  lookupBySvm(svmAddress: string): string | undefined {
+    return this.registry.lookupBySvm(svmAddress);
+  }
+
+  /**
+   * Look up the SVM pubkey for a given EVM address.
+   * Returns `undefined` if no mapping exists (foreign / unregistered wallet).
+   */
+  lookupByEvm(evmAddress: string): string | undefined {
+    return this.registry.lookupByEvm(evmAddress);
+  }
+
+  /**
+   * Expose the WalletRegistry interface for use with `resolveAddressesAsync`.
+   * Returns this store's in-memory registry view.
+   */
+  asRegistry(): WalletRegistry {
+    return this.registry;
   }
 }

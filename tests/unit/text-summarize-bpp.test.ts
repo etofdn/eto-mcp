@@ -13,6 +13,7 @@ import {
   InMemoryEventSource,
   runBpp,
   zBppConfig,
+  projectCapabilityTags,
   type BeckonInitEvent,
   type Logger,
 } from "../../keeper/templates/bpp/index.js";
@@ -35,6 +36,7 @@ import {
   type FetchLike,
   type PdfExtractor,
 } from "../../keeper/bpps/text-summarize/fetcher.js";
+import { assertPublicHttpUrl } from "../../keeper/bpps/web-research/fetcher.js";
 import {
   summarize,
   sha256Hex,
@@ -48,7 +50,7 @@ import {
   canonicalJson,
   makeStubSigner,
   SigningRuntimeChain,
-} from "../../keeper/bpps/text-summarize/chain-adapter.js";
+} from "../../keeper/templates/bpp/index.js";
 import type { SummarizeInput, SummarizeOutput } from "../../keeper/bpps/text-summarize/index.js";
 
 /* -------------------------------------------------------------------------- */
@@ -130,6 +132,14 @@ describe("config + tags", () => {
     expect(tags.price).toEqual({ amount: "0.10", currency: "ETO" });
     expect(tags.requiredCredentials).toEqual([]);
     expect(tags.description.length).toBeLessThanOrEqual(512);
+  });
+
+  it("projectCapabilityTags surfaces price.cents (ADR-0001)", () => {
+    const entry = projectCapabilityTags(tags);
+    expect(entry.domain).toBe(tags.domain);
+    expect(entry.action).toBe(tags.action);
+    expect(entry.price.cents).toBe(tags.price.cents);
+    expect(entry.price.cents).toBe(10);
   });
 
   it("buildConfig honours TEXT_SUMMARIZE_AUTHORITY env", () => {
@@ -335,6 +345,60 @@ describe("fetchSource", () => {
     await expect(noopPdfExtractor(new Uint8Array())).rejects.toThrow(
       /pdf_extraction_unavailable/,
     );
+  });
+});
+
+/* ========================================================================== */
+/* Step 2b — SSRF guard (FN-111)                                              */
+/* ========================================================================== */
+
+describe("assertPublicHttpUrl (SSRF guard) via text-summarize fetcher", () => {
+  it("accepts public http(s) URLs", () => {
+    expect(() => assertPublicHttpUrl("https://example.com/page")).not.toThrow();
+    expect(() => assertPublicHttpUrl("http://example.com/page")).not.toThrow();
+  });
+
+  it("rejects file:// and non-http(s) schemes", () => {
+    expect(() => assertPublicHttpUrl("file:///etc/passwd")).toThrow(/unsupported_scheme/);
+    expect(() => assertPublicHttpUrl("ftp://example.com")).toThrow(/unsupported_scheme/);
+  });
+
+  it("rejects localhost / 127.0.0.1 / RFC1918 ranges", () => {
+    expect(() => assertPublicHttpUrl("http://localhost/x")).toThrow(/forbidden_host/);
+    expect(() => assertPublicHttpUrl("http://127.0.0.1/x")).toThrow(/forbidden_host/);
+    expect(() => assertPublicHttpUrl("http://10.0.0.5/x")).toThrow(/forbidden_host/);
+    expect(() => assertPublicHttpUrl("http://192.168.1.1/x")).toThrow(/forbidden_host/);
+    expect(() => assertPublicHttpUrl("http://172.20.5.5/x")).toThrow(/forbidden_host/);
+  });
+
+  it("rejects link-local / IMDS addresses", () => {
+    expect(() => assertPublicHttpUrl("http://169.254.1.1/x")).toThrow(/forbidden_host/);
+    expect(() => assertPublicHttpUrl("http://169.254.169.254/latest/meta-data")).toThrow(/forbidden_host/);
+  });
+
+  it("rejects IPv6 link-local and loopback", () => {
+    expect(() => assertPublicHttpUrl("http://[::1]/x")).toThrow(/forbidden_host/);
+    expect(() => assertPublicHttpUrl("http://[fe80::1]/x")).toThrow(/forbidden_host/);
+  });
+
+  it("fetchSource with url kind rejects loopback before calling fetch", async () => {
+    const fetch = makeFetch({});
+    await expect(
+      fetchSource(
+        { kind: "url", url: "http://127.0.0.1/secret" },
+        { fetch, pdfExtractor: noopPdfExtractor },
+      ),
+    ).rejects.toThrow(/forbidden_host/);
+  });
+
+  it("fetchSource with url kind rejects private range before calling fetch", async () => {
+    const fetch = makeFetch({});
+    await expect(
+      fetchSource(
+        { kind: "url", url: "http://10.0.0.1/internal" },
+        { fetch, pdfExtractor: noopPdfExtractor },
+      ),
+    ).rejects.toThrow(/forbidden_host/);
   });
 });
 

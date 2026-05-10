@@ -16,7 +16,16 @@ import { BorshReader, decodeAccountData } from "../utils/borsh-reader.js";
 //   name: String, model_id: String, metadata_uri: String
 //   reputation: u64
 //   status: u8 (0=active, 1=paused, 2=deactivated)
-//   ...
+//   --- v1 extension (FN-094) ---
+//   schema_version: u8
+//   human_authority: Option<{ strategy: String, sub: String, slot: u64 }>
+
+interface HumanAuthority {
+  readonly strategy: string;
+  readonly sub: string;
+  readonly slot: bigint;
+}
+
 function parseAgentState(rawData: any): {
   authority: string;
   name: string;
@@ -24,6 +33,8 @@ function parseAgentState(rawData: any): {
   metadataUri: string;
   reputation: bigint;
   statusByte: number;
+  schemaVersion: number;
+  humanAuthority: HumanAuthority | null;
 } | null {
   const buf = decodeAccountData(rawData);
   if (!buf || buf.length < 40) return null;
@@ -36,7 +47,26 @@ function parseAgentState(rawData: any): {
     const metadataUri = r.readString();
     const reputation = r.readU64();
     const statusByte = r.readU8();
-    return { authority, name, modelId, metadataUri, reputation, statusByte };
+
+    // v1 extension fields (FN-094). Older accounts that don't have these
+    // bytes will throw from BorshReader — we catch and default gracefully.
+    let schemaVersion = 0;
+    let humanAuthority: HumanAuthority | null = null;
+    try {
+      schemaVersion = r.readU8();
+      // Option<HumanAuthority>: 1-byte present flag followed by fields.
+      const hasHumanAuth = r.readU8();
+      if (hasHumanAuth === 1) {
+        const strategy = r.readString();
+        const sub = r.readString();
+        const slot = r.readU64();
+        humanAuthority = { strategy, sub, slot };
+      }
+    } catch {
+      // Pre-v1 account — schemaVersion stays 0, humanAuthority stays null.
+    }
+
+    return { authority, name, modelId, metadataUri, reputation, statusByte, schemaVersion, humanAuthority };
   } catch {
     return null;
   }
@@ -329,6 +359,9 @@ export function registerAgentTools(server: McpServer): void {
         const authorityStr = parsed?.authority ?? "N/A";
         const reputationStr = parsed ? parsed.reputation.toString() : "N/A";
 
+        const schemaVersion = parsed?.schemaVersion ?? 0;
+        const humanAuthority = parsed?.humanAuthority ?? null;
+
         const lines = [
           `Agent:       ${agent_id}`,
           `Name:        ${nameStr}`,
@@ -336,9 +369,14 @@ export function registerAgentTools(server: McpServer): void {
           `Model:       ${modelStr}`,
           `Status:      ${statusStr}`,
           `Reputation:  ${reputationStr}`,
+          `Layout:      v${schemaVersion}`,
           `Program:     ${account.owner ?? agentProgramId}`,
           `Balance:     ${account.lamports ?? 0} lamports`,
         ];
+        if (humanAuthority !== null) {
+          lines.push(`Auth:        ${humanAuthority.strategy} / sub=${humanAuthority.sub}`);
+          lines.push(`Bound slot:  ${humanAuthority.slot}`);
+        }
         if (metaStr) lines.push(`Metadata:    ${metaStr}`);
 
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };

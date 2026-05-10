@@ -29,7 +29,8 @@
 // (T-1.4.1.2 / T-1.4.1.3) so a single gateway boot can wire all
 // three with the same chain client and pinner.
 
-import { createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 import {
   BankMockIssueError,
@@ -96,6 +97,13 @@ export async function issueBankFiatRampTest(
   request: BankMockIssueRequest,
 ): Promise<BankMockIssueResponse> {
   const { checkingAccountId, agentCardPubkey } = request;
+
+  // FN-070: caller-binding security gate — MUST run before any side effect.
+  // `callerPubkey` is the verified BAP signature principal from the gateway.
+  // It must equal `agentCardPubkey` (the subject named in the request body);
+  // otherwise a rogue caller could mint credentials for other agents.
+  assertCallerBindingOrThrow(request.callerPubkey, agentCardPubkey);
+
   if (checkingAccountId.length === 0) {
     throw new BankMockIssueError(
       "invalid_request",
@@ -285,6 +293,49 @@ export async function revokeBankFiatRampTest(
 
 // -- Helpers ----------------------------------------------------------
 
+/**
+ * Assert that the verified caller pubkey matches the `agentCardPubkey` named
+ * in the request body before any mint side-effect runs (FN-070).
+ *
+ * Throws `BankMockIssueError("unauthorized_caller", ...)` when:
+ *   - `callerPubkey` is absent or empty ("gateway did not verify a caller")
+ *   - `agentCardPubkey` is empty
+ *   - the two values differ (constant-time comparison over equal-length hex)
+ *
+ * Case-insensitive over hex (both sides are lowercased before comparison).
+ * Uses `timingSafeEqual` to avoid timing oracles.
+ */
+function assertCallerBindingOrThrow(
+  callerPubkey: string | undefined,
+  agentCardPubkey: string,
+): void {
+  if (
+    !callerPubkey ||
+    agentCardPubkey.length === 0
+  ) {
+    throw new BankMockIssueError(
+      "unauthorized_caller",
+      "caller is not bound to the requested agentCardPubkey",
+    );
+  }
+  const a = callerPubkey.toLowerCase();
+  const b = agentCardPubkey.toLowerCase();
+  if (a.length !== b.length) {
+    throw new BankMockIssueError(
+      "unauthorized_caller",
+      "caller is not bound to the requested agentCardPubkey",
+    );
+  }
+  const aBuf = Buffer.from(a, "utf8");
+  const bBuf = Buffer.from(b, "utf8");
+  if (!timingSafeEqual(aBuf, bBuf)) {
+    throw new BankMockIssueError(
+      "unauthorized_caller",
+      "caller is not bound to the requested agentCardPubkey",
+    );
+  }
+}
+
 interface VcInput {
   agentCardPubkey: string;
   issuerAuthorityPubkey: string;
@@ -375,7 +426,15 @@ function jcsCompareUtf16(a: string, b: string): number {
   return a.length - b.length;
 }
 
-function sha256Hex(input: string): string {
+/**
+ * Compute the SHA-256 digest of a UTF-8 string and return it as a
+ * lowercase 64-character hex string. Exported so downstream issuer
+ * modules (`bank.ts`, etc.) can share this helper without re-declaring
+ * it (DRY + single implementation for the `claim_hash` convention).
+ *
+ * Added as an additive export in FN-097 — no behaviour change.
+ */
+export function sha256Hex(input: string): string {
   return createHash("sha256").update(input, "utf8").digest("hex");
 }
 

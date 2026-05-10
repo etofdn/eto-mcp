@@ -1,0 +1,30 @@
+{
+  "_source": "Beckn v2.0 LTS reference: https://developers.becknprotocol.io/docs/protocol-specifications/",
+  "_note": "BAP selects a specific item from a BPP. Includes bpp_id and bpp_uri targeting a specific BPP.",
+  "context": {
+    "domain": "retail",
+    "action": "select",
+    "version": "2.0.0",
+    "bap_id": "bap.example.com",
+    "bap_uri": "https://bap.example.com/beckn",
+    "bpp_id": "bpp.example.com",
+    "bpp_uri": "https://bpp.example.com/beckn",
+    "transaction_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+    "message_id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+    "timestamp": "2026-01-01T00:01:00.000Z",
+    "ttl": "PT30S"
+  },
+  "message": {
+    "order": {
+      "provider": {
+        "id": "prov-001"
+      },
+      "items": [
+        {
+          "id": "item-001",
+          "quantity": { "count": 1 }
+        }
+      ]
+    }
+  }
+}

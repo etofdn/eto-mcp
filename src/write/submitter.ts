@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import { rpc } from "../read/rpc-client.js";
 import { blockhashCache } from "./blockhash-cache.js";
+import { log } from "../utils/logger.js";
 import type { TransactionResult } from "../models/index.js";
 
 export interface SubmitParams {
@@ -129,10 +130,17 @@ export class TransactionSubmitter {
     _vm: string,
   ): Promise<TransactionResult> {
     const deadline = Date.now() + Math.max(remainingMs, 5000);
+    // FN-197: count consecutive non-"not found" RPC failures. A single
+    // transient blip (e.g. brief network glitch) should not abort the
+    // polling loop, but a sustained failure window must surface to the
+    // caller so they don’t spin silently until timeout. Reset on any
+    // successful round-trip (whether tx is null or a receipt).
+    let consecutiveErrors = 0;
 
     while (Date.now() < deadline) {
       try {
         const tx: any = await rpc.getTransaction(signature);
+        consecutiveErrors = 0;
         if (tx) {
           // The receipt arrives whether the tx succeeded or failed; check
           // success/error before reporting "confirmed". Otherwise every failed
@@ -169,8 +177,34 @@ export class TransactionSubmitter {
             latency_ms: 0,
           };
         }
-      } catch {
-        // Transaction not found yet, keep polling
+      } catch (e: any) {
+        // FN-197 / FN-099: only swallow "transaction not found yet" — that
+        // is the expected polling case. Real RPC/network failures are
+        // tolerated up to `config.tx.maxPollErrors` consecutive occurrences
+        // before bubbling, which gives roughly
+        // `maxPollErrors * confirmationPollMs` of tolerance for transient
+        // node hiccups. Anything beyond that surfaces to the caller so
+        // the loop never spins silently until timeout.
+        const msg = String(e?.message ?? e ?? "");
+        const notFound =
+          /not\s*found|unknown\s*transaction|invalid\s*signature/i.test(msg) ||
+          /JSON-RPC\s*error\s*-32004/.test(msg) || // common "tx not found" code
+          /JSON-RPC\s*error\s*-32602/.test(msg); // invalid params (sig not seen yet)
+        if (notFound) {
+          // Expected polling case — reset the counter and keep polling.
+          consecutiveErrors = 0;
+        } else {
+          consecutiveErrors++;
+          if (consecutiveErrors >= config.tx.maxPollErrors) {
+            // Threshold reached: the node looks sick. Bubble to _submit’s
+            // outer retry/non-retryable classifier.
+            throw e;
+          }
+          log("warn", "rpc", "pollConfirmation transient error", {
+            attempt: consecutiveErrors,
+            msg,
+          });
+        }
       }
       await new Promise<void>((r) => setTimeout(r, config.tx.confirmationPollMs));
     }

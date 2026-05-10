@@ -31,10 +31,17 @@
 // party predicate of `schema = kyc.us-test` matches; nothing about
 // this credential should be interpreted as real-world KYC.
 
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  createPublicKey,
+  timingSafeEqual,
+  verify as cryptoVerify,
+} from "node:crypto";
 
 import {
   KYC_TEST_MIN_DWELL_SECONDS,
+  KycTestAgentCardSignatureVerifier,
   KycTestFormSubmission,
   KycTestFormTokenSigner,
   KycTestIssueError,
@@ -48,6 +55,7 @@ export {
   KycTestIssueError,
 } from "./kyc-test.types.js";
 export type {
+  KycTestAgentCardSignatureVerifier,
   KycTestDedupeRow,
   KycTestDedupeStore,
   KycTestFormSubmission,
@@ -99,12 +107,25 @@ export async function issueKycTest(
   deps: KycTestIssuerDeps,
   request: KycTestIssueRequest,
 ): Promise<KycTestIssueResponse> {
-  const { submission, agentCardPubkey } = request;
+  const { submission, agentCardPubkey, agentCardSignature } = request;
   if (agentCardPubkey.length === 0) {
     throw new KycTestIssueError(
       "invalid_form",
       "agentCardPubkey is empty",
       "empty_card",
+    );
+  }
+  if (
+    typeof agentCardSignature !== "string" ||
+    agentCardSignature.length === 0
+  ) {
+    // Treat a missing signature as a wallet-binding failure so the
+    // attacker doesn't get a free 400 — callers MUST prove control
+    // of `agentCardPubkey`. Mirrors civic's behavior.
+    throw new KycTestIssueError(
+      "invalid_agent_card_signature",
+      "agentCardSignature must be a non-empty base64 string",
+      "empty_signature",
     );
   }
 
@@ -113,6 +134,10 @@ export async function issueKycTest(
 
   // Step 2 — verify the form HMAC. The token binds (name, dob,
   // flowStartedAtUnix); changing any of them invalidates the tag.
+  // NOTE: the form HMAC does NOT bind `agentCardPubkey` (the form
+  // is rendered before the wallet picks a card). The wallet-binding
+  // is enforced separately by the Ed25519 `agentCardSignature`
+  // check in Step 4 — see FN-057.
   const tokenOk = deps.tokenSigner.verify({
     fullName: submission.fullName,
     dobIso: submission.dobIso,
@@ -145,8 +170,24 @@ export async function issueKycTest(
     );
   }
 
-  // Step 4 — derive nullifier and consult dedupe store.
+  // Step 4 — derive nullifier and verify the wallet-binding signature
+  // BEFORE the dedupe lookup (FN-057). Without this, an attacker can
+  // POST a victim's `agentCardPubkey` and burn the victim's
+  // (nullifier, card) slot in the dedupe store, denying the rightful
+  // owner of that identity any future issuance on their real card.
   const nullifier = deriveNullifier(normalized.normName, normalized.dobIso);
+
+  const sigOk = await deps.signatureVerifier.verify({
+    nullifier,
+    agentCardPubkey,
+    signature: agentCardSignature,
+  });
+  if (!sigOk) {
+    throw new KycTestIssueError(
+      "invalid_agent_card_signature",
+      "agent card signature does not validate over sha256(nullifier || pubkey)",
+    );
+  }
 
   const existing = await deps.dedupe.get(nullifier);
   if (existing !== undefined) {
@@ -172,8 +213,8 @@ export async function issueKycTest(
   const vc = buildKycTestVc({
     agentCardPubkey,
     issuerAuthorityPubkey: deps.issuerAuthorityPubkey,
-    fullName: normalized.normName,
-    dobIso: normalized.dobIso,
+    name_hash: sha256Hex(normalized.normName),
+    dob_hash: sha256Hex(normalized.dobIso),
     nullifier,
     issuanceDate: new Date(nowUnix * 1000).toISOString(),
   });
@@ -400,6 +441,95 @@ export class HmacKycTestFormTokenSigner implements KycTestFormTokenSigner {
   }
 }
 
+// -- Default Ed25519 wallet-binding verifier (FN-057) -----------------
+
+/**
+ * Default `KycTestAgentCardSignatureVerifier` backed by Node's
+ * built-in Ed25519 (Node 18+). Mirrors `ed25519SignatureVerifier`
+ * in `civic.ts` so the kyc.us-test issuer enforces the same
+ * wallet-binding contract.
+ *
+ * Resolves `false` on any cryptographic / decoding error — the
+ * caller surfaces the typed `invalid_agent_card_signature` error.
+ */
+export const ed25519KycTestSignatureVerifier: KycTestAgentCardSignatureVerifier =
+  {
+    async verify({ nullifier, agentCardPubkey, signature }) {
+      try {
+        const nullifierBytes = hexToBytes(nullifier);
+        if (nullifierBytes.length !== 32) return false;
+        const cardBytes = base58Decode(agentCardPubkey);
+        if (cardBytes.length !== 32) return false;
+        const sigBytes = Buffer.from(signature, "base64");
+        if (sigBytes.length !== 64) return false;
+        const message = createHash("sha256")
+          .update(nullifierBytes)
+          .update(cardBytes)
+          .digest();
+        // RFC 8410 Ed25519 SubjectPublicKeyInfo prefix.
+        const spki = Buffer.concat([
+          Buffer.from("302a300506032b6570032100", "hex"),
+          Buffer.from(cardBytes),
+        ]);
+        const key = createPublicKey({ key: spki, format: "der", type: "spki" });
+        return cryptoVerify(null, Buffer.from(message), key, sigBytes);
+      } catch {
+        return false;
+      }
+    },
+  };
+
+function hexToBytes(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0) throw new Error("hex: odd length");
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i += 1) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+// Local base58 decoder (Solana alphabet) — inlined so kyc-test stays
+// independently versionable (no cross-issuer import). Mirrors the
+// implementation in `civic.ts`.
+const BASE58_ALPHABET =
+  "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const BASE58_LOOKUP: Record<string, number> = (() => {
+  const m: Record<string, number> = {};
+  for (let i = 0; i < BASE58_ALPHABET.length; i += 1) {
+    m[BASE58_ALPHABET[i]!] = i;
+  }
+  return m;
+})();
+
+function base58Decode(s: string): Uint8Array {
+  if (s.length === 0) return new Uint8Array(0);
+  let zeros = 0;
+  while (zeros < s.length && s[zeros] === "1") zeros += 1;
+  const bytes: number[] = [];
+  for (let i = zeros; i < s.length; i += 1) {
+    const c = s[i]!;
+    const v = BASE58_LOOKUP[c];
+    if (v === undefined) {
+      throw new Error(`base58: invalid character ${JSON.stringify(c)}`);
+    }
+    let carry = v;
+    for (let j = 0; j < bytes.length; j += 1) {
+      carry += bytes[j]! * 58;
+      bytes[j] = carry & 0xff;
+      carry >>= 8;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>= 8;
+    }
+  }
+  const out = new Uint8Array(zeros + bytes.length);
+  for (let i = 0; i < bytes.length; i += 1) {
+    out[zeros + i] = bytes[bytes.length - 1 - i]!;
+  }
+  return out;
+}
+
 // -- Helpers ----------------------------------------------------------
 
 interface NormalizedSubmission {
@@ -516,8 +646,8 @@ export function deriveNullifier(normName: string, dobIso: string): string {
 interface VcInput {
   agentCardPubkey: string;
   issuerAuthorityPubkey: string;
-  fullName: string;
-  dobIso: string;
+  name_hash: string;
+  dob_hash: string;
   nullifier: string;
   issuanceDate: string;
 }
@@ -540,8 +670,8 @@ export function buildKycTestVc(input: VcInput): Record<string, unknown> {
       id: `did:eto:agentcard:${input.agentCardPubkey}`,
       kycLevel: "mock-test",
       kycJurisdiction: "us-test",
-      legalName: input.fullName,
-      dateOfBirth: input.dobIso,
+      name_hash: input.name_hash,
+      dob_hash: input.dob_hash,
       bridgeNullifier: input.nullifier,
     },
     issuerAuthority: input.issuerAuthorityPubkey,

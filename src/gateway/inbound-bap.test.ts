@@ -12,7 +12,10 @@ import {
   extractTags,
   sha256_hex,
   stubSubmit,
+  validateBecknEnvelope,
+  validateBecknEnvelopeFreshness,
   type InboundBapDeps,
+  type NackBody,
 } from "./inbound-bap.js";
 
 // ---------- Minimal HTTP test helper ----------
@@ -266,5 +269,209 @@ describe("stubSubmit", () => {
     const r1 = await stubSubmit("search", { foo: "bar" });
     const r2 = await stubSubmit("search", { foo: "bar" });
     expect(r1.tx_signature).toBe(r2.tx_signature);
+  });
+});
+
+// ---------- Envelope hardening parity tests (FN-074 / FN-188) ----------
+
+describe("validateBecknEnvelope + freshness (four defect cases)", () => {
+  const base = { ...validSearchBody };
+
+  it("rejects BAD_VERSION", async () => {
+    const bad = { ...base, context: { ...base.context, version: "1.0.0" } };
+    const env = validateBecknEnvelope(bad.context);
+    expect(env.ok).toBe(false);
+    if (!env.ok) {
+      expect(env.body.error.code).toBe("BAD_VERSION");
+      expect(env.status).toBe(400);
+    }
+  });
+
+  it("rejects BAD_TIMESTAMP (malformed)", async () => {
+    const bad = { ...base, context: { ...base.context, timestamp: "2024-13-01T00:00:00Z" } };
+    const env = validateBecknEnvelope(bad.context);
+    expect(env.ok).toBe(false);
+    if (!env.ok) {
+      expect(env.body.error.code).toBe("BAD_TIMESTAMP");
+      expect(env.status).toBe(400);
+    }
+  });
+
+  it("rejects BAD_TTL (malformed)", async () => {
+    const bad = { ...base, context: { ...base.context, ttl: "30 seconds" } };
+    const env = validateBecknEnvelope(bad.context);
+    expect(env.ok).toBe(false);
+    if (!env.ok) {
+      expect(env.body.error.code).toBe("BAD_TTL");
+      expect(env.status).toBe(400);
+    }
+  });
+
+  it("rejects EXPIRED_TTL (timestamp + ttl < now)", async () => {
+    const past = new Date(Date.now() - 1000 * 3600 * 24 * 7).toISOString();
+    const bad = { ...base, context: { ...base.context, timestamp: past, ttl: "PT1S" } };
+    const env = validateBecknEnvelope(bad.context);
+    expect(env.ok).toBe(false);
+    if (!env.ok) {
+      expect(env.body.error.code).toBe("EXPIRED_TTL");
+      expect(env.status).toBe(400);
+    }
+  });
+
+  it("POST /search with bad version returns 400 NACK", async () => {
+    // self-contained server for this edge case test to avoid scope/close races
+    const app = express();
+    app.use(express.json());
+    const mock = vi.fn().mockResolvedValue({ tx_signature: "dead".repeat(16) });
+    mountInboundBap(app, { submitOnChain: mock });
+    const localServer = await new Promise<http.Server>((resolve) => {
+      const s = app.listen(0, "127.0.0.1", () => resolve(s));
+    });
+    const addr = localServer.address() as { port: number } | null;
+    if (!addr) throw new Error("listen returned null address");
+    try {
+      const bad = { ...base, context: { ...base.context, version: "1.0.0" } };
+      const { status, body } = await new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+        const data = JSON.stringify(bad);
+        const req = http.request(
+          {
+            hostname: "127.0.0.1",
+            port: addr.port,
+            path: "/search",
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) },
+          },
+          (res) => {
+            let raw = "";
+            res.on("data", (c: Buffer) => (raw += c.toString()));
+            res.on("end", () => {
+              try {
+                resolve({ status: res.statusCode ?? 0, body: JSON.parse(raw) });
+              } catch {
+                resolve({ status: res.statusCode ?? 0, body: raw });
+              }
+            });
+          },
+        );
+        req.on("error", reject);
+        req.write(data);
+        req.end();
+      });
+      expect(status).toBe(400);
+      const b = body as Record<string, unknown>;
+      expect((b.error as Record<string, unknown>)?.code).toBe("BAD_VERSION");
+    } finally {
+      localServer.close();
+    }
+  });
+});
+
+// ---------- FN-075: Caller pubkey plumbing on /search and /select ----------
+
+describe('FN-075: verifyBapSignature — callerPubkey plumbing on /search', () => {
+  const SIGNER_PUBKEY = 'b'.repeat(64); // canonical lowercase hex
+
+  function buildBapServer(deps: InboundBapDeps) {
+    return new Promise<{ server: http.Server; url: string }>((resolve) => {
+      const app = express();
+      app.use(express.json());
+      mountInboundBap(app, deps);
+      const s = app.listen(0, '127.0.0.1', () => {
+        const addr = s.address() as { port: number };
+        resolve({ server: s, url: `http://127.0.0.1:${addr.port}` });
+      });
+    });
+  }
+
+  it('happy path: valid signature → callerPubkey in on-chain args, submitOnChain called', async () => {
+    const submitMock = vi.fn().mockResolvedValue({ tx_signature: 'aaaa'.repeat(16) });
+    const { server, url } = await buildBapServer({
+      submitOnChain: submitMock,
+      verifyBapSignature: () => SIGNER_PUBKEY,
+    });
+
+    const res = await fetch(`${url}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validSearchBody),
+    });
+
+    expect(res.status).toBe(202);
+    expect(submitMock).toHaveBeenCalledOnce();
+    const [, args] = submitMock.mock.calls[0] as [string, Record<string, unknown>];
+    expect(args.caller_pubkey).toBe(SIGNER_PUBKEY);
+
+    await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
+  });
+
+  it('bad signature → 401, submitOnChain NOT called', async () => {
+    const submitMock = vi.fn().mockResolvedValue({ tx_signature: 'aaaa'.repeat(16) });
+    const { server, url } = await buildBapServer({
+      submitOnChain: submitMock,
+      verifyBapSignature: () => null,
+    });
+
+    const res = await fetch(`${url}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validSearchBody),
+    });
+
+    expect(res.status).toBe(401);
+    const json = await res.json() as Record<string, unknown>;
+    expect(json.error).toBe('invalid_signature');
+    expect(submitMock).not.toHaveBeenCalled();
+
+    await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
+  });
+
+  it('body bap_id differs from signer: callerPubkey reflects signer, body bap_id unchanged', async () => {
+    const submitMock = vi.fn().mockResolvedValue({ tx_signature: 'aaaa'.repeat(16) });
+    const { server, url } = await buildBapServer({
+      submitOnChain: submitMock,
+      verifyBapSignature: () => SIGNER_PUBKEY,
+    });
+
+    const bodyWithDifferentBapId = {
+      ...validSearchBody,
+      context: { ...validSearchBody.context, bap_id: 'other-bap.example.com' },
+    };
+    const res = await fetch(`${url}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bodyWithDifferentBapId),
+    });
+
+    expect(res.status).toBe(202);
+    expect(submitMock).toHaveBeenCalledOnce();
+    const [, args] = submitMock.mock.calls[0] as [string, Record<string, unknown>];
+    // callerPubkey is the signer — not the body bap_id
+    expect(args.caller_pubkey).toBe(SIGNER_PUBKEY);
+    // body bap_id is passed through unchanged (handler enforces equality)
+    expect(args.bap_id).toBe('other-bap.example.com');
+
+    await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
+  });
+
+  it('dev-bypass (no verifyBapSignature): caller_pubkey absent, no pubkey forged', async () => {
+    const submitMock = vi.fn().mockResolvedValue({ tx_signature: 'aaaa'.repeat(16) });
+    const { server, url } = await buildBapServer({
+      submitOnChain: submitMock,
+      // verifyBapSignature intentionally absent
+    });
+
+    const res = await fetch(`${url}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validSearchBody),
+    });
+
+    expect(res.status).toBe(202);
+    expect(submitMock).toHaveBeenCalledOnce();
+    const [, args] = submitMock.mock.calls[0] as [string, Record<string, unknown>];
+    // Must NOT have a forged pubkey — undefined means no verification ran
+    expect(args.caller_pubkey).toBeUndefined();
+
+    await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
   });
 });

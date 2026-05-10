@@ -28,6 +28,13 @@
 
 import { createHash } from 'node:crypto';
 
+import {
+  assertCallerEquals,
+  UNAUTHORIZED_CALLER_REASON,
+  type AuthenticatedRequest,
+} from '../auth.js';
+import { defaultBankLedger } from '../credential-ledger.js';
+
 export interface OpenCheckingRequest {
   subject: string;                    // hex pubkey — receives credential, owns account
   bank_issuer: string;                // hex — bank issuer pubkey (this BPP's signing identity)
@@ -60,10 +67,24 @@ export interface OpenCheckingDeps {
   issueCheckingCredential: (cred: OpenCheckingResult['credential']) => Promise<{ tx_signature: string; credential_pda: string }>;
   /** Record CheckingAccount in the local mock ledger. STUBBED. */
   recordCheckingAccount: (pda: string, account: { holder: string; opened_slot: number; opening_balance: number }) => Promise<void>;
+  /**
+   * FN-191: orphan-ledger reconciliation hook. Called from the
+   * `issue_failed` path after `recordCheckingAccount` succeeded but the
+   * on-chain `issueCheckingCredential` threw. Mirrors the
+   * `flagReconciliation` hook in `offramp.ts` so ops gets a deterministic
+   * signal and the eventual GC sweeper can find the orphan.
+   *
+   * Implementations MUST be idempotent.
+   */
+  flagReconciliation: (
+    account_pda: string,
+    holder: string,
+    body: { opened_slot: number; opening_balance: number },
+  ) => Promise<void>;
 }
 
 export class OpenCheckingRejected extends Error {
-  constructor(public reason: 'invalid_pubkey' | 'invalid_deposit' | 'credentials_missing' | 'issue_failed' | 'ledger_failed') {
+  constructor(public reason: 'unauthorized_caller' | 'invalid_pubkey' | 'invalid_deposit' | 'credentials_missing' | 'issue_failed' | 'ledger_failed') {
     super('open-checking rejected: ' + reason);
   }
 }
@@ -73,31 +94,53 @@ const HEX64 = /^[0-9a-fA-F]{64}$/;
 /** Credential schemas required by the on-chain Network policy for this BPP. */
 export const REQUIRED_SCHEMAS = ['eto.beckn.schema.verified-human.v1', 'eto.beckn.schema.kyc.us-test.v1'];
 
-export async function openChecking(req: OpenCheckingRequest, deps: OpenCheckingDeps): Promise<OpenCheckingResult> {
-  if (!HEX64.test(req.subject)) throw new OpenCheckingRejected('invalid_pubkey');
-  if (!HEX64.test(req.bank_issuer)) throw new OpenCheckingRejected('invalid_pubkey');
-  const opening = req.opening_deposit_atomic ?? 0;
+/**
+ * FN-015: caller-message-authorship authentication is enforced FIRST,
+ * before any validation, credential gate, ledger write, or chain call.
+ * `req.callerPubkey` (sourced by the gateway from BAP signature
+ * verification) MUST equal `req.body.subject` — otherwise the handler
+ * rejects with `unauthorized_caller` and NO downstream side effect runs.
+ *
+ * NOTE: `verifyHolderCredentials` is a credential-validity guard, NOT
+ * caller authentication. See `keeper/bpps/bank/auth.ts`.
+ */
+export async function openChecking(
+  req: AuthenticatedRequest<OpenCheckingRequest>,
+  deps: OpenCheckingDeps,
+): Promise<OpenCheckingResult> {
+  // --- Caller-authentication (FN-015) — FIRST, before any side effect ---
+  try {
+    assertCallerEquals(req.callerPubkey, req.body.subject);
+  } catch {
+    throw new OpenCheckingRejected(UNAUTHORIZED_CALLER_REASON);
+  }
+
+  const body = req.body;
+
+  if (!HEX64.test(body.subject)) throw new OpenCheckingRejected('invalid_pubkey');
+  if (!HEX64.test(body.bank_issuer)) throw new OpenCheckingRejected('invalid_pubkey');
+  const opening = body.opening_deposit_atomic ?? 0;
   if (!Number.isInteger(opening) || opening < 0) throw new OpenCheckingRejected('invalid_deposit');
 
   // Defensive re-check (chain gate is authoritative; this guards against
   // mis-routed requests that bypass the on-chain Init gate).
-  const ok = await deps.verifyHolderCredentials(req.subject, REQUIRED_SCHEMAS);
+  const ok = await deps.verifyHolderCredentials(body.subject, REQUIRED_SCHEMAS);
   if (!ok) throw new OpenCheckingRejected('credentials_missing');
 
   const checking_account_pda = createHash('sha256')
     .update('checking_account')
-    .update(Buffer.from(req.subject, 'hex'))
-    .update(Buffer.from(BigInt(req.opened_slot).toString(16).padStart(16, '0'), 'hex'))
+    .update(Buffer.from(body.subject, 'hex'))
+    .update(Buffer.from(BigInt(body.opened_slot).toString(16).padStart(16, '0'), 'hex'))
     .digest('hex');
 
   const credential: OpenCheckingResult['credential'] = {
     schema: 'account.checking.v1',
-    subject: req.subject,
-    issuer: req.bank_issuer,
+    subject: body.subject,
+    issuer: body.bank_issuer,
     body: {
       account_pda: checking_account_pda,
-      holder: req.subject,
-      opened_slot: req.opened_slot,
+      holder: body.subject,
+      opened_slot: body.opened_slot,
       currency: 'eUSD',
       opening_balance: opening,
     },
@@ -106,8 +149,8 @@ export async function openChecking(req: OpenCheckingRequest, deps: OpenCheckingD
   // Side-effects (atomicity is best-effort in v0; real impl uses 2-phase commit)
   try {
     await deps.recordCheckingAccount(checking_account_pda, {
-      holder: req.subject,
-      opened_slot: req.opened_slot,
+      holder: body.subject,
+      opened_slot: body.opened_slot,
       opening_balance: opening,
     });
   } catch {
@@ -117,8 +160,19 @@ export async function openChecking(req: OpenCheckingRequest, deps: OpenCheckingD
   try {
     await deps.issueCheckingCredential(credential);
   } catch {
-    // Best-effort: ledger entry is now orphaned. v1 will use a sweeper to GC
-    // ledger entries with no corresponding on-chain credential_pda.
+    // FN-191: ledger entry from recordCheckingAccount is now orphaned.
+    // Flag for reconciliation BEFORE rethrowing so the eventual GC
+    // sweeper has a deterministic handle. flagReconciliation must not
+    // throw — if it does, swallow: the primary issue_failed error is
+    // what callers act on.
+    try {
+      await deps.flagReconciliation(checking_account_pda, body.subject, {
+        opened_slot: body.opened_slot,
+        opening_balance: opening,
+      });
+    } catch {
+      // intentionally swallowed
+    }
     throw new OpenCheckingRejected('issue_failed');
   }
 
@@ -141,7 +195,16 @@ export const stubs: OpenCheckingDeps = {
     console.log(`[STUB] issueCheckingCredential subject=${cred.subject.slice(0, 8)} → tx=${sig.slice(0, 16)}`);
     return { tx_signature: sig, credential_pda };
   },
+  flagReconciliation: async (account_pda, holder, _body) => {
+    // FN-191 stub — mirrors offramp's flagReconciliation logger.
+    console.warn(
+      `[STUB] RECONCILE NEEDED open-checking account_pda=${account_pda.slice(0, 12)} holder=${holder.slice(0, 8)} (issue_failed post-recordCheckingAccount)`,
+    );
+  },
   recordCheckingAccount: async (pda, acc) => {
-    console.log(`[STUB] recordCheckingAccount pda=${pda.slice(0, 8)} holder=${acc.holder.slice(0, 8)} opening=${acc.opening_balance}`);
+    // FN-105: persist to the shared bank credential ledger so issue-card
+    // and open-checking entries live in one place for the v1 GC sweeper.
+    await defaultBankLedger.recordCheckingAccount(pda, acc);
+    console.log(`[STUB] recordCheckingAccount pda=${pda.slice(0, 8)} holder=${acc.holder.slice(0, 8)} opening=${acc.opening_balance} → ledger size=${defaultBankLedger.size()}`);
   },
 };

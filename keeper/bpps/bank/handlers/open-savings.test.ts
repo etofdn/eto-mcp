@@ -21,6 +21,7 @@ const ISSUER = 'c'.repeat(64);
 
 function makeRequest(overrides: Partial<OpenSavingsRequest> = {}): OpenSavingsRequest {
   return {
+    caller_pubkey: SUBJECT, // FN-034: caller MUST equal subject
     subject: SUBJECT,
     linked_checking_account_pda: CHECKING_PDA,
     bank_issuer: ISSUER,
@@ -123,6 +124,34 @@ describe('openSavings — atomicity on failure', () => {
 // Validation errors
 // ---------------------------------------------------------------------------
 
+describe('openSavings — caller-binding (FN-034)', () => {
+  it('rejects when caller_pubkey != subject with caller_mismatch', async () => {
+    const deps = makeDeps();
+    const attacker = 'f'.repeat(64);
+    await expect(
+      openSavings(makeRequest({ caller_pubkey: attacker }), deps),
+    ).rejects.toMatchObject({ reason: 'caller_mismatch' });
+  });
+
+  it('rejects without invoking verifyCheckingCredential / recordSavingsAccount / issueSavingsCredential', async () => {
+    const deps = makeDeps();
+    const attacker = 'f'.repeat(64);
+    await expect(
+      openSavings(makeRequest({ caller_pubkey: attacker }), deps),
+    ).rejects.toBeInstanceOf(OpenSavingsRejected);
+    expect(deps.verifyCheckingCredential).not.toHaveBeenCalled();
+    expect(deps.recordSavingsAccount).not.toHaveBeenCalled();
+    expect(deps.issueSavingsCredential).not.toHaveBeenCalled();
+  });
+
+  it('rejects when caller_pubkey is not a valid hex64 with invalid_pda', async () => {
+    const deps = makeDeps();
+    await expect(
+      openSavings(makeRequest({ caller_pubkey: 'tooshort' }), deps),
+    ).rejects.toMatchObject({ reason: 'invalid_pda' });
+  });
+});
+
 describe('openSavings — invalid_pda', () => {
   it('throws invalid_pda for short subject', async () => {
     const deps = makeDeps();
@@ -203,8 +232,9 @@ describe('openSavings — PDA derivation', () => {
   });
 
   it('produces different PDAs when subject differs', async () => {
-    const result1 = await openSavings(makeRequest({ subject: 'a'.repeat(64) }), makeDeps());
-    const result2 = await openSavings(makeRequest({ subject: '1'.repeat(64) }), makeDeps());
+    // FN-034: caller_pubkey must equal subject, so override both together.
+    const result1 = await openSavings(makeRequest({ caller_pubkey: 'a'.repeat(64), subject: 'a'.repeat(64) }), makeDeps());
+    const result2 = await openSavings(makeRequest({ caller_pubkey: '1'.repeat(64), subject: '1'.repeat(64) }), makeDeps());
     expect(result1.savings_account_pda).not.toBe(result2.savings_account_pda);
   });
 });

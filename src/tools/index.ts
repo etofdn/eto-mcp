@@ -107,6 +107,23 @@ const TOOL_CAPS: Record<string, { cap: string; rate: "read" | "write" | "deploy"
   anchor_test:            { cap: "deploy:write",    rate: "write" },
   // Session introspection
   session_info:           { cap: "wallet:read",     rate: "read" },
+  // Beckn flow tools (FN-176)
+  beckn_search:           { cap: "beckn:read",      rate: "read" },
+  beckn_select:           { cap: "beckn:write",     rate: "write" },
+  beckn_init:             { cap: "beckn:write",     rate: "write" },
+  beckn_confirm:          { cap: "beckn:write",     rate: "write" },
+  beckn_rate:             { cap: "beckn:write",     rate: "write" },
+  // Credential ops (FN-177)
+  credential_request:     { cap: "credential:write", rate: "write" },
+  credential_attach:      { cap: "credential:write", rate: "write" },
+  credential_verify:      { cap: "credential:read",  rate: "read" },
+  credential_revoke:      { cap: "credential:write", rate: "write" },
+  // Banking flow tools (FN-178)
+  bank_open_checking:     { cap: "bank:write",      rate: "write" },
+  bank_onramp:            { cap: "bank:write",      rate: "write" },
+  bank_offramp:           { cap: "bank:write",      rate: "write" },
+  bank_wire:              { cap: "bank:write",      rate: "write" },
+  bank_transfer_funds:    { cap: "bank:write",      rate: "write" },
 };
 
 /** Wrap an McpServer so every tool() call gets automatic timing + logging + auth + rate limiting */
@@ -182,6 +199,10 @@ import { registerFoundryTools } from "./foundry.js";
 import { registerAnchorTools } from "./anchor.js";
 // Session introspection
 import { registerSessionTools } from "./session.js";
+// FN-176/177/178 — Beckn / Credential / Banking MCP tools
+import { registerBecknFlowTools } from "./beckn-flows.js";
+import { registerCredentialTools } from "./credentials-tools.js";
+import { registerBankingTools } from "./banking-tools.js";
 
 export function registerAllTools(server: McpServer): void {
   instrumentServer(server);
@@ -209,5 +230,9 @@ export function registerAllTools(server: McpServer): void {
   registerAnchorTools(server);      // 3 tools: anchor_init, anchor_build, anchor_test
   // Session introspection (1 tool)
   registerSessionTools(server);     // session_info
-  // Total: 81 tools
+  // FN-176/177/178 (14 tools)
+  registerBecknFlowTools(server);   // 5 tools: beckn_search/select/init/confirm/rate
+  registerCredentialTools(server);  // 4 tools: credential_request/attach/verify/revoke
+  registerBankingTools(server);     // 5 tools: bank_open_checking/onramp/offramp/wire/transfer_funds
+  // Total: 95 tools
 }

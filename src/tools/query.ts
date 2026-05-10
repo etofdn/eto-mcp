@@ -3,6 +3,12 @@ import { z } from "zod";
 import { rpc } from "../read/rpc-client.js";
 import { lamportsToSol } from "../utils/units.js";
 import { detectAddressType } from "../utils/address.js";
+import {
+  extractMemosFromLogs,
+  parseMemoPayload,
+  matchesFilter,
+} from "../utils/memo-parse.js";
+import { decodeMemo, type DecodeResult } from "../memo/index.js";
 
 export function registerQueryTools(server: McpServer): void {
   server.tool(
@@ -119,7 +125,10 @@ export function registerQueryTools(server: McpServer): void {
     { hash: z.string().describe("Transaction hash (base58 SVM or 0x EVM)") },
     async ({ hash }) => {
       try {
-        const tx = await rpc.etoGetTransaction(hash);
+        // FN-027: align with submitter.pollConfirmation — both now use getTransaction
+        // (Solana-compatible method). The eto_getTransaction unified shape is only
+        // used by the MCP tool's prior code; after this fix, response shape matches.
+        const tx = await rpc.getTransaction(hash);
 
         if (!tx) {
           return {
@@ -382,6 +391,117 @@ export function registerQueryTools(server: McpServer): void {
         }
 
         return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err: any) {
+        return {
+          content: [{ type: "text", text: `Error: ${err.message}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "query_memos",
+    "Parse SPL Memo Program v2 records from on-chain transaction logs for an account. Optionally filter by a top-level JSON field equality match; non-JSON memo bytes are returned as raw strings.",
+    {
+      address: z.string().describe("Account address (base58 SVM or 0x EVM)"),
+      filter_field: z
+        .string()
+        .optional()
+        .describe("Top-level JSON field to filter memos on (string equality)"),
+      filter_value: z
+        .string()
+        .optional()
+        .describe("Value to match (compared via String() coercion)"),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .default(20)
+        .optional()
+        .describe("Max transactions to scan (1-100, default 20)"),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .default(0)
+        .optional()
+        .describe("Pagination offset into the account's tx history (default 0)"),
+    },
+    async ({ address, filter_field, filter_value, limit, offset }) => {
+      try {
+        const txs = await rpc.etoGetAccountTransactions(
+          address,
+          limit ?? 20,
+          offset ?? 0
+        );
+
+        const list = Array.isArray(txs) ? txs : [];
+
+        // The list endpoint may not include logs — fetch the full tx in
+        // parallel only when the summary entry lacks them.
+        const fullTxs = await Promise.all(
+          list.map(async (tx: any) => {
+            if (Array.isArray(tx?.logs)) return tx;
+            const sig = tx?.signature ?? tx?.hash;
+            if (!sig) return tx;
+            try {
+              const full = await rpc.etoGetTransaction(sig);
+              return full ?? tx;
+            } catch {
+              return tx;
+            }
+          })
+        );
+
+        const records: Array<{
+          sig: string;
+          ts: number | null;
+          raw: string;
+          decoded: DecodeResult;
+          memo: unknown;
+        }> = [];
+        for (let i = 0; i < fullTxs.length; i++) {
+          const fullTx = fullTxs[i] ?? {};
+          const summary = list[i] ?? {};
+          const sig =
+            fullTx.signature ?? fullTx.hash ?? summary.signature ?? summary.hash ?? "";
+          const ts =
+            fullTx.blockTime ??
+            fullTx.timestamp ??
+            summary.blockTime ??
+            summary.timestamp ??
+            null;
+          const memos = extractMemosFromLogs(fullTx.logs);
+          for (const raw of memos) {
+            const parsed = parseMemoPayload(raw);
+            if (!matchesFilter(parsed, filter_field, filter_value)) continue;
+            // decodeMemo never throws — invalid / unknown / future-version
+            // records surface as { ok: false, reason } and ride alongside
+            // valid records.
+            let decoded: DecodeResult;
+            try {
+              decoded = decodeMemo(raw);
+            } catch {
+              decoded = { ok: false, reason: "envelope_invalid", raw };
+            }
+            records.push({ sig, ts, raw, decoded, memo: parsed });
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                { address, count: records.length, records },
+                null,
+                2
+              ),
+            },
+          ],
+        };
       } catch (err: any) {
         return {
           content: [{ type: "text", text: `Error: ${err.message}` }],

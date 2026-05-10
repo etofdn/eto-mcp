@@ -100,7 +100,13 @@ export const becknContextSchema = {
     transaction_id: { type: "string", format: "uuid" },
     message_id: { type: "string", format: "uuid" },
     timestamp: { type: "string", format: "date-time" },
-    ttl: { type: "string" },
+    ttl: {
+      type: "string",
+      // Permissive on Y/M components; parseIso8601DurationMs in inbound-bap.ts
+      // is the authoritative gate and rejects Y/M with BAD_TTL. See FN-188 / FN-074.
+      pattern:
+        "^P(?!$)(\d+Y)?(\d+M)?(\d+W)?(\d+D)?(T(?=\d)(\d+H)?(\d+M)?(\d+(?:\.\d+)?S)?)?$",
+    },
     location: { type: "object" },
   },
   additionalProperties: true,

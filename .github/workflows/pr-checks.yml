@@ -53,3 +53,76 @@ jobs:
             git status --short
             exit 1
           fi
+
+  fusion-task-gate:
+    name: fusion · task-id matches branch
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Validate fusion branch ↔ task ID
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          echo "head=$HEAD_REF base=$BASE_REF"
+
+          if [[ ! "$HEAD_REF" =~ ^fusion/fn-([0-9]+)$ ]]; then
+            echo "head '$HEAD_REF' is not a fusion/fn-N branch — gate is advisory-only for non-fusion PRs."
+            exit 0
+          fi
+          BRANCH_FN="FN-${BASH_REMATCH[1]}"
+          echo "branch task id = $BRANCH_FN"
+
+          git fetch origin "$BASE_REF" --depth=200 2>&1 | tail -1
+          MERGE_BASE=$(git merge-base "origin/$BASE_REF" HEAD)
+          echo "merge-base = $MERGE_BASE"
+
+          mapfile -t SUBJECTS < <(git log "$MERGE_BASE..HEAD" --format='%s')
+          if [ "${#SUBJECTS[@]}" -eq 0 ]; then
+            echo "::error::fusion branch '$HEAD_REF' has zero unique commits vs '$BASE_REF'"
+            exit 1
+          fi
+
+          # Policy: a commit is rejected only if its subject mentions some FN-N
+          # but does NOT include the branch's FN-N. Subjects with no FN token
+          # (chore, lockfile bumps, plain merges) are allowed; subjects that
+          # include the branch's FN-N alongside others are also allowed
+          # (e.g. "feat(FN-176, FN-177, FN-178): ..." on fusion/fn-176).
+          fail=0
+          had_branch_match=0
+          for subj in "${SUBJECTS[@]}"; do
+            mapfile -t FNS < <(echo "$subj" | grep -oE '(FN|fn)-[0-9]+' | tr '[:lower:]' '[:upper:]' | sort -u)
+            if [ "${#FNS[@]}" -eq 0 ]; then
+              echo "  skip (no FN token): $subj"
+              continue
+            fi
+            matched=0
+            for fn in "${FNS[@]}"; do
+              if [ "$fn" = "$BRANCH_FN" ]; then matched=1; break; fi
+            done
+            if [ "$matched" -eq 1 ]; then
+              echo "  ok: $subj"
+              had_branch_match=1
+            else
+              echo "::error::commit references ${FNS[*]} but branch is $BRANCH_FN: $subj"
+              fail=1
+            fi
+          done
+
+          if [ "$had_branch_match" -eq 0 ]; then
+            echo "::error::fusion-task-gate: branch '$HEAD_REF' has no commit referencing $BRANCH_FN at all"
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::fusion-task-gate: branch ↔ task-id mismatch on '$HEAD_REF'. Every FN-tagged commit must include $BRANCH_FN, and at least one commit must reference it. See .github/workflows/pr-checks.yml::fusion-task-gate."
+            exit 1
+          fi
+          echo "fusion-task-gate ok — ${#SUBJECTS[@]} commit(s) checked, branch $BRANCH_FN matched"

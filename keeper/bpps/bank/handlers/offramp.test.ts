@@ -1,8 +1,8 @@
 /**
- * Tests for Offramp BPP handler (FN-108 / T-3.10.2.3).
+ * Tests for Offramp BPP handler (FN-108 / T-3.10.2.3, FN-109 / T-3.10.2.4).
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   executeOfframp,
   stubs,
@@ -10,6 +10,7 @@ import {
   type OfframpRequest,
   type OfframpDeps,
 } from './offramp.js';
+import { BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX } from './fee.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -32,6 +33,7 @@ const INTL_DEST: OfframpRequest['destination'] = {
 
 function makeRequest(overrides: Partial<OfframpRequest> = {}): OfframpRequest {
   return {
+    caller_pubkey: HOLDER, // FN-034: caller MUST equal holder
     holder: HOLDER,
     holder_token_account_pda: HOLDER_TOKEN_PDA,
     eusd_amount_atomic: 100_000_000,
@@ -47,6 +49,7 @@ function makeDeps(overrides: Partial<OfframpDeps> = {}): OfframpDeps {
     burnOnChain: vi.fn().mockResolvedValue({ tx_signature: 'b'.repeat(64) }),
     pushUsd: vi.fn().mockResolvedValue({ external_ref: 'ext_ref_001' }),
     flagReconciliation: vi.fn().mockResolvedValue(undefined),
+    remitToTreasury: vi.fn().mockResolvedValue({ tx_signature: 'a'.repeat(64) }),
     ...overrides,
   };
 }
@@ -107,6 +110,25 @@ describe('executeOfframp — happy path', () => {
     expect(deps.pushUsd).toHaveBeenCalledOnce();
     expect(deps.pushUsd).toHaveBeenCalledWith(9999, DOMESTIC_DEST);
   });
+
+  it('calls remitToTreasury once after successful push (FN-109)', async () => {
+    const deps = makeDeps();
+    const result = await executeOfframp(makeRequest(), deps);
+
+    expect(deps.remitToTreasury).toHaveBeenCalledOnce();
+    expect(deps.remitToTreasury).toHaveBeenCalledWith({
+      fee_atomic: 10_000,
+      treasury_pda_hex: BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX,
+      source: 'offramp',
+      correlation_id: result.offramp_id,
+    });
+  });
+
+  it('includes treasury_remit_tx_signature in outcome (FN-109)', async () => {
+    const deps = makeDeps();
+    const result = await executeOfframp(makeRequest(), deps);
+    expect(result.treasury_remit_tx_signature).toBe('a'.repeat(64));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -130,6 +152,34 @@ describe('executeOfframp — invalid_pubkey', () => {
     const deps = makeDeps();
     await expect(executeOfframp(makeRequest({ holder_token_account_pda: '00' }), deps))
       .rejects.toMatchObject({ reason: 'invalid_pubkey' });
+  });
+});
+
+describe('executeOfframp — caller-binding (FN-034)', () => {
+  it('rejects when caller_pubkey != holder with caller_mismatch', async () => {
+    const deps = makeDeps();
+    const attacker = 'f'.repeat(64);
+    await expect(
+      executeOfframp(makeRequest({ caller_pubkey: attacker }), deps),
+    ).rejects.toMatchObject({ reason: 'caller_mismatch' });
+  });
+
+  it('rejects without invoking burnOnChain / pushUsd / remitToTreasury', async () => {
+    const deps = makeDeps();
+    const attacker = 'f'.repeat(64);
+    await expect(
+      executeOfframp(makeRequest({ caller_pubkey: attacker }), deps),
+    ).rejects.toBeInstanceOf(OfframpRejected);
+    expect(deps.burnOnChain).not.toHaveBeenCalled();
+    expect(deps.pushUsd).not.toHaveBeenCalled();
+    expect(deps.remitToTreasury).not.toHaveBeenCalled();
+  });
+
+  it('rejects when caller_pubkey is not a valid hex64 with invalid_pubkey', async () => {
+    const deps = makeDeps();
+    await expect(
+      executeOfframp(makeRequest({ caller_pubkey: 'tooshort' }), deps),
+    ).rejects.toMatchObject({ reason: 'invalid_pubkey' });
   });
 });
 
@@ -184,11 +234,11 @@ describe('executeOfframp — destination_invalid', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Atomicity: burn failure
+// Atomicity: burn failure — remitToTreasury NOT called
 // ---------------------------------------------------------------------------
 
 describe('executeOfframp — burn_failed atomicity', () => {
-  it('burn failure throws burn_failed; pushUsd NOT called; flagReconciliation NOT called', async () => {
+  it('burn failure throws burn_failed; pushUsd, flagReconciliation, and remitToTreasury NOT called', async () => {
     const deps = makeDeps({
       burnOnChain: vi.fn().mockRejectedValue(new Error('on-chain error')),
     });
@@ -198,11 +248,12 @@ describe('executeOfframp — burn_failed atomicity', () => {
 
     expect(deps.pushUsd).not.toHaveBeenCalled();
     expect(deps.flagReconciliation).not.toHaveBeenCalled();
+    expect(deps.remitToTreasury).not.toHaveBeenCalled();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Atomicity: push failure post-burn (operational-recovery path)
+// Atomicity: push failure post-burn — remitToTreasury NOT called
 // ---------------------------------------------------------------------------
 
 describe('executeOfframp — push_failed_post_burn reconciliation', () => {
@@ -219,6 +270,17 @@ describe('executeOfframp — push_failed_post_burn reconciliation', () => {
     expect(id).toHaveLength(64);   // full sha256 hex
     expect(holder).toBe(HOLDER);
     expect(burned).toBe(100_000_000);
+  });
+
+  it('remitToTreasury NOT called when push_failed_post_burn (fee not yet earned)', async () => {
+    const deps = makeDeps({
+      pushUsd: vi.fn().mockRejectedValue(new Error('push fail')),
+    });
+
+    await expect(executeOfframp(makeRequest(), deps))
+      .rejects.toMatchObject({ reason: 'push_failed_post_burn' });
+
+    expect(deps.remitToTreasury).not.toHaveBeenCalled();
   });
 
   it('burnOnChain IS called before the push fails (burn is committed)', async () => {
@@ -284,5 +346,15 @@ describe('stubs', () => {
 
   it('flagReconciliation resolves without throwing', async () => {
     await expect(stubs.flagReconciliation('0'.repeat(64), HOLDER, 1_000_000)).resolves.toBeUndefined();
+  });
+
+  it('remitToTreasury returns 64-hex tx_signature', async () => {
+    const { tx_signature } = await stubs.remitToTreasury({
+      fee_atomic: 10_000,
+      treasury_pda_hex: BANK_TREASURY_TOKEN_ACCOUNT_PDA_HEX,
+      source: 'offramp',
+      correlation_id: '0'.repeat(64),
+    });
+    expect(tx_signature).toMatch(/^[0-9a-f]{64}$/);
   });
 });

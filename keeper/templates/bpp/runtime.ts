@@ -145,7 +145,22 @@ export async function runBpp<TInput = unknown, TOutput = unknown>(
     now,
   };
 
+  // FN-022: idempotent retry — skip duplicate events targeting the same
+  // taskId. The on-chain Beckn flow can replay an Init event (network
+  // partitions, BAP retries, double-delivery from the SVM log
+  // subscription); without dedupe this would result in duplicate
+  // completeTask/failTask submissions, double-charged side-effects, and
+  // duplicate signed envelopes. Memory cost is one string per task for
+  // the lifetime of the BPP process, bounded by Beckon lifetime.
+  const seenTaskIds = new Set<string>();
   for await (const event of deps.eventSource) {
+    if (seenTaskIds.has(event.taskId)) {
+      deps.logger.info("duplicate task event suppressed (idempotent retry)", {
+        taskId: event.taskId,
+      });
+      continue;
+    }
+    seenTaskIds.add(event.taskId);
     await dispatchOne(event, handler, deps, ctx, timeoutMs);
   }
 }
@@ -185,6 +200,9 @@ async function dispatchOne<TInput, TOutput>(
     networkPubkey: event.networkPubkey,
     action: event.action,
     input: event.input,
+    // FN-073: thread gateway-verified caller pubkey through to the handler.
+    // Absent when the gateway could not verify a BAP signature.
+    ...(event.callerPubkey != null ? { callerPubkey: event.callerPubkey } : {}),
   };
   let result: TaskResult<TOutput>;
   try {

@@ -20,7 +20,11 @@ interface AuthAmbient {
 const authStore = new AsyncLocalStorage<AuthAmbient>();
 
 export function runWithAuth<T>(bearer: string | undefined, fn: () => T): T {
-  return authStore.run({ bearer }, fn);
+  // Conditionally include bearer to satisfy exactOptionalPropertyTypes.
+  return authStore.run(
+    bearer !== undefined ? { bearer } : {},
+    fn,
+  );
 }
 
 function getAmbientBearer(): string | undefined {

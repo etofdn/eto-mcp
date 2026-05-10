@@ -4,6 +4,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { sha512 } from "@noble/hashes/sha2";
 import { keccak_256 } from "@noble/hashes/sha3";
 import bs58 from "bs58";
+import * as addressUtils from "../utils/address.js";
 
 // Configure ed25519 to use synchronous SHA-512
 etc.sha512Sync = (...m: Uint8Array[]) => sha512(etc.concatBytes(...m));
@@ -204,21 +205,29 @@ export function deriveKeypair(_mnemonic: string, _path: string): never {
 // Address Conversion
 // ---------------------------------------------------------------------------
 
+/**
+ * SVM pubkey (base58) → EVM address.
+ *
+ * Delegates to `src/utils/address.ts:pubkeyToEvmAddress` to eliminate
+ * algorithm duplication (FN-016). The forward derivation is registry-backed
+ * and always throws when called without a registry context — use
+ * `resolveAddressesAsync` from `src/utils/address.ts` instead.
+ *
+ * @throws Always — see `pubkeyToEvmAddress` in `src/utils/address.ts`.
+ */
 export function pubkeyToEvmAddress(pubkeyB58: string): string {
+  // Decode pubkey bytes only to pass to the canonical implementation.
   const bytes = pubkeyBytes(pubkeyB58);
-  const last20 = bytes.slice(12); // last 20 bytes
-  return "0x" + Buffer.from(last20).toString("hex");
+  return addressUtils.pubkeyToEvmAddress(bytes);
 }
 
+/**
+ * EVM address → SVM pubkey (base58).
+ *
+ * Delegates to `src/utils/address.ts:evmAddressToPubkey` (FN-016 / FN-017).
+ */
 export function evmAddressToPubkey(evmAddr: string): string {
-  const addr = evmAddr.startsWith("0x") ? evmAddr.slice(2) : evmAddr;
-  const prefix = new TextEncoder().encode("evm:");
-  const addrBytes = new TextEncoder().encode(addr);
-  const combined = new Uint8Array(prefix.length + addrBytes.length);
-  combined.set(prefix);
-  combined.set(addrBytes, prefix.length);
-  const hash = sha256(combined);
-  return bs58.encode(hash);
+  return bs58.encode(addressUtils.evmAddressToPubkey(evmAddr));
 }
 
 export function findPda(
