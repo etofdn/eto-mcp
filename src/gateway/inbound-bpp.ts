@@ -49,6 +49,7 @@
 
 import { createHash } from 'node:crypto';
 import type { Express, Request, Response } from 'express';
+import rateLimit from 'express-rate-limit';
 import { validateBecknRequest } from './beckn-schemas.js';
 import { validateBecknEnvelope, validateBecknEnvelopeFreshness } from './inbound-bap.js';
 
@@ -161,7 +162,15 @@ export function mountOnConfirmCallback(app: Express, deps: InboundBppDeps): void
   // FN-036: replay dedup set — always on; caller may inject a pre-populated set.
   const seenTransactions: Set<string> = deps.seenTransactions ?? new Set();
 
-  app.post('/on_confirm', async (req: Request, res: Response) => {
+  // Route-level rate limiting for callback endpoint to reduce DoS surface.
+  const onConfirmRateLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 60, // max 60 requests per IP per minute
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  app.post('/on_confirm', onConfirmRateLimiter, async (req: Request, res: Response) => {
     // FN-055 / FN-074 parity: envelope hardening BEFORE Ajv schema validation.
     // Order: envelope validate → schema validate → freshness recheck → handler.
     const now = Date.now();
