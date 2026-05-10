@@ -58,7 +58,7 @@
     "@types/pg": "^8.11.0",
     "bs58": "^6.0.0",
     "typescript": "^5.4.0",
-    "vitest": "^1.6.0"
+    "vitest": "^4.1.5"
   },
   "dependencies": {
     "@noble/curves": "^1.4.0",
